@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ns_seeding_horde_mode",
+  "project_id": "38f6df31-5143-4e9b-9af1-f4c597f31daf"
+}
