@@ -157,28 +157,31 @@ volatile; spawner just takes numbers, so this is cheap.
 **Bot AI governance** (Q16): per-type config — `focus = players | cc`;
 obstructing structures always attacked.
 
-**Bot implementation (REVISED 2026-09-18, build 344):** the live game ships
-a full bot framework (`lua/bots/`, ~28.5k lines): `PlayerBot` entities on
-virtual clients (`client.bot` set in `Bot:Initialize` — raw
-`Server.AddVirtualClient()` without it crashes `Location.lua:79`), per-
-lifeform brains (SkulkBrain, GorgeBrain, LerkBrain, FadeBrain, OnosBrain +
-_Data tuning files), `AlienCommanderBrain`, team brains, aim/accuracy/
-motion systems, LocationGraph pathing. Plan: **reuse PlayerBot + alien
-brains** via a thin horde-brain override (force objective = marine CC /
-hunt players per governance; ignore vanilla win logic) instead of writing
-AI from scratch. Verified live: JoinTeam(2) → live Skulk, SetOrigin
-teleport works (= tunnel-mouth spawn recipe), bots don't consume player
-slots, PostJoinTeam + GetIsVirtual filter works, DisconnectClient teardown
-clean, Kill() auto-respawns (teardown must disconnect, not kill). Details:
-vault `research/td-spike-virtual-clients.md` +
-`research/td-vanilla-warmup-and-bot-framework.md`.
+**Bot implementation (VERIFIED LIVE 2026-09-18, build 344, spike e8o):**
+spawn recipe = `Server.CreateEntity(PlayerBot.kMapName)` +
+`bot:Initialize(team, active)` + `bot.lifeformEvolution = kTechId.<type>` →
+live Skulk (or forced lifeform) on team 2, no Location.lua crash, brains
+run autonomously (vanilla pathing/combat active with zero orders given).
+Teardown = `bot:Disconnect()` (DisconnectClient + DestroyEntity), clean.
+**Bot-killer gotcha:** `BotTeamController.lua:172` wipes ALL bots when
+humanCount==0 — lock it with `DisableUpdate()` on takeover (already our
+7q7 decision). GameState stays WarmUp while our bots live; horde operates
+inside WarmUp. `Server.GetBotPlayerCount()` unreliable — HordeRegistry is
+the accounting source of truth. Per-lifeform brains (SkulkBrain etc.),
+`AlienCommanderBrain`, aim/accuracy systems available for governance +
+difficulty tuning; objective-forcing (GiveOrder / horde-brain override for
+Q16 hunt-players vs siege-CC) is implementation work. Full findings:
+vault `research/td-vanilla-warmup-and-bot-framework.md` §7.
 
-**Vanilla WarmUp interaction (NEW):** build 344 has a WarmUp game state —
-below 12 humans, `BotTeamController` fills both teams with filler bots
-(config `filler_bots`). Same window as horde mode. On `/horde`: suppress
-vanilla bot controller (`SetMaxBots(0)` + DisableUpdate), spawn only horde
-bots; restore on teardown. Teardown trigger must distinguish OUR bots
-(HordeRegistry) from any other virtual client. Bead 7q7.
+**Vanilla WarmUp interaction (DECIDED 2026-09-18):** build 344 has a WarmUp
+game state — below 12 humans, `BotTeamController` fills both teams with
+filler bots (config `filler_bots`). **`/horde` IS the horde warmup — full
+takeover:** on start, suppress vanilla bot controller (`SetMaxBots(0)` +
+`DisableUpdate`, snapshotting prior state), spawn only horde bots. On
+teardown: restore whatever came before (vanilla WarmUp/filler behavior
+returns untouched) — the "as if it never existed" invariant extended to
+bot-management state. Teardown trigger distinguishes OUR bots
+(HordeRegistry) from any other virtual client. Bead 7q7 CLOSED.
 
 ## 5. Economy
 
