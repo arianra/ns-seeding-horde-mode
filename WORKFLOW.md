@@ -23,6 +23,10 @@ Current graph:
   8bw tunnel placement
 
 ## Dev environment (§8 — verified 2026-09-17)
+- **SOURCE OF TRUTH for NS2 game lua = build 344 installed server:**
+  `/mnt/d/games/ns2-server/ns2/lua` (650 files incl. `bots/` AI framework).
+  The `/mnt/d/projects/ns2-td/research/laststand` clone is STALE (556 files,
+  old balance values, no lua/bots/) — use for historical/mod reference only.
 - Game: `C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2`
   → WSL: `/mnt/c/Program Files (x86)/Steam/steamapps/common/Natural Selection 2`
 - Mod tools: `x64/Editor.exe`, `x64/Builder.exe`, `x64/Decoda.exe` (lua IDE/debugger)

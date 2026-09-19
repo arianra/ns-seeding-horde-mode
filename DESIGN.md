@@ -155,9 +155,30 @@ secondarily (~+0.15/extra player); no mid-wave rescale. Seeding rosters are
 volatile; spawner just takes numbers, so this is cheap.
 
 **Bot AI governance** (Q16): per-type config — `focus = players | cc`;
-obstructing structures always attacked. Bots are virtual clients on the
-alien team; whether alien upgrade tiers apply cleanly to them is spike zpw
-scope.
+obstructing structures always attacked.
+
+**Bot implementation (REVISED 2026-09-18, build 344):** the live game ships
+a full bot framework (`lua/bots/`, ~28.5k lines): `PlayerBot` entities on
+virtual clients (`client.bot` set in `Bot:Initialize` — raw
+`Server.AddVirtualClient()` without it crashes `Location.lua:79`), per-
+lifeform brains (SkulkBrain, GorgeBrain, LerkBrain, FadeBrain, OnosBrain +
+_Data tuning files), `AlienCommanderBrain`, team brains, aim/accuracy/
+motion systems, LocationGraph pathing. Plan: **reuse PlayerBot + alien
+brains** via a thin horde-brain override (force objective = marine CC /
+hunt players per governance; ignore vanilla win logic) instead of writing
+AI from scratch. Verified live: JoinTeam(2) → live Skulk, SetOrigin
+teleport works (= tunnel-mouth spawn recipe), bots don't consume player
+slots, PostJoinTeam + GetIsVirtual filter works, DisconnectClient teardown
+clean, Kill() auto-respawns (teardown must disconnect, not kill). Details:
+vault `research/td-spike-virtual-clients.md` +
+`research/td-vanilla-warmup-and-bot-framework.md`.
+
+**Vanilla WarmUp interaction (NEW):** build 344 has a WarmUp game state —
+below 12 humans, `BotTeamController` fills both teams with filler bots
+(config `filler_bots`). Same window as horde mode. On `/horde`: suppress
+vanilla bot controller (`SetMaxBots(0)` + DisableUpdate), spawn only horde
+bots; restore on teardown. Teardown trigger must distinguish OUR bots
+(HordeRegistry) from any other virtual client. Bead 7q7.
 
 ## 5. Economy
 
@@ -185,10 +206,15 @@ builder of record (Q25):
 - Abilities: drifter hallucinations/heal, crag heals, shift speed — cast in
   support of waves.
 - Resource income scales with the difficulty gradient → more/stronger
-  support at higher waves; cyst-chain spreading (infestation creep) is one
+  support at higher waves; cyst-chain spreading (infestation growth) is one
   of its resource sinks.
 - v1 implementation: easiest that works — scripted per-wave "support
   patterns" preferred over autonomous comm AI; configurable.
+- **Build-344 update:** the game ships `AlienCommanderBrain` (+ _Data/
+  _Senses/_TechPathData/_Utility) — a production alien commander bot AI.
+  Candidate path: run an AlienCommanderBrain-driven comm bot with resource
+  income as the difficulty dial, instead of hand-scripting patterns.
+  Evaluate in bead e8o re-spike; scripted patterns remain the fallback.
 - Caution (spike zpw): hallucinations vs our own bots' target selection —
   verify bots ignore them or gate the ability.
 
@@ -288,11 +314,12 @@ lua/shine/extensions/hordemode/
 balance/         -- visualizer tool + curve JSON experiments
 ```
 
-**Spike order** (beads): zpw virtual clients (spawn bots w/o player slots;
-GetIsVirtual in JoinTeam; upgrade tiers on bots; hallucinations vs bots) →
-8bw tunnel placement algorithm → then vertical slice: `/horde` → wave 1
-skulks → intermission → teardown, on the local ded server (runbook:
-vault `reference/td-dev-environment-runbook.md`).
+**Spike order** (beads): ~~zpw virtual clients~~ DONE (see §4 bot
+implementation — revised: use vanilla PlayerBot framework, bead e8o
+re-spike) → 8bw tunnel placement algorithm → then vertical slice: `/horde`
+→ wave 1 skulks → intermission → teardown, on the local ded server
+(runbook: vault `reference/td-dev-environment-runbook.md`). Headless bot
+testing confirmed working (no human needed once config is valid).
 
 **Definition of done (design epic f6x):** this document + vault corpus +
 spike findings. Implementation gets its own epic/beads.
