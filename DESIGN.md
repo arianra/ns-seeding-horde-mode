@@ -105,10 +105,19 @@ At `/horde`, the server sculpts the map (all tracked in HordeRegistry):
   cyst rings at start (verified in source: `AlienTeam.lua:222-244`, no comm
   needed); ongoing cyst chaining is a support-comm action = difficulty lever
   (Q21↔Q25 tie-in; full analysis in vault `discussions/td-infestation-behavior`).
-- **Tunnel mouths:** bot spawn points; organic/procedural placement v1
-  (spike 8bw): authored hive spots + navmesh sampling in distance bands from
-  the CC, multiple approach angles, never inside the base killzone. Per-map
-  config overrides as fallback.
+- **Tunnel mouths (DECIDED Q26–Q29, see vault
+  decisions/td-tunnel-mouth-system.md):** real destructible spawn portals
+  near the base — unpaired vanilla `TunnelEntrance` entities (1000 HP/100
+  armor baseline, mouth model, no teleport pairing). Placed procedurally at
+  `/horde`: pool of 5–8 validated points (pathing-sampled around CC in band
+  ~[25m,60m] + cyst points + adjacent-room Location origins; never inside
+  base room; sector-spread; GetPathPoints-validated to CC). Active subset
+  ~3 per wave, **re-drawn every wave**; destroyed mouths rebuilt at
+  intermission. Killing all active mouths mid-wave = marine bonus + early
+  wave end; mouth HP rides difficulty curve (wave-1 near-indestructible
+  mandate). Bots **stream to base immediately** — no guards, no loitering;
+  constant base pressure is the difficulty instrument. Wave-preview HUD
+  telegraphs next wave's active mouths. Per-map overrides for stubborn maps.
 - **Building bounties:** destroying any alien building pays a **one-time
   team-res bounty** (refinery = large bonus). No respawn farming. Deep pushes
   are allowed but naturally low-value (creativity pillar: don't wall players
@@ -269,7 +278,10 @@ Starter schema (full proposal in levers note §6):
               "Bounties": { "Refinery": 25, "Default": 5 } },
   "Governance": { "Skulk":"players", "Onos":"cc", "Default":"players" },
   "SupportComm": { "IncomePerWave": {"Start":5,"End":30}, "Patterns": "scripted" },
-  "Tunnels": { "Placement": "organic", "Count": 3, "MinDistFromCC": 40 },
+  "Tunnels": { "Placement": "procedural", "PoolSize": 6, "ActivePerWave": 3,
+               "MinDistFromCC": 25, "MaxDistFromCC": 60,
+               "HPCurve": {"Start": 4, "End": 1, "Bezier": [0.25,0.1,0.25,1]},
+               "KillAllBonus": 30, "RebuildOnIntermission": true },
   "Teardown": { "AssertEntityDiff": true },
   "Maps": { "ns2_summit": { "Tunnels": { "Overrides": [] } } }
 }

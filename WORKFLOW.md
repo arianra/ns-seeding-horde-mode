@@ -36,12 +36,29 @@ Current graph:
   `/mnt/d/projects/ns2-td/research/`; ded server fetches workshop mods on demand.
 - Workshop dir (151 items): `steamapps/workshop/content/4920/`
 
-## Planned layout (Shine extension)
+## Layout (i0a, canonical — repo source/ is truth; dev/deploy.sh syncs to server)
 ```
-lua/shine/extensions/hordemode/
-  shared.lua    -- Plugin def, SetupDataTable, network msgs
-  server.lua    -- state machine, wave orchestrator, spawner, economy, teardown
-  client.lua    -- HUD hooks (ScreenText is mostly server-driven)
-config schema: HordeMode.json (validated, versioned, Maps.<name> overrides)
-balance/        -- curve data + visualizer tooling (WS3 output)
+source/lua/shine/extensions/hordemode/
+  shared.lua         -- Plugin def, data table, constants
+  server/
+    init.lua         -- lifecycle, world-ready gate, commands, orchestration
+    config.lua       -- DefaultConfig, validators, Maps deep-merge, migrations
+    statemachine.lua -- Inactive/Wave/Intermission/Teardown
+    registry.lua     -- HordeRegistry: everything we spawn (teardown truth)
+    takeover.lua     -- BotTeamController lock/snapshot/restore
+    placement.lua    -- procedural tunnel-mouth selection (pure fns)
+    spawner.lua      -- mouths (TunnelEntrance) + bots (PlayerBot recipe)
+    waves.lua        -- composition, clear detection, intermission
+    triggers.lua     -- /horde gates + loss predicates
+    economy.lua      -- v0 wave-clear payout
+    hud.lua          -- ScreenText (server-driven)
+source/lua/shine/extensions/hordetest/   -- headless scenario harness (dev cfg only)
+dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-cfg/
 ```
+Deploy target (dev): `C:\Users\aria\AppData\Roaming\Natural Selection 2\workshop\content\4920\117887554\lua\shine\extensions\`
+
+## Implementation tracking
+Phase 1 plan: vault `plans/impl-phase1-vertical-slice.md` (validated).
+Beads: epic chain IMPL-0..IMPL-10 (ect→…→ay0), strictly sequential;
+`bd ready` shows the next bead. Workflow: claim → tests-first → implement →
+harness green → one conventional commit → bd close w/ deviation notes.
