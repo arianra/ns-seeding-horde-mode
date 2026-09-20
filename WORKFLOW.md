@@ -11,6 +11,12 @@
 ## Task tracking — beads
 `bd` (v1.2.1) with dependency graph. Epic: `ns-seeding-horde-mode-f6x`.
 
+## Git remote
+- `origin` = git@github.com:arianra/ns-seeding-horde-mode.git (PUBLIC, branch main).
+- Auth: SSH (existing arianra key). `gh` CLI installed at ~/.local/bin/gh
+  (device-flow login as arianra; token in plaintext ~/.config/gh/hosts.yml).
+- Push normally via SSH: `git push`. `gh` only needed for repo/API ops.
+
 Flow: `bd list` → `bd claim <id>` → work → findings go to the VAULT
 (research/ or decisions/ notes) → `bd comment <id> "filed: <vault note>"`
 → `bd close <id>`. The vault never holds task state; bd never holds design
