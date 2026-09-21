@@ -130,6 +130,93 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	-- i1b: the config module is pure data, so it is unit-testable without any world
+	-- contact — the only part of the slice that is.
+	self:RegisterScenario( "config_defaults_are_clean", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		Assert.NotNil( Config, "hordemode exposes its config module" )
+
+		local Copy = Config.Copy(horde.DefaultConfig)
+		Assert.True( not Config.Sanitize(Copy), "shipped defaults need no correction" )
+		Assert.True( Copy.Waves.BandMin >= 56, "mouth band respects the spike measurement (tby: 56-80m)" )
+		Assert.Equal( 1, Copy.Start.MinPlayers, "MinPlayers default" )
+	end )
+
+	self:RegisterScenario( "config_sanitizer_fixes_bad_values", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		local Copy = Config.Copy(horde.DefaultConfig)
+
+		Copy.Start.Cooldown = -5
+		Copy.Waves.PoolSize = 99
+		Copy.Waves.BandMin = 300
+		Copy.Waves.BandMax = 10
+		Copy.Waves.Health = "not a curve"
+		Copy.Difficulty.Accuracy.Bezier = { 5, 0, 0.5, 0 }
+
+		Assert.True( Config.Sanitize(Copy), "dirty config reports that it was corrected" )
+		Assert.Equal( 0, Copy.Start.Cooldown, "negative cooldown clamps to zero" )
+		Assert.Equal( 12, Copy.Waves.PoolSize, "absurd pool size clamps to the ceiling" )
+		Assert.True( Copy.Waves.BandMin < Copy.Waves.BandMax, "inverted band is repaired, not clamped flat" )
+		Assert.Equal( "table", type(Copy.Waves.Health), "clobbered curve is replaced by a curve" )
+		Assert.True( Copy.Waves.Health.Enabled == false, "replacement curve is flat" )
+		Assert.True( Copy.Difficulty.Accuracy.Bezier[1] <= 1, "x control point kept inside [0,1] so difficulty stays monotonic" )
+	end )
+
+	self:RegisterScenario( "config_copy_is_deep", false, function()
+		-- If Copy were shallow, sanitising a copy would rewrite the real defaults.
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		local Before = horde.DefaultConfig.Waves.PoolSize
+		local Copy = Config.Copy(horde.DefaultConfig)
+
+		Copy.Waves.PoolSize = 1
+		Assert.Equal( Before, horde.DefaultConfig.Waves.PoolSize, "mutating a copy left the defaults alone" )
+	end )
+
+	self:RegisterScenario( "config_map_override_wins", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		local SavedConfig = horde.Config
+
+		horde.Config = Config.Copy(horde.DefaultConfig)
+		horde.Config.Maps.ns2_summit = { Waves = { PoolSize = 2 } }
+
+		local Resolved = Config.Resolve("ns2_summit")
+		local Other = Config.Resolve("ns2_vega")
+
+		Assert.Equal( 2, Resolved.Waves.PoolSize, "map override wins" )
+		Assert.Equal( horde.DefaultConfig.Waves.ActivePerWave, Resolved.Waves.ActivePerWave, "untouched siblings survive the merge" )
+		Assert.Equal( horde.DefaultConfig.Waves.PoolSize, Other.Waves.PoolSize, "another map is unaffected" )
+
+		horde.Config = SavedConfig
+	end )
+
+	self:RegisterScenario( "config_curves_behave", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		local Flat = { Enabled = false, Start = 7, End = 99, Bezier = { 0.25, 0.1, 0.25, 1 } }
+
+		Assert.Equal( 7, Config.EvaluateCurve(Flat, 0), "disabled curve is flat at t=0" )
+		Assert.Equal( 7, Config.EvaluateCurve(Flat, 1), "disabled curve is flat at t=1" )
+
+		local Rising = { Enabled = true, Start = 4, End = 24, Bezier = { 0.25, 0.1, 0.25, 1 } }
+		Assert.Equal( 4, Config.EvaluateCurve(Rising, 0), "curve starts at Start" )
+		Assert.True( math.abs(Config.EvaluateCurve(Rising, 1) - 24) < 0.01, "curve ends at End" )
+
+		local Previous = -1
+		for Step = 0, 20 do
+			local Value = Config.EvaluateCurve(Rising, Step / 20)
+			Assert.True(Value >= Previous - 0.0001, "curve is non-decreasing at t=" .. tostring(Step / 20))
+			Previous = Value
+		end
+
+		Assert.Equal( 0, Config.WaveProgress(1, 30), "wave 1 is progress 0" )
+		Assert.Equal( 1, Config.WaveProgress(30, 30), "reference wave is progress 1" )
+		Assert.Equal( 1, Config.WaveProgress(500, 30), "past the reference wave clamps" )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )

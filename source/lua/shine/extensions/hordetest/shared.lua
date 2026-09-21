@@ -55,9 +55,17 @@ function Assert.True( Value, What )
 	end
 end
 
-function Assert.Equal( Got, Want, What )
+--- Note the order: ( Want, Got ), matching every call site. Swapping it makes a
+--- failing assertion report the two values backwards, which is worse than no assert.
+function Assert.Equal( Want, Got, What )
 	if Got ~= Want then
 		fail( string.format( "%s: expected [%s], got [%s]", What or "value", tostring( Want ), tostring( Got ) ) )
+	end
+end
+
+function Assert.False( Value, What )
+	if Value then
+		fail( ( What or "value" ) .. " expected falsy, got " .. tostring( Value ) )
 	end
 end
 
