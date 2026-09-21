@@ -317,6 +317,83 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 1, Reached, "later hooks still run after a failing one" )
 	end )
 
+	-- i2b: the gates are pure over a snapshot, so every rejection reason is
+	-- reachable here - including ones a headless server can never produce.
+	local function Snapshot(Overrides)
+		local Base = {
+			GameState = kGameState.WarmUp,
+			RealMarineCount = 1,
+			RealAlienCount = 0,
+			PlayerCount = 4,
+			MaxPlayers = 16,
+		}
+
+		for Key, Value in pairs(Overrides or {}) do
+			Base[Key] = Value
+		end
+
+		return Base
+	end
+
+	local function GateHarness()
+		local horde = Shine.Plugins.hordemode
+		return horde.Triggers, horde.StateMachine.New(0, function() end), { Start = { Cooldown = 60, MinPlayers = 1 } }
+	end
+
+	self:RegisterScenario( "gates_headless_server_rejects", false, function()
+		local Triggers, Machine, Config = GateHarness()
+		local Ok, Gate, Reason = Triggers.Check(Snapshot({ RealMarineCount = 0 }), Machine, Config, 10)
+
+		Assert.False( Ok, "a server with no humans must not start a horde" )
+		Assert.Equal( "HasMarinePlayers", Gate, "reason is the marine count, not a misfiring gate" )
+		Assert.True( Reason:find("need 1 marine") ~= nil, "chat text names the requirement: " .. tostring(Reason) )
+	end )
+
+	self:RegisterScenario( "gates_accept_a_seeding_marine", false, function()
+		local Triggers, Machine, Config = GateHarness()
+		Assert.True( Triggers.Check(Snapshot(), Machine, Config, 10) )
+	end )
+
+	self:RegisterScenario( "gates_reject_each_condition", false, function()
+		local Triggers, Machine, Config = GateHarness()
+
+		local _, AlienGate = Triggers.Check(Snapshot({ RealAlienCount = 2 }), Machine, Config, 10)
+		Assert.Equal( "NoRealAliens", AlienGate, "a real player on aliens blocks the horde" )
+
+		local _, StartedGate = Triggers.Check(Snapshot({ GameState = kGameState.Started }), Machine, Config, 10)
+		Assert.Equal( "InSeedingState", StartedGate, "a started game is not seeding" )
+
+		local _, FullGate = Triggers.Check(Snapshot({ PlayerCount = 16, MaxPlayers = 16 }), Machine, Config, 10)
+		Assert.Equal( "SeedMaxNotMet", FullGate, "seed max reached blocks the horde" )
+
+	end )
+
+	self:RegisterScenario( "gates_state_and_cooldown", false, function()
+		local Triggers, Machine, Config = GateHarness()
+
+		Assert.True( Machine:Start(100), "start for the running-gate case" )
+		local _, RunningGate, RunningReason = Triggers.Check(Snapshot(), Machine, Config, 110)
+		Assert.Equal( "IsNotRunning", RunningGate, "already running is reported first" )
+		Assert.True( RunningReason:find("wave 1") ~= nil, "rejection names the wave: " .. tostring(RunningReason) )
+
+		Machine:Stop("test", 120)
+		Machine:CompleteTeardown(130)
+
+		local _, CoolGate, CoolReason = Triggers.Check(Snapshot(), Machine, Config, 160)
+		Assert.Equal( "CooldownOk", CoolGate, "post-teardown cooldown applies" )
+		Assert.True( CoolReason:find("cooldown remaining") ~= nil, "cooldown text shows time left: " .. tostring(CoolReason) )
+
+		Assert.True( Triggers.Check(Snapshot(), Machine, Config, 200), "cooldown expires" )
+	end )
+
+	self:RegisterScenario( "horde_command_is_bound", false, function()
+		local horde = Shine.Plugins.hordemode
+		Assert.NotNil( horde.Commands, "plugin registered commands at world-ready" )
+		Assert.NotNil( horde.Commands.sh_horde, "/horde is bound" )
+		-- Only existence is asserted: the Command object is Shine-internal and its
+		-- fields are not something this suite should depend on.
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )

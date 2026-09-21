@@ -86,11 +86,65 @@ function Plugin:TryArm()
 	self:OnWorldReady( gamerules )
 end
 
--- Seam for the beads that follow: i2b binds /horde + sh_horde_* here, i8a starts
--- loss polling here, i7a owns teardown from here. Keeping it a single call means
--- i1a is verifiable on its own — armed proves the gate, and proves nothing else
--- has touched the world yet.
+-- Seam for the beads that follow: i8a starts loss polling here, i7a owns teardown
+-- from here. Everything world-facing stays behind this call.
 function Plugin:OnWorldReady( gamerules )
+	self.Machine = Plugin.StateMachine.New(Shared.GetTime(), function(Message)
+		print(("%s %s"):format(Plugin.LogPrefix, Message))
+	end)
+
+	-- NoPerm=true: /horde is a marine command, not an admin one (Q14 open access).
+	self:BindCommand( "sh_horde", "horde", function(Client)
+		self:OnHordeCommand(Client)
+	end, true )
+end
+
+--- /horde entry: gates, then start. Rejection reason goes to the caller's chat
+--- (Notify(Player, Message) - messaging.lua:201), never a silent no-op.
+function Plugin:OnHordeCommand(Client)
+	-- A command callback receives the *client*; the player is reached through
+	-- Client:GetControllingPlayer() (Shine's own idiom, votesurrender/server.lua:296).
+	-- Server.GetOwner goes the other way: player -> client.
+	local Player = Client and Client:GetControllingPlayer() or nil
+	local Now = Shared.GetTime()
+	local Snapshot = Plugin.Triggers.TakeSnapshot()
+
+	if not self.Machine then
+		self:Log("rejected /horde: not armed yet")
+		return
+	end
+
+	local Config = self.HordeConfig.Resolve(Shared.GetMapName())
+	local Allowed, Gate, Reason = Plugin.Triggers.Check(Snapshot, self.Machine, Config, Now)
+
+	if not Allowed then
+		self:Log(string.format("/horde rejected by %s: %s", Gate, Reason))
+
+		if Player then
+			self:Notify(Player, "Horde not started: %s", true, Reason)
+		end
+
+		return
+	end
+
+	local Ok, StartReason = self.Machine:Start(Now)
+
+	if not Ok then
+		self:Log("/horde rejected by the state machine: " .. tostring(StartReason))
+		return
+	end
+
+	self:Log("horde started - wave 1")
+end
+
+function Plugin:Log(Message)
+	print(("%s %s"):format(self.LogPrefix, Message))
+end
+
+--- Current effective config for this map, resolved once per read (deep merge is
+--- cheap and this avoids stale copies after an admin edits the JSON).
+function Plugin:HordeConfigResolve()
+	return self.HordeConfig.Resolve(Shared.GetMapName())
 end
 
 function Plugin:Cleanup()
