@@ -202,6 +202,12 @@ end
 
 --- Drop entries the resolver says are gone; returns how many were already vanished.
 --- Teardown needs this to tell "we destroyed it" from "something else destroyed it".
+--- The resolver MUST be kind-aware. Verified live: a PlayerBot's entity id is gone while
+--- its player is still alive (t+15: entity=false, player=true, alive=true), so a single
+--- Shared.GetEntity(id) check would erase live bots from the books and i7a would then
+--- "succeed" at teardown with a horde still connected. Bots are judged by their player;
+--- entities and mouths by their id. See also Server.CreateEntity's two overloads: the
+--- positional 3-arg create is the global CreateEntity (AlienTunnelManager.lua:191).
 function Registry:Prune(IsGone)
 	local Pruned = 0
 

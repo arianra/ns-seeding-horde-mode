@@ -39,6 +39,14 @@ not that the behaviour is right.
   *absolute* assertion about `updateLock` is therefore unstable - a baseline read
   before the other scenario releases will never match. Assert the delta measured
   immediately around your own call, or take the global out of play.
+- **Deferred checks only reliably fire in the first ~8 seconds of the pending queue.**
+  Observed three times: checks scheduled at t+6 and t+8 landed; t+9 and t+14 never did, with
+  nothing in the log and no `ALL-DONE` (the run then times out in `dev/test.sh`). Retaining the
+  `CreateTimer` handle made no difference, so plugin-timer lifetime is not the cause. Until this
+  is diagnosed, keep every deferred check at <=8s and put the whole assertion in ONE callback -
+  chaining defers hangs the suite. This constrains i5b (stream-to-base) and i6c (3-wave), which
+  need 15-60s windows: they cannot use this mechanism as-is.
+- `Defer` is a method on **hordetest**, not on the plugin under test. Writing `horde:Defer(...)` instead of `self:Defer(...)` fails at runtime, not load time - it happened twice while building i3b/i3c.
 - Deferred checks are the price of testing bots: nothing about a spawned bot is
   true in the tick after `CreateEntity`. `Plugin:Defer` exists so that is not faked.
 - A setup path that engages shared engine state must run under `pcall` with a

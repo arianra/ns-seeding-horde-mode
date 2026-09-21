@@ -24,7 +24,12 @@ function Plugin:Initialise()
 	self.State = { Ready = false, Settled = 0, Done = false, Waiting = false, Finished = false,
 		Pass = 0, Fail = 0, ExpectedFail = 0, Pending = {} }
 
-	self:CreateTimer( "HordeTestRunner", 1, -1, function()
+	-- Hold the handle. Plugin timers live in a weak-valued table
+	-- (base_plugin/timers.lua:25), and a repeating timer whose returned object is
+	-- discarded can be collected mid-run: this runner stopped firing ~10 ticks into
+	-- its pending queue with nothing in the log. Keeping a strong reference is both
+	-- the fix and the assumption the engine's own periodic timers rely on.
+	self.RunnerTimer = self:CreateTimer( "HordeTestRunner", 1, -1, function()
 		self:Tick()
 	end )
 
@@ -93,11 +98,7 @@ function Plugin:RunScenarios()
 	-- A scenario may defer checks (bot behaviour takes frames). Adopt whatever it
 	-- queued, then only report ALL-DONE once every deferred item has landed —
 	-- otherwise test.sh reads an incomplete run as a passing one.
-	for Index = 1, #self.Deferred do
-		State.Pending[#State.Pending + 1] = self.Deferred[Index]
-	end
-
-	self.Deferred = {}
+	self:AdoptDeferred()
 
 	if #State.Pending == 0 then
 		self:Finish()
@@ -116,10 +117,36 @@ function Plugin:DetailOf( Err )
 	return tostring( Err )
 end
 
+--- Move queued defers into the live pending list. Called from RunScenarios AND from
+--- every tick: a deferred check that schedules another deferred check (the i3c
+--- engage→teardown chain does exactly that) was previously never seen, so ALL-DONE
+--- never fired and the run hung until test.sh timed out instead of reporting.
+function Plugin:AdoptDeferred()
+	local Deferred = self.Deferred
+
+	if type(Deferred) ~= "table" then
+		return
+	end
+
+	local Pending = self.State and self.State.Pending
+
+	if not Pending then
+		return
+	end
+
+	for Index = 1, #Deferred do
+		Pending[#Pending + 1] = Deferred[Index]
+	end
+
+	self.Deferred = {}
+end
+
 function Plugin:TickPending()
 	local State = self.State
 	local now = Shared.GetTime()
 	local remaining = 0
+
+	self:AdoptDeferred()
 
 	for Index = #State.Pending, 1, -1 do
 		local Item = State.Pending[Index]
@@ -133,7 +160,9 @@ function Plugin:TickPending()
 		end
 	end
 
-	if remaining == 0 then
+	-- #Pending, not just `remaining`: an item appended by a check we just ran is
+	-- outside the loop we already bounded, and must hold ALL-DONE open.
+	if remaining == 0 and #State.Pending == 0 then
 		self:Finish()
 	end
 end
@@ -154,6 +183,8 @@ function Plugin:Finish()
 	if self:TimerExists( "HordeTestRunner" ) then
 		self:DestroyTimer( "HordeTestRunner" )
 	end
+
+	self.RunnerTimer = nil
 end
 
 return Plugin

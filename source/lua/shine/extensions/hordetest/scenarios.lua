@@ -696,7 +696,7 @@ function Plugin:InitialiseScenarios()
 
 			if BotId == nil then Problems[#Problems + 1] = "bot not registered" end
 
-			self:Defer( "takeover_bot_survives_and_releases", 15, false, function()
+			self:Defer( "takeover_bot_survives_and_releases", 8, false, function()
 				local EntityAlive = Shared.GetEntity(BotId) ~= nil
 				local AlienPlayer = Bot:GetPlayer()
 				local PlayerAlive = AlienPlayer ~= nil and AlienPlayer:GetIsAlive() == true
@@ -704,14 +704,14 @@ function Plugin:InitialiseScenarios()
 				-- Evidence first: the entity handle and the live player are different
 				-- questions, and the first version of this test conflated them.
 				print(string.format(
-					"[TEST-DIAG] t+15 entity=%s player=%s alive=%s maxBots=%s lock=%s roster=%s",
+					"[TEST-DIAG] t+8 entity=%s player=%s alive=%s maxBots=%s lock=%s roster=%s",
 					tostring(EntityAlive), tostring(AlienPlayer ~= nil), tostring(PlayerAlive),
 					tostring(controller.MaxBots), tostring(controller.updateLock),
 					tostring(gServerBots and #gServerBots or -1)))
 
 				if not PlayerAlive then
 					Problems[#Problems + 1] = string.format(
-						"bot has no live player at t+15 (entity=%s, hasPlayer=%s)",
+						"bot has no live player at t+8 (entity=%s, hasPlayer=%s)",
 						tostring(EntityAlive), tostring(AlienPlayer ~= nil))
 				end
 
@@ -758,6 +758,180 @@ function Plugin:InitialiseScenarios()
 			Cleanup()
 			error( { Detail = "setup failed and was cleaned up: " .. tostring(SetupErr) } )
 		end
+	end )
+
+	-- i3c: registry + takeover together, against real entities. Runs as a CHAINED
+	-- deferred cycle starting at t+20, deliberately after takeover_live_cycle has
+	-- released the controller at t+15: two scenarios holding the one global
+	-- botTeamController at once made each other's cap and registry assertions lie
+	-- (dev/REVIEW-CHECKLIST.md, "Test honesty").
+	-- i3c: registry + takeover against real entities, in ONE deferred callback.
+	-- Two-stage chaining is deliberately not used: the runner's repeating timer stops
+	-- firing a few ticks into the pending queue (observed twice - checks scheduled at
+	-- t+6 and t+8 landed, t+9 and t+14 never did, with nothing in the log and no
+	-- ALL-DONE), so a chain would hang the suite rather than test anything. "does
+	-- nothing destroy it over time" is already answered by spike tby (mouths survive
+	-- unpaired indefinitely) and by takeover_live_cycle's 8s window.
+	self:RegisterScenario( "registry_takeover_integration", false, function()
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local controller = horde.BotController
+		local Reg = R.New()
+
+		Assert.NotNil( controller, "bot controller resolved at world-ready" )
+
+		self:Defer( "integration_cycle", 6, false, function()
+			local Takeover = horde.Takeover.New(controller, Reg)
+			local Problems = {}
+			local Bots, Mouths, Ids = {}, {}, {}
+			local Engaged = false
+			local CapBefore = controller.MaxBots
+			local LockBase = controller.updateLock
+			local LiveBefore = horde.HordeRegistry:Count()
+
+			local function Cleanup()
+				for _, Bot in ipairs(Bots) do pcall(function() Bot:Disconnect() end) end
+				for _, Mouth in ipairs(Mouths) do pcall(function() Mouth:Kill() end) end
+				if Engaged then pcall(function() Takeover:Release() end) end
+				Reg:Clear()
+			end
+
+			local Ok, Err = pcall( function()
+				if not Takeover:Engage() then Problems[#Problems + 1] = "engage refused" end
+				Engaged = true
+
+				local Anchors = {}
+
+				for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
+					Anchors[#Anchors + 1] = Ent:GetOrigin()
+
+					if #Anchors >= 2 then break end
+				end
+
+				if #Anchors == 0 then
+					Problems[#Problems + 1] = "map exposed no Location entities to place mouths on"
+					return
+				end
+
+				for Index = 1, 2 do
+					-- Global CreateEntity: Server.CreateEntity accepts only (mapName) or
+					-- (mapName, fields); the positional 3-arg form is vanilla's
+					-- (AlienTunnelManager.lua:191).
+					local Mouth = CreateEntity(TunnelEntrance.kMapName,
+						Anchors[((Index - 1) % #Anchors) + 1], 2)
+
+					if Mouth then
+						if Mouth.SetConstructionComplete then Mouth:SetConstructionComplete() end
+						Mouths[#Mouths + 1] = Mouth
+						Ids[#Ids + 1] = Reg:Register(Mouth, R.Kind.Mouth)
+					else
+						Problems[#Problems + 1] = "mouth " .. Index .. " failed to create"
+					end
+
+					local Bot = Server.CreateEntity(PlayerBot.kMapName)
+
+					if Bot then
+						Bot:Initialize(kTeam2Index, true)
+						Bot.lifeformEvolution = kTechId.Skulk
+						Bots[#Bots + 1] = Bot
+						Ids[#Ids + 1] = Reg:Register(Bot, R.Kind.Bot)
+					else
+						Problems[#Problems + 1] = "bot " .. Index .. " failed to create"
+					end
+				end
+
+				if #Ids ~= 4 then
+					Problems[#Problems + 1] = string.format("registered %s of 4 things we made", tostring(#Ids))
+				end
+
+				if Reg:Count() ~= #Ids then Problems[#Problems + 1] = "registry count disagrees with what it holds" end
+
+				for _, Mouth in ipairs(Mouths) do
+					if Shared.GetEntity(Mouth:GetId()) == nil then
+						Problems[#Problems + 1] = "a mouth is already gone right after creation"
+					end
+				end
+
+				for _, Bot in ipairs(Bots) do
+					local Player = Bot:GetPlayer()
+
+					if not (Player and Player:GetIsAlive()) then
+						Problems[#Problems + 1] = "a bot has no live player while the lock is held"
+					end
+				end
+
+				-- Destroy through the registry, exactly the way i7a will.
+				for _, Id in ipairs(Ids) do
+					local Ref = Reg:Get(Id)
+
+					if Reg:GetKind(Id) == R.Kind.Bot then
+						pcall(function() Ref:Disconnect() end)
+					else
+						pcall(function() Ref:Kill() end)
+					end
+				end
+
+				-- Kind-aware on purpose: a bot's entity id can vanish while its player is
+				-- still connected (measured: entity=false, player=true, alive=true), so a
+				-- GetEntity-only check would erase live bots and teardown would pass with
+				-- a horde still connected.
+				local Pruned = Reg:Prune(function(Ref, Id)
+					if Reg:GetKind(Id) == R.Kind.Bot then
+						local Player = Ref:GetPlayer()
+						return Player == nil or not Player:GetIsAlive()
+					end
+
+					return Shared.GetEntity(Id) == nil
+				end)
+
+				if Pruned ~= #Ids then
+					Problems[#Problems + 1] = string.format("Prune confirmed %s of %s destroyed",
+						tostring(Pruned), tostring(#Ids))
+				end
+
+				if Reg:Count() ~= 0 then Problems[#Problems + 1] = "registry not empty after destroying everything" end
+
+				Bots, Mouths = {}, {}
+
+				local BeforeRelease = controller.updateLock
+
+				if not Takeover:Release() then Problems[#Problems + 1] = "release refused" end
+				Engaged = false
+
+				if (BeforeRelease - controller.updateLock) ~= 1 then
+					Problems[#Problems + 1] = "release did not remove exactly our lock"
+				end
+
+				if controller.MaxBots ~= CapBefore then
+					Problems[#Problems + 1] = string.format("cap not back to %s (got %s)",
+						tostring(CapBefore), tostring(controller.MaxBots))
+				end
+
+				if controller.updateLock ~= LockBase then
+					Problems[#Problems + 1] = "lock depth not returned to where we found it"
+				end
+
+				if horde.HordeRegistry:Count() ~= LiveBefore then
+					Problems[#Problems + 1] = "the live registry changed without this scenario touching it"
+				end
+
+				if not horde.Enabled then Problems[#Problems + 1] = "extension unloaded by the cycle" end
+				if not horde.Commands.sh_horde then Problems[#Problems + 1] = "commands lost after the cycle" end
+
+				-- NOT asserted: "no lua errors since boot" - unverified hook, and an
+				-- assertion that cannot fail is worse than none.
+			end )
+
+			if not Ok then
+				Problems[#Problems + 1] = "cycle threw: " .. tostring(Err)
+			end
+
+			Cleanup()
+
+			if #Problems > 0 then
+				error( { Detail = "registry+takeover integration: " .. table.concat(Problems, "; ") } )
+			end
+		end )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

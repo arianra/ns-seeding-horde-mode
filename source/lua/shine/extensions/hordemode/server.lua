@@ -54,7 +54,10 @@ function Plugin:Initialise()
 	self.HordeArmed = false
 	self.HordePhase = Plugin.Phase.Inactive
 
-	self:CreateTimer( "HordeModeWorldReady", WORLD_POLL_SECONDS, -1, function()
+	-- Handle retained: plugin timers sit in a weak-valued table, so a discarded
+	-- repeating timer may be collected before the world ever arrives and the plugin
+	-- would silently never arm.
+	self.WorldReadyTimer = self:CreateTimer( "HordeModeWorldReady", WORLD_POLL_SECONDS, -1, function()
 		self:TryArm()
 	end )
 
@@ -80,6 +83,7 @@ function Plugin:TryArm()
 
 	self.HordeArmed = true
 	self:DestroyTimer( "HordeModeWorldReady" )
+	self.WorldReadyTimer = nil
 
 	print( string.format( "%s armed at game state %s", Plugin.LogPrefix, tostring( gamerules:GetGameState() ) ) )
 
