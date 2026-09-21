@@ -66,10 +66,14 @@ dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-c
 Deploy target (dev): `C:\Users\aria\AppData\Roaming\Natural Selection 2\workshop\content\4920\117887554\lua\shine\extensions\`
 
 ## Running tests (i0c runner, i0d harness)
-`./dev/test.sh [map] [timeout]` — headless integration loop:
-stops any stale server → materialises the test config → `deploy.sh` → boots and waits for
-Shine extensions → polls the log for `[TEST] ALL-DONE` (default 300s) → stops the server →
-prints the scenario lines → **exit 0** only when the suite reported `pass=N fail=0`.
+`./dev/test.sh [map] [timeout]` — the full loop, seven steps: static lint → stop any stale
+server → materialise the test config → `deploy.sh` → boot and wait for Shine extensions →
+poll the log for `[TEST] ALL-DONE` (default 300s) → stop the server → print the scenario lines.
+**Exit 0** only when the suite reported `pass=N fail=0`.
+
+`./dev/lint.sh [--strict]` runs the static gate on its own (Lua 5.1 parse + advisories). It is
+step 1/7 of `test.sh`, so a syntax error costs a second instead of a two-minute boot. Judgment
+checks that no parser can see live in `dev/REVIEW-CHECKLIST.md` — run them against your own diff.
 
 The runtime config is built at `D:\games\ns2hordetest\cfg` (hyphen-free: `-config_path` breaks on
 hyphens) by copying the live `D:\games\ns2srv\cfg` and overlaying `dev/horde-test-cfg/`. **Never**

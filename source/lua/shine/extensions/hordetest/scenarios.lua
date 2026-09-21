@@ -29,3 +29,5 @@ function Plugin:InitialiseScenarios()
 end
 
 Plugin:InitialiseScenarios()
+
+return Plugin

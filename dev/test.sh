@@ -19,10 +19,18 @@ TIMEOUT="${2:-300}"
 
 bail() { echo "[test] FAIL: $*" >&2; exit 2; }
 
-echo "[test] 1/6 stopping any stale server"
+echo "[test] 1/7 static lint"
+# Cheapest gate first: a Lua syntax error costs two minutes to discover through a
+# server boot and a couple of seconds here. Note the capture — `cmd | sed || bail`
+# would test sed's status and pass on a lint failure.
+LINT_OUT=$("$REPO/dev/lint.sh" 2>&1); LINT_RC=$?
+sed 's/^/[test]   /' <<<"$LINT_OUT"
+[[ $LINT_RC -eq 0 ]] || bail "static lint failed (exit $LINT_RC)"
+
+echo "[test] 2/7 stopping any stale server"
 "$REPO/dev/server-stop.sh" >/dev/null 2>&1 || true
 
-echo "[test] 2/6 building test config -> $CFG_WIN"
+echo "[test] 3/7 building test config -> $CFG_WIN"
 [[ -d "$SRC_CFG_WSL" ]] || bail "source config missing: $SRC_CFG_WSL"
 rm -rf "$CFG_WSL"
 mkdir -p "$CFG_WSL/shine"
@@ -43,15 +51,17 @@ if not (ae.get("hordemode") and ae.get("hordetest")):
 print(f"[test]   config valid: tags={tags} extensions=hordemode+hordetest")
 PY
 
-echo "[test] 3/6 deploying repo extensions to the server's shine dir"
-"$REPO/dev/deploy.sh" | sed 's/^/[deploy] /' || bail "deploy failed"
+echo "[test] 4/7 deploying repo extensions to the server's shine dir"
+DEPLOY_OUT=$("$REPO/dev/deploy.sh" 2>&1); DEPLOY_RC=$?
+sed 's/^/[deploy] /' <<<"$DEPLOY_OUT"
+[[ $DEPLOY_RC -eq 0 ]] || bail "deploy failed (exit $DEPLOY_RC)"
 
-echo "[test] 4/6 starting server (map=$MAP cfg=$CFG_WIN)"
+echo "[test] 5/7 starting server (map=$MAP cfg=$CFG_WIN)"
 "$REPO/dev/server-start.sh" "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
 START_RC=${PIPESTATUS[0]}
 [[ $START_RC -eq 0 ]] || bail "server never reached READY (see log above)"
 
-echo "[test] 5/6 waiting up to ${TIMEOUT}s for [TEST] ALL-DONE"
+echo "[test] 6/7 waiting up to ${TIMEOUT}s for [TEST] ALL-DONE"
 elapsed=0
 ALDONE=""
 while [[ $elapsed -lt $TIMEOUT ]]; do
@@ -63,7 +73,7 @@ while [[ $elapsed -lt $TIMEOUT ]]; do
   elapsed=$((elapsed + 5))
 done
 
-echo "[test] 6/6 stopping server"
+echo "[test] 7/7 stopping server"
 "$REPO/dev/server-stop.sh" | sed 's/^/[stop] /' || true
 
 if [[ -z "$ALDONE" ]]; then
