@@ -54,6 +54,9 @@ cp -r "$SRC_CFG_WSL/." "$CFG_WSL/"      || bail "config copy failed"
 cp -f "$REPO/dev/horde-test-cfg/ServerConfig.json" "$CFG_WSL/ServerConfig.json" || bail "overlay ServerConfig"
 cp -f "$REPO/dev/horde-test-cfg/MapCycle.json"     "$CFG_WSL/MapCycle.json"     || bail "overlay MapCycle"
 cp -f "$REPO/dev/horde-test-cfg/shine/BaseConfig.json" "$CFG_WSL/shine/BaseConfig.json" || bail "overlay BaseConfig"
+# Only the TEST config is authorised to run the suite; nothing here touches the live cfg.
+mkdir -p "$CFG_WSL/shine/plugins"
+cp -f "$REPO/dev/horde-test-cfg/shine/plugins/HordeTest.json" "$CFG_WSL/shine/plugins/HordeTest.json" || bail "overlay HordeTest"
 
 if [[ $BAD_CONFIG -eq 1 ]]; then
   # Real load-path test: Shine reads this file, our Sanitize must repair it, and

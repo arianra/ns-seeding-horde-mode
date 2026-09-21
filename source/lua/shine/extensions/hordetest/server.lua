@@ -18,6 +18,14 @@ local PluginName = Plugin:GetName()
 
 local SETTLE_SECONDS = 10
 
+-- The suite spawns bots, takes the commander chair, caps and locks the vanilla bot
+-- controller and destroys entities. That must never happen on a server people are
+-- playing on, so it is opt-in via HordeTest.json (default off) rather than implied
+-- by ActiveExtensions alone.
+Plugin.HasConfig = true
+Plugin.ConfigName = "HordeTest.json"
+Plugin.DefaultConfig = { RunSuite = false }
+
 Shine.LoadPluginFile( PluginName, "scenarios.lua", Plugin )
 
 function Plugin:Initialise()
@@ -40,6 +48,17 @@ end
 
 function Plugin:Tick()
 	local State = self.State
+
+	-- Checked here rather than in Initialise so it cannot depend on config load order.
+	if not State.GateChecked then
+		State.GateChecked = true
+
+		if not self.Config or self.Config.RunSuite ~= true then
+			print("[TEST] suite not authorised for this config (RunSuite=false) - hordetest idling")
+			self:DestroyTimer("HordeTestRunner")
+			return
+		end
+	end
 
 	if State.Waiting then
 		self:TickPending()

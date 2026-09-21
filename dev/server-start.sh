@@ -5,6 +5,7 @@
 #   config_path_win defaults to D:\games\ns2srv\cfg
 # Prints the WSL path to the live log on stdout (last line) for callers.
 set -uo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CFG_WIN="${1:-D:\\games\\ns2srv\\cfg}"
 MAP="${2:-ns2_summit}"
@@ -12,15 +13,30 @@ PORT=27015
 NS2SRV_WIN='D:\games\ns2-server'
 LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
 
-# Ensure no stale server holds the port
-powershell.exe -Command "Stop-Process -Name Server -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-sleep 3
+# Stop ONLY the server this script started (tracked by PID). Killing every process
+# named "Server" would take down any server Arian is actually running - which is what
+# happened: every dev loop silently stopped the live one.
+PIDFILE="$REPO_DIR/dev/.server.pid"
+
+if [[ -f "$PIDFILE" ]]; then
+  OLD_PID=$(tr -dc '0-9' < "$PIDFILE")
+  if [[ -n "$OLD_PID" ]]; then
+    powershell.exe -Command "Stop-Process -Id $OLD_PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    sleep 3
+  fi
+fi
 rm -f "$LOG_WSL" 2>/dev/null || true
 
 echo "[start] launching Server.exe (cfg=$CFG_WIN map=$MAP port=$PORT)..."
 # Launch detached via powershell Start-Process so this script can return and
 # the caller can poll the log. Window hidden.
-powershell.exe -Command "Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16','+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden" >/dev/null 2>&1
+NEW_PID=$(powershell.exe -Command "(Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16','+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden -PassThru).Id" 2>/dev/null | tr -dc '0-9')
+if [[ -z "$NEW_PID" ]]; then
+  echo "[start] could not launch Server.exe" >&2
+  exit 1
+fi
+echo "$NEW_PID" > "$PIDFILE"
+echo "[start] pid=$NEW_PID (tracked in dev/.server.pid)"
 
 # Wait for readiness
 READY_LINE="Completed loading Shine extensions"
@@ -38,5 +54,14 @@ done
 
 echo "[start] TIMEOUT after ${TIMEOUT}s — readiness line not found" >&2
 [[ -f "$LOG_WSL" ]] && tail -20 "$LOG_WSL" >&2
+
+# Reap what we started. Leaving it running holds the port, keeps writing to the log
+# and (worse) keeps whoever owns this machine guessing about a mystery server.
+if [[ -n "${NEW_PID:-}" ]]; then
+  powershell.exe -Command "Stop-Process -Id $NEW_PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  rm -f "$PIDFILE"
+  echo "[start] stopped pid=$NEW_PID after timeout"
+fi
+
 echo "$LOG_WSL"
 exit 1

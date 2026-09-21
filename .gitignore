@@ -1,5 +1,6 @@
 # logs & temp
 *.log
+dev/.server.pid
 dev/horde-test-cfg/shine/logs/
 
 # os
