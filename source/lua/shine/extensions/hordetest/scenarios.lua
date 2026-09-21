@@ -366,6 +366,16 @@ function Plugin:InitialiseScenarios()
 		local _, FullGate = Triggers.Check(Snapshot({ PlayerCount = 16, MaxPlayers = 16 }), Machine, Config, 10)
 		Assert.Equal( "SeedMaxNotMet", FullGate, "seed max reached blocks the horde" )
 
+		-- DESIGN section 2 entry check 2, missing from i2b as written: the caller
+		-- himself must be a marine, not merely some marine being present.
+		local _, CallerGate = Triggers.Check(
+			Snapshot({ CallerPlayer = {}, CallerTeamNumber = kTeam2Index }), Machine, Config, 10)
+		Assert.Equal( "CallerIsMarine", CallerGate, "a caller on the alien team cannot start a horde" )
+
+		local _, SpecGate = Triggers.Check(
+			Snapshot({ CallerPlayer = {}, CallerTeamNumber = kSpectatorIndex }), Machine, Config, 10)
+		Assert.Equal( "CallerIsMarine", SpecGate, "a spectator caller cannot start a horde either" )
+
 	end )
 
 	self:RegisterScenario( "gates_state_and_cooldown", false, function()
@@ -402,7 +412,7 @@ function Plugin:InitialiseScenarios()
 		local Config = { Start = { Cooldown = 60, MinPlayers = 1 } }
 		local Snap = {
 			GameState = kGameState.WarmUp, RealMarineCount = 3, RealAlienCount = 0,
-			PlayerCount = 4, MaxPlayers = 16,
+			PlayerCount = 4, MaxPlayers = 16, BotCount = 0,
 		}
 
 		return horde, Machine, Config, Snap
@@ -416,6 +426,7 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Line:find("wave=0") ~= nil, "wave field: " .. Line )
 		Assert.True( Line:find("marines=3") ~= nil, "human marine count is visible: " .. Line )
 		Assert.True( Line:find("players=4/16") ~= nil, "seeding occupancy is visible: " .. Line )
+		Assert.True( Line:find("bots=") ~= nil, "bot roster count is present: " .. Line )
 		Assert.True( Line:find("mouths=-/-") ~= nil, "unbuilt subsystems report as unknown, not zero: " .. Line )
 		Assert.True( Line:find("cooldown=none") ~= nil, "no cooldown before a horde has run: " .. Line )
 	end )
@@ -469,15 +480,17 @@ function Plugin:InitialiseScenarios()
 		horde.Machine = nil
 
 		local OkStop = pcall( function() horde:OnHordeStop(nil) end )
+		local StillUnarmed = horde.Machine == nil
 		local OkStatus = pcall( function() horde:OnHordeStatus(nil) end )
 		local OkStart = pcall( function() horde:OnHordeCommand(nil) end )
 
 		horde.Machine = Saved
 
 		Assert.True( OkStop, "sh_horde_stop does not throw while unarmed" )
+		Assert.True( StillUnarmed, "a refused command did not quietly create a machine" )
 		Assert.True( OkStatus, "sh_horde_status does not throw while unarmed" )
 		Assert.True( OkStart, "/horde does not throw while unarmed" )
-		Assert.NotNil( horde.Machine, "machine restored for the rest of the suite" )
+		Assert.True( horde.Machine == Saved, "machine restored for the rest of the suite" )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

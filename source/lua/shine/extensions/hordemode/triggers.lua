@@ -14,7 +14,8 @@ local Plugin = ...
 
 local Triggers = {}
 
-Triggers.Order = { "IsNotRunning", "CooldownOk", "InSeedingState", "NoRealAliens", "SeedMaxNotMet", "HasMarinePlayers" }
+Triggers.Order = { "IsNotRunning", "CooldownOk", "InSeedingState", "NoRealAliens", "SeedMaxNotMet",
+	"CallerIsMarine", "HasMarinePlayers" }
 
 --- 1. Our own state.
 function Triggers.IsNotRunning(Snapshot, Machine)
@@ -94,7 +95,22 @@ function Triggers.SeedMaxNotMet(Snapshot)
 	return true, nil
 end
 
---- 6. Solo-playable by design (Q14: min players 1), but zero humans means nobody
+--- 6. DESIGN section 2 entry check 2: the caller must be on the marine team.
+--- A nil caller means the server console / RCON, which is a legitimate admin path and
+--- must stay open - hordetest itself calls the handlers with no client at all.
+function Triggers.CallerIsMarine(Snapshot)
+	if Snapshot.CallerPlayer == nil then
+		return true, nil
+	end
+
+	if Snapshot.CallerTeamNumber ~= kTeam1Index then
+		return false, "you must be on the marine team"
+	end
+
+	return true, nil
+end
+
+--- 7. Solo-playable by design (Q14: min players 1), but zero humans means nobody
 ---    to defend, so a headless test server must reject.
 function Triggers.HasMarinePlayers(Snapshot, Machine, Config)
 	local Required = (Config.Start and Config.Start.MinPlayers) or 1
@@ -122,7 +138,7 @@ end
 
 -- Server-side only: reads the world into the shape the predicates expect. Kept out
 -- of Check so the gates stay pure.
-function Triggers.TakeSnapshot()
+function Triggers.TakeSnapshot(Client)
 	local gamerules = GetGamerules()
 
 	if not gamerules then
@@ -149,8 +165,13 @@ function Triggers.TakeSnapshot()
 		end
 	end
 
+	local Caller = Client and Client.GetControllingPlayer and Client:GetControllingPlayer() or nil
+
 	return {
 		GameState = gamerules:GetGameState(),
+		CallerPlayer = Caller,
+		CallerTeamNumber = Caller and Caller:GetTeamNumber(),
+		BotCount = gServerBots and #gServerBots or 0,
 		RealMarineCount = marineHumans,
 		RealAlienCount = alienHumans,
 		PlayerCount = Server.GetNumClientsTotal() - Server.GetNumSpectators(),

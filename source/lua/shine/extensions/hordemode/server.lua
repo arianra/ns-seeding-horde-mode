@@ -115,17 +115,30 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now)
 	local Remaining = Plugin.Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
 
 	return string.format(
-		"state=%s wave=%s cooldown=%s marines=%s aliens=%s players=%s/%s mouths=%s/%s",
+		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s players=%s/%s mouths=%s/%s",
 		Machine:GetState(),
 		Machine:GetWave(),
 		-- Units on the face of the value: a bare 50 could be seconds, percent or waves.
 		Remaining and string.format("%.0fs", Remaining) or "none",
 		tostring(Snapshot.RealMarineCount or 0),
 		tostring(Snapshot.RealAlienCount or 0),
+		-- gServerBots is the engine's own bot roster (BotTeamController.lua:39,75-78).
+		tostring(Snapshot.BotCount or 0),
 		tostring(Snapshot.PlayerCount or 0),
 		tostring(Snapshot.MaxPlayers or 0),
 		tostring(Machine.MouthsActive or "-"),
 		tostring(Machine.MouthsPool or "-"))
+end
+
+--- A command callback receives the *client*; the player is reached through
+--- Client:GetControllingPlayer() (Shine's own idiom, votesurrender/server.lua:296).
+--- Server.GetOwner goes the other way: player -> client.
+function Plugin:GetCommandPlayer(Client)
+	if not Client or not Client.GetControllingPlayer then
+		return nil
+	end
+
+	return Client:GetControllingPlayer()
 end
 
 --- All three command handlers are reachable the instant they are bound, and the
@@ -138,7 +151,7 @@ function Plugin:RequireMachine(Name, Client)
 
 	self:Log(Name .. " rejected: plugin is not armed yet")
 
-	local Player = Client and Client:GetControllingPlayer() or nil
+	local Player = self:GetCommandPlayer(Client)
 
 	if Player then
 		self:Notify(Player, "Horde is not ready yet (%s)", true, Name)
@@ -152,7 +165,7 @@ function Plugin:OnHordeStop(Client)
 		return
 	end
 
-	local Player = Client and Client:GetControllingPlayer() or nil
+	local Player = self:GetCommandPlayer(Client)
 	local Now = Shared.GetTime()
 
 	local Ok, Reason = self.Machine:Stop("admin sh_horde_stop", Now)
@@ -183,8 +196,8 @@ function Plugin:OnHordeStatus(Client)
 		return
 	end
 
-	local Player = Client and Client:GetControllingPlayer() or nil
-	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(), self.Machine,
+	local Player = self:GetCommandPlayer(Client)
+	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(Client), self.Machine,
 		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime())
 
 	self:Log("status " .. Line)
@@ -197,12 +210,9 @@ end
 --- /horde entry: gates, then start. Rejection reason goes to the caller's chat
 --- (Notify(Player, Message) - messaging.lua:201), never a silent no-op.
 function Plugin:OnHordeCommand(Client)
-	-- A command callback receives the *client*; the player is reached through
-	-- Client:GetControllingPlayer() (Shine's own idiom, votesurrender/server.lua:296).
-	-- Server.GetOwner goes the other way: player -> client.
-	local Player = Client and Client:GetControllingPlayer() or nil
+	local Player = self:GetCommandPlayer(Client)
 	local Now = Shared.GetTime()
-	local Snapshot = Plugin.Triggers.TakeSnapshot()
+	local Snapshot = Plugin.Triggers.TakeSnapshot(Client)
 
 	if not self:RequireMachine("sh_horde", Client) then
 		return
@@ -233,12 +243,6 @@ end
 
 function Plugin:Log(Message)
 	print(("%s %s"):format(self.LogPrefix, Message))
-end
-
---- Current effective config for this map, resolved once per read (deep merge is
---- cheap and this avoids stale copies after an admin edits the JSON).
-function Plugin:HordeConfigResolve()
-	return self.HordeConfig.Resolve(Shared.GetMapName())
 end
 
 function Plugin:Cleanup()
