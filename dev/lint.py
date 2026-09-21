@@ -80,14 +80,17 @@ def check_returns_module(path: Path, text: str) -> None:
 
 
 def check_file_scope_world_api(path: Path, source: str) -> None:
-    depth = 0
+    # Column 0 means the statement is not inside any block: this repo indents every
+    # function body, so an unindented world-API call is a load-time call — which runs
+    # before the world exists. Deliberately simpler than counting block keywords:
+    # `if … end` / `for … do … end` also close with `end`, and trying to pair them
+    # here produced a false positive on the very first real file.
     for number, raw in enumerate(source.splitlines(), start=1):
         code = LINE_COMMENT.sub("", raw)
-        opens = len(re.findall(r"\bfunction\b", code))
-        closes = len(re.findall(r"\bend\b", code))
-        if depth == 0 and code.strip() and WORLD_API.search(code):
+        if not code.strip() or code[0] in " \t":
+            continue
+        if WORLD_API.search(code):
             warnings.append(f"{rel(path)}:{number}: world API at file scope (runs before world init)")
-        depth = max(0, depth + opens - closes)
 
 
 def check_function_length(path: Path, source: str) -> None:

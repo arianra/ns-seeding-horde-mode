@@ -5,10 +5,13 @@
 	teardown on alien join / loss / seed max. See repo DESIGN.md + vault
 	Atlas/Projects/ns2-tower-defense.
 
-	This file is shared across server/client/predict VMs. Server logic lives
-	in server/*.lua; this defines the Plugin object + networked data table.
+	This file is shared across server/client/predict VMs. Server logic lives in
+	the flat sibling modules that server.lua loads (Shine resolves the entry as
+	extensions/hordemode/server.lua — NOT server/init.lua; i0b layout finding);
+	here we define the Plugin object plus anything both sides need.
 
-	Status: STUB (i0a). Real definition lands in i1a.
+	Networked state is only safe to declare at load time (SetupDataTable), never
+	by touching the world — see the Initialise warning in server.lua (spike zpw).
 ]]
 
 local Shine = Shine
@@ -17,11 +20,28 @@ local Plugin = Shine.Plugin( ... )
 Plugin.Version = "0.1"
 Plugin.PrintName = "Horde Mode"
 Plugin.NotifyPrefixColour = { 200, 60, 60 }
+Plugin.LogPrefix = "[HORDE]"
 
--- Networked state for HUD (populated in i9a). Placeholder schema.
+-- Phases the state machine moves through (i2a). Declared shared so the HUD (i9a)
+-- and any client-side readout agree on the vocabulary.
+Plugin.Phase =
+{
+	Inactive = "inactive",
+	Building = "building",
+	WaveActive = "wave-active",
+	Intermission = "intermission",
+	Teardown = "teardown",
+	Lost = "lost",
+}
+
+-- Networked state for the HUD (populated in i9a). Declared here because the
+-- data table must exist on both VMs before anything tries to read it.
 function Plugin:SetupDataTable()
-	-- self:AddDTVar( "integer", "WaveNumber", 0 )
-	-- self:AddDTVar( "integer", "IntermissionEndsAt", 0 )
+	self:AddDTVar( "integer", "HordePhase", 0 )
+	self:AddDTVar( "integer", "HordeWave", 0 )
+	self:AddDTVar( "integer", "HordeIntermissionEndsAt", 0 )
+	self:AddDTVar( "integer", "HordeMouthsActive", 0 )
+	self:AddDTVar( "integer", "HordeMouthsTotal", 0 )
 end
 
 return Plugin
