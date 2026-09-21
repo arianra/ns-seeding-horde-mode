@@ -72,16 +72,28 @@ function Registry:Register(ref, Kind)
 		return nil, "cannot register without a kind"
 	end
 
-	local Id
+	-- Distinguish "not an entity" from "an entity with no id yet" by whether the
+	-- call itself is possible: NS2 entities expose GetId through the class chain, and
+	-- ids can arrive as FFI numbers, so type(x)=="number" alone is not enough.
+	local Callable, IdValue = pcall(function() return ref:GetId() end)
 
-	if type(ref) == "table" and ref.GetId then
-		local Ok, Result = pcall(function() return ref:GetId() end)
-		Id = Ok and Result or nil
-	end
-
-	if Id == nil then
+	if not Callable then
+		-- A plain value we invented a key for (test double, non-entity bookkeeping).
 		Id = self.NextLocalId
 		self.NextLocalId = self.NextLocalId - 1
+	else
+		local Number = tonumber(IdValue)
+
+		if not Number or Number <= 0 then
+			-- Never invent an id for a real entity: a made-up negative key fed back to
+			-- Shared.GetEntity returns nil ("World::GetEntity(-3) but only 4094
+			-- entities"), which would let a liveness check report "destroyed" for
+			-- something that never had that id. That exact artifact produced a wrong
+			-- finding in this project before i3c re-measured it.
+			return nil, "entity has no usable id yet (registered in the same tick as creation?)"
+		end
+
+		Id = Number
 	end
 
 	local Existing = self.Entries[Id]
@@ -202,11 +214,14 @@ end
 
 --- Drop entries the resolver says are gone; returns how many were already vanished.
 --- Teardown needs this to tell "we destroyed it" from "something else destroyed it".
---- The resolver MUST be kind-aware. Verified live: a PlayerBot's entity id is gone while
---- its player is still alive (t+15: entity=false, player=true, alive=true), so a single
---- Shared.GetEntity(id) check would erase live bots from the books and i7a would then
---- "succeed" at teardown with a horde still connected. Bots are judged by their player;
---- entities and mouths by their id. See also Server.CreateEntity's two overloads: the
+--- The resolver MUST be kind-aware, and for the opposite reason to the one first
+--- recorded here: measured 2026-09-21 with genuine ids, after Bot:Disconnect() the
+--- player is gone while the PlayerBot entity id still resolves in the same tick. An
+--- entity-only check therefore leaves dead bots on the books forever. Judge bots by
+--- their player, mouths/entities by Shared.GetEntity(id).
+--- (An earlier version of this note claimed the reverse - entity id vanishing while the
+--- player lived. That was measured with registry-invented negative ids and is retracted;
+--- see Register's comment on why inventing ids is forbidden.) See also Server.CreateEntity's two overloads: the
 --- positional 3-arg create is the global CreateEntity (AlienTunnelManager.lua:191).
 function Registry:Prune(IsGone)
 	local Pruned = 0
