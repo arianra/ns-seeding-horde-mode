@@ -21,7 +21,8 @@ local SETTLE_SECONDS = 10
 Shine.LoadPluginFile( PluginName, "scenarios.lua", Plugin )
 
 function Plugin:Initialise()
-	self.State = { Ready = false, Settled = 0, Done = false, Pass = 0, Fail = 0, ExpectedFail = 0 }
+	self.State = { Ready = false, Settled = 0, Done = false, Waiting = false, Finished = false,
+		Pass = 0, Fail = 0, ExpectedFail = 0, Pending = {} }
 
 	self:CreateTimer( "HordeTestRunner", 1, -1, function()
 		self:Tick()
@@ -34,6 +35,11 @@ end
 
 function Plugin:Tick()
 	local State = self.State
+
+	if State.Waiting then
+		self:TickPending()
+		return
+	end
 
 	if State.Done or not GetGamerules() then
 		return
@@ -81,23 +87,73 @@ function Plugin:RunScenarios()
 	for Index = 1, #self.Scenarios do
 		local Scenario = self.Scenarios[Index]
 		local Ok, Err = pcall( Scenario.Func )
-		local Detail
-
-		if not Ok then
-			if type( Err ) == "table" then
-				Detail = tostring( Err.Detail or Err.message or "assertion failed" )
-			else
-				Detail = tostring( Err )
-			end
-		end
-
-		self:Report( Scenario.Name, not Ok, Detail, Scenario.Expected )
+		self:Report( Scenario.Name, not Ok, self:DetailOf( Err ), Scenario.Expected )
 	end
+
+	-- A scenario may defer checks (bot behaviour takes frames). Adopt whatever it
+	-- queued, then only report ALL-DONE once every deferred item has landed —
+	-- otherwise test.sh reads an incomplete run as a passing one.
+	for Index = 1, #self.Deferred do
+		State.Pending[#State.Pending + 1] = self.Deferred[Index]
+	end
+
+	self.Deferred = {}
+
+	if #State.Pending == 0 then
+		self:Finish()
+		return
+	end
+
+	print( string.format( "[TEST] %s deferred check(s) pending", #State.Pending ) )
+	State.Waiting = true
+end
+
+function Plugin:DetailOf( Err )
+	if type( Err ) == "table" then
+		return tostring( Err.Detail or Err.message or "assertion failed" )
+	end
+
+	return tostring( Err )
+end
+
+function Plugin:TickPending()
+	local State = self.State
+	local now = Shared.GetTime()
+	local remaining = 0
+
+	for Index = #State.Pending, 1, -1 do
+		local Item = State.Pending[Index]
+
+		if now >= Item.At then
+			table.remove( State.Pending, Index )
+			local Ok, Err = pcall( Item.Func )
+			self:Report( Item.Name, not Ok, self:DetailOf( Err ), Item.Expected )
+		else
+			remaining = remaining + 1
+		end
+	end
+
+	if remaining == 0 then
+		self:Finish()
+	end
+end
+
+function Plugin:Finish()
+	local State = self.State
+
+	if State.Finished then
+		return
+	end
+
+	State.Finished = true
+	State.Waiting = false
 
 	print( string.format( "[TEST] ALL-DONE pass=%s fail=%s expected_fail=%s",
 		State.Pass, State.Fail, State.ExpectedFail ) )
 
-	self:DestroyTimer( "HordeTestRunner" )
+	if self:TimerExists( "HordeTestRunner" ) then
+		self:DestroyTimer( "HordeTestRunner" )
+	end
 end
 
 return Plugin

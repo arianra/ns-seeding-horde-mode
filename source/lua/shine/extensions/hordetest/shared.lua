@@ -17,6 +17,7 @@ Plugin.Version = "0.1"
 Plugin.PrintName = "Horde Test Harness"
 
 Plugin.Scenarios = {}
+Plugin.Deferred = {}
 
 --[[
   Name     scenario label printed to the log
@@ -25,6 +26,21 @@ Plugin.Scenarios = {}
 ]]
 function Plugin:RegisterScenario( Name, Expected, Func )
 	table.insert( self.Scenarios, { Name = Name, Expected = Expected, Func = Func } )
+end
+
+--[[
+  Schedule a check for `Seconds` from now. Deferred checks exist because bot behaviour
+  resolves over frames; without them the only honest bot test is one that asserts
+  nothing. The runner holds ALL-DONE until every deferred item lands, so a deferred
+  check can never be silently skipped. Keep the delay well under test.sh's timeout.
+]]
+function Plugin:Defer( Name, Seconds, Expected, Func )
+	table.insert( self.Deferred, {
+		Name = Name,
+		Expected = Expected,
+		Func = Func,
+		At = Shared.GetTime() + Seconds,
+	} )
 end
 
 local function fail( Detail )
