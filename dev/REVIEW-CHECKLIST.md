@@ -62,6 +62,24 @@ not that the behaviour is right.
       the test.
 
 ## Dev environment
+- **Never point a dev-only extension at the live server config.** `dev/deploy.sh` used to set
+  `ActiveExtensions.hordetest = true` in `D:\games\ns2srv\cfg`, the config an ordinary boot reads.
+  Result: every live server ran the scenario suite (spawning bots, capping the bot controller,
+  logging a bot into the commander chair, destroying entities) and the server kept crashing.
+  Now: deploy targets `D:\games\ns2hordetest\cfg` only, forces the live config off if it finds
+  those flags on, and `hordetest` additionally requires `HordeTest.json RunSuite=true` — being
+  *enabled* is not authorisation to run.
+- **Process control is by PID, never by name.** `Stop-Process -Name Server -Force` killed every
+  `Server.exe` on the box, including any real one. `dev/.server.pid` is written at launch and
+  only that PID is stopped; a missing pid file means "nothing to stop", and other Server
+  processes are reported, never touched.
+- **Destruction is not observable in the calling tick, and not consistently.** Measured across
+  runs of one scenario: `Kill()` cleared 0 of 2 entity ids, then 2 of 2. `Disconnect()` leaves
+  both the player and the entity id resolvable in the same tick. Confirm on a later poll.
+- **An entity's id is not available in its creation tick.** `GetId()` returns nothing until a
+  tick has passed, which is why `Registry:Register` refuses such refs instead of inventing a
+  key — and why i5a's spawner must register on the following tick, not immediately.
+
 
 - [ ] `-config_path` is hyphen-free (`D:\games\ns2hordetest\cfg`); the arg parser breaks on hyphens.
 - [ ] `tags` in `ServerConfig.json` stays an array — a string crashes `ConfigFileUtility.lua:53`
