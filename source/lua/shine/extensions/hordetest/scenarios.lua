@@ -35,7 +35,8 @@ function Plugin:InitialiseScenarios()
 		Assert.True( horde.Enabled, "hordemode enabled" )
 		Assert.Equal( true, horde.HordeArmed, "world-ready gate armed the plugin" )
 		Assert.Equal( horde.Phase.Inactive, horde.HordePhase, "starts in the inactive phase" )
-		Assert.NotNil( horde.Phase.WaveActive, "phase vocabulary is shared, not server-only" )
+		Assert.NotNil( horde.Phase.Wave, "phase vocabulary is shared, not server-only" )
+		Assert.Nil( horde.Phase.Building, "no state outside the DESIGN section 2 set" )
 	end )
 
 	-- The gate retires its own poll on arming; a lingering timer means world-ready
@@ -234,6 +235,86 @@ function Plugin:InitialiseScenarios()
 		Assert.NotNil( Loaded.Waves.Composition.Bezier, "bezier control points survived" )
 		Assert.Equal( 4, #Loaded.Waves.Composition.Bezier, "all four control points survived" )
 		Assert.NotNil( Config.Resolve( "ns2_summit" ).Waves, "map resolution works on the loaded table" )
+	end )
+
+	-- i2a: the state machine is pure, so every transition - legal and illegal -
+	-- is checkable in a single tick with a fake clock.
+	self:RegisterScenario( "statemachine_happy_path", false, function()
+		local SM = Shine.Plugins.hordemode.StateMachine
+		local Machine = SM.New(0, function() end)
+
+		Assert.Equal( "inactive", Machine:GetState(), "begins idle" )
+		Assert.True( Machine:Start(1), "/horde from idle starts wave 1" )
+		Assert.Equal( "wave", Machine:GetState(), "entered wave" )
+		Assert.Equal( 1, Machine:GetWave(), "no intermission before wave 1" )
+		Assert.True( Machine:IsActive(), "wave counts as active" )
+
+		Assert.True( Machine:EndWave(10), "wave clear -> intermission" )
+		Assert.Equal( "intermission", Machine:GetState(), "build phase entered" )
+		Assert.True( Machine:BeginWave(70), "timer elapsed -> next wave" )
+		Assert.Equal( 2, Machine:GetWave(), "wave counter advances on entry, not on start" )
+
+		Assert.True( Machine:Stop("all marines dead", 80), "loss reaches teardown from wave" )
+		Assert.Equal( "teardown", Machine:GetState(), "tearing down" )
+		Assert.Equal( "all marines dead", Machine.TeardownReason, "trigger reason is kept for messaging" )
+		Assert.False( Machine:IsActive(), "teardown is not active" )
+
+		Assert.True( Machine:CompleteTeardown(81), "teardown finishes back to idle" )
+		Assert.Equal( "inactive", Machine:GetState(), "idle again" )
+		Assert.Equal( 4, Machine:TimeSinceEnd(85), "post-teardown cooldown clock starts here" )
+	end )
+
+	self:RegisterScenario( "statemachine_guards", false, function()
+		local SM = Shine.Plugins.hordemode.StateMachine
+		local Machine = SM.New(0, function() end)
+		local Logs = {}
+		Machine.Log = function(Message) Logs[#Logs + 1] = Message end
+
+		Assert.False( Machine:EndWave(2), "cannot end a wave that never started" )
+		Assert.False( Machine:BeginWave(3), "cannot begin a wave from idle" )
+		Assert.False( Machine:CompleteTeardown(4), "nothing to complete from idle" )
+		Assert.True( Machine:Start(5), "start still available after rejected transitions" )
+		Assert.False( Machine:Start(6), "double start rejected" )
+		Assert.Equal( "wave", Machine:GetState(), "rejection did not move state" )
+		Assert.False( Machine:Transition("nonsense", 7) )
+		Assert.False( Machine:Transition("wave", 8), "self-transition rejected" )
+		Assert.Equal( 1, Machine:GetWave(), "rejected second start did not bump the wave counter" )
+	end )
+
+	self:RegisterScenario( "statemachine_teardown_is_idempotent", false, function()
+		local SM = Shine.Plugins.hordemode.StateMachine
+		local Machine = SM.New(0, function() end)
+		Machine:Start(1)
+
+		Assert.True( Machine:Stop("admin", 2), "first stop enters teardown" )
+		local Reached = 0
+		Machine:OnEnter("teardown", function() Reached = Reached + 1 end)
+		Machine:Stop("admin again", 3)
+
+		Assert.Equal( 0, Reached, "re-entering teardown does not fire its destroy pass again" )
+		Assert.Equal( "teardown", Machine:GetState(), "still tearing down, once" )
+
+		-- A rejected Stop must not leave its reason behind for a later teardown to claim.
+		local Idle = SM.New(0, function() end)
+		Assert.False( Idle:Stop("ghost", 1), "cannot stop what never started" )
+		Assert.True( Idle:Start(2), "start still works after a rejected stop" )
+		Assert.True( Idle:Stop("real", 3), "stop from wave" )
+		Assert.Equal( "real", Idle.TeardownReason, "teardown reports the reason that actually triggered it" )
+	end )
+
+	self:RegisterScenario( "statemachine_hook_failure_is_contained", false, function()
+		local SM = Shine.Plugins.hordemode.StateMachine
+		local Machine = SM.New(0, function() end)
+		local Reached = 0
+
+		local Added, AddErr = Machine:OnEnter("wave", function() error("hook blew up") end)
+		Assert.True( Added, "hook registration succeeds" )
+		Assert.False( Machine:OnEnter("nowhere", function() end), "unknown state rejected for hooks" )
+		Machine:OnEnter("wave", function() Reached = Reached + 1 end)
+
+		Assert.True( Machine:Start(1), "transition proceeds despite a throwing hook" )
+		Assert.Equal( "wave", Machine:GetState(), "state is not left mid-transition" )
+		Assert.Equal( 1, Reached, "later hooks still run after a failing one" )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

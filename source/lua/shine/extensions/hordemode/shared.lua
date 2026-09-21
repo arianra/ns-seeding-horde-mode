@@ -24,14 +24,16 @@ Plugin.LogPrefix = "[HORDE]"
 
 -- Phases the state machine moves through (i2a). Declared shared so the HUD (i9a)
 -- and any client-side readout agree on the vocabulary.
+-- DESIGN.md section 2 states exactly these four. Loss and admin-stop are not
+-- states: they are triggers that transition straight into Teardown, and the
+-- build phase is Intermission itself, so inventing a fifth state would let the
+-- two drift apart.
 Plugin.Phase =
 {
 	Inactive = "inactive",
-	Building = "building",
-	WaveActive = "wave-active",
+	Wave = "wave",
 	Intermission = "intermission",
 	Teardown = "teardown",
-	Lost = "lost",
 }
 
 -- Networked state for the HUD (populated in i9a). Declared here because the

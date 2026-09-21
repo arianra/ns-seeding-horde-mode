@@ -69,6 +69,12 @@ function Assert.False( Value, What )
 	end
 end
 
+function Assert.Nil( Value, What )
+	if Value ~= nil then
+		fail( ( What or "value" ) .. " expected nil, got " .. tostring( Value ) )
+	end
+end
+
 function Assert.NotNil( Value, What )
 	if Value == nil then
 		fail( ( What or "value" ) .. " is nil" )
