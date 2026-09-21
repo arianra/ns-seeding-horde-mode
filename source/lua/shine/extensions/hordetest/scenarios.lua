@@ -460,6 +460,26 @@ function Plugin:InitialiseScenarios()
 		Assert.NotNil( horde.Machine, "a live machine exists after world-ready" )
 	end )
 
+	-- Commands exist the moment they are bound, so every handler must survive being
+	-- called before the world is ready. Nil client is the headless case.
+	self:RegisterScenario( "commands_survive_pre_arm", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Saved = horde.Machine
+
+		horde.Machine = nil
+
+		local OkStop = pcall( function() horde:OnHordeStop(nil) end )
+		local OkStatus = pcall( function() horde:OnHordeStatus(nil) end )
+		local OkStart = pcall( function() horde:OnHordeCommand(nil) end )
+
+		horde.Machine = Saved
+
+		Assert.True( OkStop, "sh_horde_stop does not throw while unarmed" )
+		Assert.True( OkStatus, "sh_horde_status does not throw while unarmed" )
+		Assert.True( OkStart, "/horde does not throw while unarmed" )
+		Assert.NotNil( horde.Machine, "machine restored for the rest of the suite" )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )

@@ -128,7 +128,30 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now)
 		tostring(Machine.MouthsPool or "-"))
 end
 
+--- All three command handlers are reachable the instant they are bound, and the
+--- machine only exists once the world does. One guard, so the handlers cannot drift
+--- apart the way they did between i2b and i2c.
+function Plugin:RequireMachine(Name, Client)
+	if self.Machine then
+		return true
+	end
+
+	self:Log(Name .. " rejected: plugin is not armed yet")
+
+	local Player = Client and Client:GetControllingPlayer() or nil
+
+	if Player then
+		self:Notify(Player, "Horde is not ready yet (%s)", true, Name)
+	end
+
+	return false
+end
+
 function Plugin:OnHordeStop(Client)
+	if not self:RequireMachine("sh_horde_stop", Client) then
+		return
+	end
+
 	local Player = Client and Client:GetControllingPlayer() or nil
 	local Now = Shared.GetTime()
 
@@ -156,6 +179,10 @@ function Plugin:OnHordeStop(Client)
 end
 
 function Plugin:OnHordeStatus(Client)
+	if not self:RequireMachine("sh_horde_status", Client) then
+		return
+	end
+
 	local Player = Client and Client:GetControllingPlayer() or nil
 	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(), self.Machine,
 		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime())
@@ -177,8 +204,7 @@ function Plugin:OnHordeCommand(Client)
 	local Now = Shared.GetTime()
 	local Snapshot = Plugin.Triggers.TakeSnapshot()
 
-	if not self.Machine then
-		self:Log("rejected /horde: not armed yet")
+	if not self:RequireMachine("sh_horde", Client) then
 		return
 	end
 
