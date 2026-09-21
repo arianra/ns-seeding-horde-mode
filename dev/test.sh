@@ -5,7 +5,11 @@
 # extensions, boots the dedicated server, waits for the hordetest suite to report
 # '[TEST] ALL-DONE', prints the summary, and exits nonzero when anything failed.
 #
-# Usage: ./dev/test.sh [map] [timeout_seconds]
+# Usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config]
+# Unknown options are fatal. A previous version of this parser swallowed any
+# unrecognised token into MAP and any bare number into TIMEOUT, so
+# './dev/test.sh --iters 1' booted a map called '--iters' with a 1-second
+# budget. There is no --iters/--runs: the suite has no repetition knob.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,23 +19,31 @@ CFG_WIN='D:\games\ns2hordetest\cfg'      # hyphen-free: -config_path breaks on h
 CFG_WSL="/mnt/d/games/ns2hordetest/cfg"
 LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
 MAP="ns2_summit"
-TIMEOUT=300
+TIMEOUT=0
 BAD_CONFIG=0
-TIMEOUT_SET=0
-MAP_SET=0
 
-for Arg in "$@"; do
-  case "$Arg" in
-    --bad-config) BAD_CONFIG=1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bad-config) BAD_CONFIG=1; shift ;;
+    --map)
+      [[ $# -ge 2 ]] || { echo "[test] --map needs a value" >&2; exit 2; }
+      MAP="$2"; shift 2 ;;
+    -*)
+      echo "[test] unknown option: $1" >&2
+      echo "[test] usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config]" >&2
+      exit 2 ;;
     *)
-      if [[ "$TIMEOUT_SET" != "1" && "$Arg" =~ ^[0-9]+$ ]]; then
-        TIMEOUT="$Arg"; TIMEOUT_SET=1
-      elif [[ -z "${MAP_SET:-}" ]]; then
-        MAP="$Arg"; MAP_SET=1
+      if [[ "$TIMEOUT" == "0" && "$1" =~ ^[0-9]+$ ]]; then
+        TIMEOUT="$1"
+      elif [[ "$MAP" == "ns2_summit" ]]; then
+        MAP="$1"
+      else
+        echo "[test] unexpected argument: $1 (map already $MAP)" >&2; exit 2
       fi
-      ;;
+      shift ;;
   esac
 done
+[[ "$TIMEOUT" == "0" ]] && TIMEOUT=300
 
 bail() { echo "[test] FAIL: $*" >&2; exit 2; }
 
@@ -88,12 +100,18 @@ echo "[test] 5/7 starting server (map=$MAP cfg=$CFG_WIN)"
 START_RC=${PIPESTATUS[0]}
 [[ $START_RC -eq 0 ]] || bail "server never reached READY (see log above)"
 
+# Fence AFTER the boot: NS2 recreates log-Server.txt when the server starts, so an
+# offset sampled before launch would point past the end of the new file and hide the
+# whole run. Un-fenced instead, a previous run's ALL-DONE would satisfy this one.
+LOG_OFFSET=$(stat -c %s "$LOG_WSL" 2>/dev/null || echo 0)
+echo "[test]   log fenced at byte $LOG_OFFSET (post-boot)"
+
 echo "[test] 6/7 waiting up to ${TIMEOUT}s for [TEST] ALL-DONE"
 elapsed=0
 ALDONE=""
 while [[ $elapsed -lt $TIMEOUT ]]; do
   if [[ -f "$LOG_WSL" ]]; then
-    ALDONE=$(grep -a "\[TEST\] ALL-DONE" "$LOG_WSL" | tail -1 || true)
+    ALDONE=$(tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" 2>/dev/null | grep -a "\[TEST\] ALL-DONE" | tail -1 || true)
     [[ -n "$ALDONE" ]] && break
   fi
   sleep 5
@@ -105,10 +123,10 @@ echo "[test] 7/7 stopping server"
 
 if [[ -z "$ALDONE" ]]; then
   echo "[test] FAIL — no '[TEST] ALL-DONE' after ${TIMEOUT}s" >&2
-  echo "[test] last scenario lines:" >&2
-  [[ -f "$LOG_WSL" ]] && grep -a "\[TEST\]" "$LOG_WSL" | tail -10 >&2
+  echo "[test] last scenario lines (this run only):" >&2
+  [[ -f "$LOG_WSL" ]] && tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" | grep -a "\[TEST\]" | tail -10 >&2
   echo "[test] engine/shine errors (diagnostics only; the exit code follows the suite):" >&2
-  [[ -f "$LOG_WSL" ]] && grep -aiE "script error|lua error|attempt to |error:" "$LOG_WSL" | tail -10 >&2
+  [[ -f "$LOG_WSL" ]] && tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" | grep -aiE "script error|lua error|attempt to |error:" | tail -10 >&2
   exit 1
 fi
 
