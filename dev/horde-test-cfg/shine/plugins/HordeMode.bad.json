@@ -1,0 +1,47 @@
+{
+    "__Version" : "0.1",
+    "Start" : {
+        "Cooldown" : -5,
+        "MinPlayers" : 9001
+    },
+    "Intermission" : {
+        "Seconds" : 99999,
+        "SkipCost" : "free"
+    },
+    "Waves" : {
+        "PoolSize" : 99,
+        "ActivePerWave" : 0,
+        "BandMin" : 300,
+        "BandMax" : 5,
+        "Composition" : "not a curve",
+        "Health" : {
+            "Enabled" : true,
+            "Start" : 1,
+            "End" : 3,
+            "Bezier" : {
+                "1" : 5,
+                "2" : -1,
+                "3" : 0.5,
+                "4" : 0
+            }
+        }
+    },
+    "Economy" : {
+        "WaveClearPayout" : -10,
+        "PayoutPerPlayer" : 7,
+        "StartingResources" : 1000
+    },
+    "Difficulty" : {
+        "Accuracy" : null,
+        "Aggro" : {
+            "Enabled" : true,
+            "Start" : 0.1,
+            "End" : 0.9
+        }
+    },
+    "Teardown" : {
+        "AssertRegistryEmpty" : true,
+        "LogEntityDelta" : true
+    },
+    "Maps" : {}
+}

@@ -22,6 +22,14 @@ local Shine = Shine
 local Plugin = ...
 local PluginName = Plugin:GetName()
 
+-- Shine only calls LoadConfig for extensions that opt in (extensions.lua:656 checks
+-- Plugin.HasConfig), and LoadConfig concatenates ConfigName immediately - without both,
+-- DefaultConfig never reaches disk and PreValidateConfig never runs on a real load.
+-- Omitting ConfigName is not a silent miss: base_plugin/config.lua:32 throws and the
+-- whole extension fails to enable, which hordemode_armed caught the first run.
+Plugin.HasConfig = true
+Plugin.ConfigName = "HordeMode.json"
+
 -- How often the world-ready gate polls for gamerules.
 local WORLD_POLL_SECONDS = 1
 

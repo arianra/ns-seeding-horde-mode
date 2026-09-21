@@ -14,8 +14,24 @@ SRC_CFG_WSL="/mnt/d/games/ns2srv/cfg"
 CFG_WIN='D:\games\ns2hordetest\cfg'      # hyphen-free: -config_path breaks on hyphens
 CFG_WSL="/mnt/d/games/ns2hordetest/cfg"
 LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
-MAP="${1:-ns2_summit}"
-TIMEOUT="${2:-300}"
+MAP="ns2_summit"
+TIMEOUT=300
+BAD_CONFIG=0
+TIMEOUT_SET=0
+MAP_SET=0
+
+for Arg in "$@"; do
+  case "$Arg" in
+    --bad-config) BAD_CONFIG=1 ;;
+    *)
+      if [[ "$TIMEOUT_SET" != "1" && "$Arg" =~ ^[0-9]+$ ]]; then
+        TIMEOUT="$Arg"; TIMEOUT_SET=1
+      elif [[ -z "${MAP_SET:-}" ]]; then
+        MAP="$Arg"; MAP_SET=1
+      fi
+      ;;
+  esac
+done
 
 bail() { echo "[test] FAIL: $*" >&2; exit 2; }
 
@@ -38,6 +54,14 @@ cp -r "$SRC_CFG_WSL/." "$CFG_WSL/"      || bail "config copy failed"
 cp -f "$REPO/dev/horde-test-cfg/ServerConfig.json" "$CFG_WSL/ServerConfig.json" || bail "overlay ServerConfig"
 cp -f "$REPO/dev/horde-test-cfg/MapCycle.json"     "$CFG_WSL/MapCycle.json"     || bail "overlay MapCycle"
 cp -f "$REPO/dev/horde-test-cfg/shine/BaseConfig.json" "$CFG_WSL/shine/BaseConfig.json" || bail "overlay BaseConfig"
+
+if [[ $BAD_CONFIG -eq 1 ]]; then
+  # Real load-path test: Shine reads this file, our Sanitize must repair it, and
+  # Shine must warn that the config "required changes to be valid".
+  mkdir -p "$CFG_WSL/shine/plugins"
+  cp -f "$REPO/dev/horde-test-cfg/shine/plugins/HordeMode.bad.json" "$CFG_WSL/shine/plugins/HordeMode.json"
+  echo "[test]   bad-config mode: planted HordeMode.bad.json as HordeMode.json"
+fi
 
 python3 - "$CFG_WSL" <<'PY' || bail "test config invalid"
 import json, pathlib, sys
@@ -102,5 +126,50 @@ if [[ "$FAILN" -gt 0 ]]; then
   echo "[test] FAIL — $FAILN scenario(s) failed, $PASS passed, ${EXPECTED:-0} expected" >&2
   exit 1
 fi
+if [[ $BAD_CONFIG -eq 1 ]]; then
+  echo "[test] bad-config checks:"
+  # Not a log assertion: Shine reports config-validation fixes as a client-facing
+  # SystemNotification (base_plugin/config.lua:296-309), which is invisible when no
+  # player is connected. The durable evidence is the file it wrote back.
+  if grep -aq "hordemode config file" "$LOG_WSL"; then
+    echo "[test]   Shine rewrote the plugin config"
+  else
+    echo "[test] FAIL - plugin config was never written back" >&2
+    exit 1
+  fi
+  REPAIRED=$(python3 - "$CFG_WSL/shine/plugins/HordeMode.json" <<'PY'
+import json, sys
+
+c = json.load(open(sys.argv[1]))
+w, s, e, d, i = c["Waves"], c["Start"], c["Economy"], c["Difficulty"], c["Intermission"]
+# Exact expected results, not ranges: each value was planted broken in
+# HordeMode.bad.json, so an exact match proves the sanitiser ran and repaired it
+# rather than the file merely being valid.
+checks = {
+    "cooldown -5 -> 0": s["Cooldown"] == 0,
+    "minplayers 9001 -> 16": s["MinPlayers"] == 16,
+    "seconds 99999 -> 600": i["Seconds"] == 600,
+    "skipcost 'free' -> 0": i["SkipCost"] == 0,
+    "band 300/5 swapped": (w["BandMin"], w["BandMax"]) == (40, 300),
+    "pool 99 -> 12": w["PoolSize"] == 12,
+    "active 0 -> 1": w["ActivePerWave"] == 1,
+    "payout -10 -> 0": e["WaveClearPayout"] == 0,
+    "comp string -> curve": isinstance(w["Composition"], dict) and w["Composition"]["Start"] == 1,
+    "accuracy null -> curve": isinstance(d["Accuracy"], dict) and len(d["Accuracy"]["Bezier"]) == 4,
+    "aggro bezier filled": len(d["Aggro"].get("Bezier", [])) == 4,
+    "health x clamped": w["Health"]["Bezier"][0] <= 1 and w["Health"]["Bezier"][2] <= 1,
+}
+bad = sorted(k for k, ok in checks.items() if not ok)
+shown = f"cooldown={s['Cooldown']} minplayers={s['MinPlayers']} band={w['BandMin']}..{w['BandMax']} pool={w['PoolSize']} active={w['ActivePerWave']}"
+print(("OK " + shown) if not bad else ("BAD " + shown + " | failed: " + ", ".join(bad)))
+PY
+)
+  echo "[test]   repaired on disk: $REPAIRED"
+  case "$REPAIRED" in
+    OK\ *) echo "[test]   every value is inside its declared range" ;;
+    *) echo "[test] FAIL - config on disk is still invalid: $REPAIRED" >&2; exit 1 ;;
+  esac
+fi
+
 echo "[test] OK — $PASS passed, 0 failed, ${EXPECTED:-0} expected (negative controls)"
 exit 0

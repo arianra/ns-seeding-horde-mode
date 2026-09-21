@@ -8,6 +8,9 @@
      table (core/shared/base_plugin/config.lua:43), so this module attaches as
      Plugin.HordeConfig and reads Plugin.Config as data.
 
+     Requires Plugin.HasConfig (set in server.lua): Shine skips LoadConfig entirely without
+     it, so neither the JSON nor PreValidateConfig would ever run.
+
      Uses only verified Shine surface: DefaultConfig plus the PreValidateConfig hook
      (:292), which may mutate the loaded table and returns "I changed something" —
      that return is also what raises Shine's admin warning (:296-309). A bad value

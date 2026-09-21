@@ -217,6 +217,25 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 1, Config.WaveProgress(500, 30), "past the reference wave clamps" )
 	end )
 
+	-- i1c: what Shine actually put in Plugin.Config after the real load path -
+	-- JSON round trip, PreValidateConfig, and the file on disk.
+	self:RegisterScenario( "config_loaded_is_valid", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Loaded = horde.Config
+		local Config = horde.HordeConfig
+
+		Assert.NotNil( Config, "config module attached" )
+		Assert.Equal( "HordeMode.json", horde.ConfigName, "config file name is declared" )
+		Assert.Equal( true, horde.HasConfig, "plugin opts into config loading" )
+		Assert.NotNil( Loaded, "Shine supplied a loaded config table" )
+		Assert.True( Loaded.Waves.BandMin >= 40, "loaded band floor is reachable on vanilla maps" )
+		Assert.True( Loaded.Waves.BandMin < Loaded.Waves.BandMax, "loaded band is ordered" )
+		Assert.Equal( "table", type( Loaded.Waves.Composition ), "curve survived the JSON round trip" )
+		Assert.NotNil( Loaded.Waves.Composition.Bezier, "bezier control points survived" )
+		Assert.Equal( 4, #Loaded.Waves.Composition.Bezier, "all four control points survived" )
+		Assert.NotNil( Config.Resolve( "ns2_summit" ).Waves, "map resolution works on the loaded table" )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )
