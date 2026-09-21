@@ -42,26 +42,42 @@ Current graph:
   `/mnt/d/projects/ns2-td/research/`; ded server fetches workshop mods on demand.
 - Workshop dir (151 items): `steamapps/workshop/content/4920/`
 
-## Layout (i0a, canonical — repo source/ is truth; dev/deploy.sh syncs to server)
+## Layout (i0b, canonical — repo source/ is truth; dev/deploy.sh syncs to server)
+Shine resolves the server entry as `extensions/<name>/server.lua`, NOT `server/init.lua`
+(extensions.lua:257) — multi-file extensions are FLAT and load siblings via
+`Shine.LoadPluginFile`. The i0a scaffold used a `server/` subdir; i0b flattened it.
 ```
 source/lua/shine/extensions/hordemode/
   shared.lua         -- Plugin def, data table, constants
-  server/
-    init.lua         -- lifecycle, world-ready gate, commands, orchestration
-    config.lua       -- DefaultConfig, validators, Maps deep-merge, migrations
-    statemachine.lua -- Inactive/Wave/Intermission/Teardown
-    registry.lua     -- HordeRegistry: everything we spawn (teardown truth)
-    takeover.lua     -- BotTeamController lock/snapshot/restore
-    placement.lua    -- procedural tunnel-mouth selection (pure fns)
-    spawner.lua      -- mouths (TunnelEntrance) + bots (PlayerBot recipe)
-    waves.lua        -- composition, clear detection, intermission
-    triggers.lua     -- /horde gates + loss predicates
-    economy.lua      -- v0 wave-clear payout
-    hud.lua          -- ScreenText (server-driven)
+  server.lua         -- ENTRY: lifecycle, world-ready gate, commands, orchestration
+  config.lua         -- DefaultConfig, validators, Maps deep-merge, migrations
+  statemachine.lua   -- Inactive/Wave/Intermission/Teardown
+  registry.lua       -- HordeRegistry: everything we spawn (teardown truth)
+  takeover.lua       -- BotTeamController lock/snapshot/restore
+  placement.lua      -- procedural tunnel-mouth selection (pure fns)
+  spawner.lua        -- mouths (TunnelEntrance) + bots (PlayerBot recipe)
+  waves.lua          -- composition, clear detection, intermission
+  triggers.lua       -- /horde gates + loss predicates
+  economy.lua        -- v0 wave-clear payout + payout curve
+  hud.lua            -- ScreenText (server-driven)
 source/lua/shine/extensions/hordetest/   -- headless scenario harness (dev cfg only)
 dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-cfg/
 ```
 Deploy target (dev): `C:\Users\aria\AppData\Roaming\Natural Selection 2\workshop\content\4920\117887554\lua\shine\extensions\`
+
+## Running tests (i0c)
+`./dev/test.sh [map] [timeout]` — headless integration loop:
+stops any stale server → materialises the test config → `deploy.sh` → boots and waits for
+Shine extensions → polls the log for `[TEST] ALL-DONE` (default 300s) → stops the server →
+prints the scenario lines → **exit 0** only when the suite reported with `fail=0`.
+
+The runtime config is built at `D:\games\ns2hordetest\cfg` (hyphen-free: `-config_path` breaks on
+hyphens) by copying the live `D:\games\ns2srv\cfg` and overlaying `dev/horde-test-cfg/`. **Never**
+point `-config_path` at the repo copy: the live config carries `ProgressionConfig.json` access and
+refresh tokens, and this repo is public. See `dev/horde-test-cfg/README.md`.
+
+Current suite is empty by design (scenarios land in i0d); `hordetest/server.lua` reports the
+empty-suite signal so the runner itself is verifiable now.
 
 ## Implementation tracking
 Phase 1 plan: vault `plans/impl-phase1-vertical-slice.md` (validated).
