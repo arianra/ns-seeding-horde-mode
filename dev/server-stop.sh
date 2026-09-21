@@ -21,8 +21,28 @@ if [[ -z "$PID" ]]; then
 fi
 
 echo "[stop] stopping our server pid=$PID"
-powershell.exe -Command "Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-sleep 3
+
+# Ask it to close, do NOT -Force. Measured: Stop-Process -Force on every dev cycle
+# made NS2's crash handler write a dump per kill - 21 "server" entries in
+# dumps/dumplog.txt in one afternoon, which is what looked like a crash loop.
+# A plain Stop-Process lets the server shut down itself: same exit, zero dumps,
+# and the shutdown hooks actually run.
+powershell.exe -Command "Stop-Process -Id $PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+
+WAITED=0
+while [[ $WAITED -lt 20 ]]; do
+  sleep 2
+  WAITED=$((WAITED + 2))
+  ALIVE=$(powershell.exe -Command "(Get-Process -Id $PID -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')
+  [[ "$ALIVE" == "0" || -z "$ALIVE" ]] && break
+done
+
+if [[ "$ALIVE" != "0" && -n "$ALIVE" ]]; then
+  echo "[stop] WARN - graceful close ignored after ${WAITED}s; forcing (this WILL write a crash dump)" >&2
+  powershell.exe -Command "Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  sleep 3
+fi
+
 rm -f "$PIDFILE"
 
 ALIVE=$(powershell.exe -Command "(Get-Process -Id $PID -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')

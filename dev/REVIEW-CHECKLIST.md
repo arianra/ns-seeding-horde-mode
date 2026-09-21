@@ -73,6 +73,20 @@ not that the behaviour is right.
   `Server.exe` on the box, including any real one. `dev/.server.pid` is written at launch and
   only that PID is stopped; a missing pid file means "nothing to stop", and other Server
   processes are reported, never touched.
+- **`dumps/dumplog.txt` is written asynchronously, ~7s after the dump job, so measure it
+  after a delay.** Measuring immediately after a stop made two "no dump" results look real
+  when the entries appeared seconds later, and I briefly concluded the scenario suite caused
+  a shutdown crash. Re-measured with the lag respected: an isolated live-config boot + graceful
+  stop produces **no dump at all**.
+- **Never overlap runs of the dev loop.** Two `dev/test.sh` invocations in flight mean two
+  `Server.exe` on port 27015 and one run's stop killing another's process - which produces
+  exactly the crash dumps we are trying to count. Serialise, and confirm `Get-Process Server`
+  is empty before starting a measurement.
+- **A forced kill is indistinguishable from a crash to NS2's crash handler.** It writes a dump
+  and uploads it (`options.xml: upload-dumps=true`), so a dev loop that terminates by force
+  manufactures a false incident report - 21 "server" dumps appeared during one afternoon of
+  legitimate test cycles. Stop gracefully (plain `Stop-Process -Id`), escalate to `-Force`
+  only with a loud warning, and never kill by image name.
 - **Destruction is not observable in the calling tick, and not consistently.** Measured across
   runs of one scenario: `Kill()` cleared 0 of 2 entity ids, then 2 of 2. `Disconnect()` leaves
   both the player and the entity id resolvable in the same tick. Confirm on a later poll.

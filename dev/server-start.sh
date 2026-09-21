@@ -21,8 +21,13 @@ PIDFILE="$REPO_DIR/dev/.server.pid"
 if [[ -f "$PIDFILE" ]]; then
   OLD_PID=$(tr -dc '0-9' < "$PIDFILE")
   if [[ -n "$OLD_PID" ]]; then
-    powershell.exe -Command "Stop-Process -Id $OLD_PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-    sleep 3
+    # Graceful, and wait - see server-stop.sh for why -Force is the wrong default.
+    powershell.exe -Command "Stop-Process -Id $OLD_PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 2
+      LEFT=$(powershell.exe -Command "(Get-Process -Id $OLD_PID -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')
+      [[ "$LEFT" == "0" || -z "$LEFT" ]] && break
+    done
   fi
 fi
 rm -f "$LOG_WSL" 2>/dev/null || true
@@ -58,7 +63,14 @@ echo "[start] TIMEOUT after ${TIMEOUT}s — readiness line not found" >&2
 # Reap what we started. Leaving it running holds the port, keeps writing to the log
 # and (worse) keeps whoever owns this machine guessing about a mystery server.
 if [[ -n "${NEW_PID:-}" ]]; then
-  powershell.exe -Command "Stop-Process -Id $NEW_PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  # Graceful first; only escalate if it ignores us, and say so - a forced kill reads
+  # as a crash in dumps/dumplog.txt and sends everyone hunting a bug that isn't there.
+  powershell.exe -Command "Stop-Process -Id $NEW_PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  sleep 6
+  if [[ -n "$(powershell.exe -Command "Get-Process -Id $NEW_PID -ErrorAction SilentlyContinue" 2>/dev/null | tr -d '\r')" ]]; then
+    echo "[start] WARN - server ignored graceful close; forcing (writes a crash dump)" >&2
+    powershell.exe -Command "Stop-Process -Id $NEW_PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  fi
   rm -f "$PIDFILE"
   echo "[start] stopped pid=$NEW_PID after timeout"
 fi
