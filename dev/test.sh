@@ -75,15 +75,22 @@ if [[ -z "$ALDONE" ]]; then
   exit 1
 fi
 
-PASS=$(sed -n 's/.*pass=\([0-9]*\).*/\1/p' <<<"$ALDONE")
-FAILN=$(sed -n 's/.*fail=\([0-9]*\).*/\1/p' <<<"$ALDONE")
+# Anchor on the exact 'pass=N fail=M' pair: a bare .*fail= would also match the
+# trailing expected_fail= field and read a passing suite as failed.
+PASS=$(sed -n 's/.*pass=\([0-9]*\) fail=\([0-9]*\).*/\1/p' <<<"$ALDONE")
+FAILN=$(sed -n 's/.*pass=\([0-9]*\) fail=\([0-9]*\).*/\2/p' <<<"$ALDONE")
+EXPECTED=$(sed -n 's/.*expected_fail=\([0-9]*\).*/\1/p' <<<"$ALDONE")
 echo "[test] suite finished in ~${elapsed}s after READY: $ALDONE"
 echo "[test] scenario lines:"
 grep -a "\[TEST\]" "$LOG_WSL" | grep -av "ALL-DONE" | tail -40 | sed 's/^/[test]   /'
 
-if [[ "${FAILN:-1}" -gt 0 ]]; then
-  echo "[test] FAIL — ${FAILN} scenario(s) failed, ${PASS} passed" >&2
+if [[ -z "$PASS" || -z "$FAILN" ]]; then
+  echo "[test] FAIL — ALL-DONE line did not parse: $ALDONE" >&2
   exit 1
 fi
-echo "[test] OK — ${PASS:-0} scenario(s) passed, 0 failed"
+if [[ "$FAILN" -gt 0 ]]; then
+  echo "[test] FAIL — $FAILN scenario(s) failed, $PASS passed, ${EXPECTED:-0} expected" >&2
+  exit 1
+fi
+echo "[test] OK — $PASS passed, 0 failed, ${EXPECTED:-0} expected (negative controls)"
 exit 0

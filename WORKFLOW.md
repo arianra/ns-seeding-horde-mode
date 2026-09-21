@@ -65,19 +65,35 @@ dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-c
 ```
 Deploy target (dev): `C:\Users\aria\AppData\Roaming\Natural Selection 2\workshop\content\4920\117887554\lua\shine\extensions\`
 
-## Running tests (i0c)
+## Running tests (i0c runner, i0d harness)
 `./dev/test.sh [map] [timeout]` — headless integration loop:
 stops any stale server → materialises the test config → `deploy.sh` → boots and waits for
 Shine extensions → polls the log for `[TEST] ALL-DONE` (default 300s) → stops the server →
-prints the scenario lines → **exit 0** only when the suite reported with `fail=0`.
+prints the scenario lines → **exit 0** only when the suite reported `pass=N fail=0`.
 
 The runtime config is built at `D:\games\ns2hordetest\cfg` (hyphen-free: `-config_path` breaks on
 hyphens) by copying the live `D:\games\ns2srv\cfg` and overlaying `dev/horde-test-cfg/`. **Never**
 point `-config_path` at the repo copy: the live config carries `ProgressionConfig.json` access and
 refresh tokens, and this repo is public. See `dev/horde-test-cfg/README.md`.
 
-Current suite is empty by design (scenarios land in i0d); `hordetest/server.lua` reports the
-empty-suite signal so the runner itself is verifiable now.
+Scenarios live in `source/lua/shine/extensions/hordetest/scenarios.lua` — register with
+`Plugin:RegisterScenario(Name, Expected, Func)` and raise through `Plugin.Assert.*`
+(`True`, `Equal`, `NotNil`, `Alive`, `Gone`). The runner waits for `GetGamerules()` (never touch
+game APIs in `Initialise` — spike zpw) plus a 10s settle, then runs them in registration order.
+
+`Expected = true` marks a **negative control**: it must fail, and it is counted separately as
+`expected_fail`. If a negative control passes, the runner reports a real FAIL — that is what keeps
+the suite honest. Add one per new assert helper, not per feature.
+
+Baseline today: `assert_helpers_fire` PASS · `world_ready` PASS · `negative_control`
+FAIL(expected) → `[TEST] ALL-DONE pass=2 fail=0 expected_fail=1`, exit 0.
+Assert.NoErrors is deliberately absent: a global "no lua errors since boot" check needs an
+unverified hook, so it stays a spike rather than a fake assertion.
+
+Deviation from the bead: the demo-failure is an always-on negative control rather than a
+config-flagged `demo_fail`, because a flag that defaults off proves FAIL detection only when
+someone remembers to flip it. Shine's plugin-config file naming for extensions was not
+verified, so no config dependency was invented here.
 
 ## Implementation tracking
 Phase 1 plan: vault `plans/impl-phase1-vertical-slice.md` (validated).
