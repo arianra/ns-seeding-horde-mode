@@ -93,6 +93,10 @@ function Plugin:OnWorldReady( gamerules )
 		print(("%s %s"):format(Plugin.LogPrefix, Message))
 	end)
 
+	-- Accounting truth for everything we spawn; the engine's bot count cannot tell
+	-- our bots from vanilla seeding ones (DESIGN.md:178,193).
+	self.HordeRegistry = Plugin.Registry.New()
+
 	-- NoPerm=true: /horde is a marine command, not an admin one (Q14 open access).
 	self:BindCommand( "sh_horde", "horde", function(Client)
 		self:OnHordeCommand(Client)
@@ -111,11 +115,11 @@ end
 --- Status line, built from injected state so hordetest can assert every field in
 --- every phase without faking a live horde. RD6 makes this a test surface, not
 --- just a convenience: the teardown diff has to be readable somewhere.
-function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now)
+function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg)
 	local Remaining = Plugin.Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
 
 	return string.format(
-		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s players=%s/%s mouths=%s/%s",
+		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s ours=%s players=%s/%s mouths=%s/%s",
 		Machine:GetState(),
 		Machine:GetWave(),
 		-- Units on the face of the value: a bare 50 could be seconds, percent or waves.
@@ -124,6 +128,8 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now)
 		tostring(Snapshot.RealAlienCount or 0),
 		-- gServerBots is the engine's own bot roster (BotTeamController.lua:39,75-78).
 		tostring(Snapshot.BotCount or 0),
+		-- ours= is the registry's own bot count: the distinction vanilla cannot make.
+		tostring(Reg and Reg:GetBotCount() or 0),
 		tostring(Snapshot.PlayerCount or 0),
 		tostring(Snapshot.MaxPlayers or 0),
 		tostring(Machine.MouthsActive or "-"),
@@ -198,7 +204,7 @@ function Plugin:OnHordeStatus(Client)
 
 	local Player = self:GetCommandPlayer(Client)
 	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(Client), self.Machine,
-		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime())
+		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime(), self.HordeRegistry)
 
 	self:Log("status " .. Line)
 

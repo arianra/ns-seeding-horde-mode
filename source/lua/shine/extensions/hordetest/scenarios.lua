@@ -427,6 +427,7 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Line:find("marines=3") ~= nil, "human marine count is visible: " .. Line )
 		Assert.True( Line:find("players=4/16") ~= nil, "seeding occupancy is visible: " .. Line )
 		Assert.True( Line:find("bots=") ~= nil, "bot roster count is present: " .. Line )
+		Assert.True( Line:find("ours=0") ~= nil, "registry bot count starts at zero: " .. Line )
 		Assert.True( Line:find("mouths=-/-") ~= nil, "unbuilt subsystems report as unknown, not zero: " .. Line )
 		Assert.True( Line:find("cooldown=none") ~= nil, "no cooldown before a horde has run: " .. Line )
 	end )
@@ -491,6 +492,155 @@ function Plugin:InitialiseScenarios()
 		Assert.True( OkStatus, "sh_horde_status does not throw while unarmed" )
 		Assert.True( OkStart, "/horde does not throw while unarmed" )
 		Assert.True( horde.Machine == Saved, "machine restored for the rest of the suite" )
+	end )
+
+	-- i3a: the registry is accounting truth for teardown, so its bookkeeping is
+	-- asserted directly - with fake refs, since it deliberately touches no engine API.
+	local function FakeRef(Id)
+		return { id = Id, GetId = function(Self) return Self.id end }
+	end
+
+	self:RegisterScenario( "registry_tracks_kinds", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Reg = R.New()
+
+		local BotId, BotErr = Reg:Register(FakeRef(101), R.Kind.Bot)
+		Assert.NotNil( BotId, "bot registered" )
+		Assert.Nil( BotErr, "no error on a clean register" )
+		Reg:Register(FakeRef(102), R.Kind.Mouth)
+		Reg:Register(FakeRef(103), R.Kind.Mouth)
+		Assert.Nil( Reg:Register(nil, R.Kind.Bot), "nil ref is refused" )
+		Assert.Nil( Reg:Register(FakeRef(104), nil), "missing kind is refused" )
+
+		Assert.Equal( 3, Reg:Count(), "three entries" )
+		Assert.Equal( 1, Reg:CountByKind(R.Kind.Bot), "one bot" )
+		Assert.Equal( 2, Reg:CountByKind(R.Kind.Mouth), "two mouths" )
+		Assert.Equal( 0, Reg:CountByKind(R.Kind.Entity), "kind with none registered counts zero" )
+		Assert.Equal( 1, Reg:GetBotCount(), "bot count is the horde's own, not the server's" )
+		Assert.Equal( 101, Reg:Get(101) and Reg:Get(101).id, "get returns the ref" )
+		Assert.Equal( "mouth", Reg:GetKind(102), "kind is recoverable" )
+		Assert.Equal( 3, #Reg:GetAllIds(), "all ids listed" )
+		Assert.Equal( 101, Reg:GetAllIds()[1], "ids come back sorted" )
+	end )
+
+	self:RegisterScenario( "registry_is_idempotent", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Reg = R.New()
+		local Ref = FakeRef(201)
+
+		local First = Reg:Register(Ref, R.Kind.Bot)
+		local Second = Reg:Register(Ref, R.Kind.Bot)
+		Assert.Equal( First, Second, "re-registering the same ref is not a second entry" )
+		Assert.Equal( 1, Reg:Count(), "count stays at one" )
+
+		local ConflictId, ConflictErr = Reg:Register(Ref, R.Kind.Mouth)
+		Assert.Nil( ConflictId, "same id under two kinds is refused" )
+		Assert.True( ConflictErr:find("already registered as bot") ~= nil, "conflict names the existing kind" )
+
+		Assert.True( Reg:Unregister(201), "first unregister removes it" )
+		Assert.False( Reg:Unregister(201), "second unregister is a no-op, not an error" )
+		Assert.Equal( 0, Reg:CountByKind(R.Kind.Bot), "kind index dropped with the entry" )
+		Assert.Equal( 0, Reg:Count(), "empty" )
+	end )
+
+	self:RegisterScenario( "registry_survives_mutation_during_iteration", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Reg = R.New()
+
+		for Id = 301, 305 do
+			Reg:Register(FakeRef(Id), R.Kind.Mouth)
+		end
+
+		local Seen = 0
+		local Visited = {}
+		Reg:IterateByKind(R.Kind.Mouth, function(Ref, Id)
+			Seen = Seen + 1
+			Visited[Id] = true
+			Reg:Unregister(Id)
+		end)
+
+		Assert.Equal( 5, Seen, "every mouth was visited even though each unregistered itself" )
+		Assert.True( Visited[305], "the last one was not skipped" )
+		Assert.Equal( 0, Reg:Count(), "and they are all gone" )
+	end )
+
+	self:RegisterScenario( "registry_prune_and_drain", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Reg = R.New()
+		Reg:Register(FakeRef(401), R.Kind.Bot)
+		Reg:Register(FakeRef(402), R.Kind.Bot)
+		Reg:Register(FakeRef(403), R.Kind.Entity)
+
+		local Pruned = Reg:Prune(function(Ref, Id) return Id == 402 end )
+		Assert.Equal( 1, Pruned, "prune reports what was already vanished" )
+		Assert.Equal( 2, Reg:Count(), "the vanished one is gone from the books" )
+
+		-- Drain is what teardown uses: it hands back the entries so the caller can
+		-- destroy them, and only then is the registry empty.
+		local Drained = Reg:Drain()
+		Assert.Equal( 2, #Drained, "drain hands back everything still tracked" )
+		Assert.Equal( "bot", Drained[1].kind, "entries carry their kind for ordered teardown" )
+		Assert.Equal( 0, Reg:Count(), "draining empties it" )
+		Assert.Equal( 0, Reg:Clear(), "clearing an already-empty registry reports zero, not a stale count" )
+
+		-- Clear on a populated registry is the count it dropped.
+		Reg:Register(FakeRef(450), R.Kind.Mouth)
+		Reg:Register(FakeRef(451), R.Kind.Mouth)
+		Assert.Equal( 2, Reg:Clear(), "clear reports what it removed" )
+		Assert.Equal( 0, Reg:CountByKind(R.Kind.Mouth), "kind index cleared with the entries" )
+	end )
+
+	self:RegisterScenario( "status_counts_our_bots_separately", false, function()
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local Reg = R.New()
+		Reg:Register({ GetId = function(Self) return 900 end }, R.Kind.Bot)
+		Reg:Register({ GetId = function(Self) return 901 end }, R.Kind.Bot)
+
+		local Machine = horde.StateMachine.New(0, function() end)
+		local Snap = { GameState = kGameState.WarmUp, RealMarineCount = 2, RealAlienCount = 0,
+			PlayerCount = 5, MaxPlayers = 16, BotCount = 9 }
+		local Line = horde:BuildStatusLine(Snap, Machine, { Start = { Cooldown = 60, MinPlayers = 1 } },
+			10, Reg)
+
+		Assert.True( Line:find("bots=9") ~= nil, "server-wide bot roster: " .. Line )
+		Assert.True( Line:find("ours=2") ~= nil, "horde-owned bots counted apart from vanilla fill: " .. Line )
+		-- The live instance must not be polluted by the test's own registry.
+		Assert.Equal( 0, horde.HordeRegistry:GetBotCount(), "live registry untouched by the test instance" )
+	end )
+
+	self:RegisterScenario( "bot_controller_lock_is_balanced", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Controller = {
+			MaxBots = 12, addCommander1 = true, addCommander2 = false, updateLock = 0,
+			DisableUpdate = function(Self) Self.updateLock = Self.updateLock + 1 end,
+			EnableUpdate = function(Self) Self.updateLock = Self.updateLock - 1 end,
+			SetMaxBots = function(Self, Value, Com)
+				Self.MaxBots = Value
+				-- The engine setter assigns both teams from one argument; that is the
+				-- trap the snapshot has to work around (BotTeamController.lua:185-193).
+				Self.addCommander1, Self.addCommander2 = Com, Com
+			end,
+		}
+
+		local Snap = R.SnapshotBTCState(Controller)
+		Assert.NotNil( Snap, "snapshot taken" )
+		Assert.Equal( 12, Snap.MaxBots, "cap recorded" )
+		Assert.Equal( false, Snap.addCommander2, "per-team commander flags recorded separately" )
+
+		Assert.True( R.EngageBTC(Controller, Snap), "lock acquired" )
+		Assert.False( R.EngageBTC(Controller, Snap), "second engage is a no-op, not a double lock" )
+		Assert.Equal( 1, Controller.updateLock, "engine assert at :145 forbids an unbalanced release" )
+
+		R.LockBotCap(Controller, Snap)
+		Assert.Equal( 0, Controller.MaxBots, "fill loop capped while we hold the lock" )
+
+		Assert.True( R.ReleaseBTC(Controller, Snap), "release" )
+		Assert.False( R.ReleaseBTC(Controller, Snap), "double release refused" )
+		Assert.Equal( 0, Controller.updateLock, "lock depth returned to where we found it" )
+		Assert.Equal( 12, Controller.MaxBots, "cap restored" )
+		Assert.Equal( true, Controller.addCommander1, "commander flag 1 restored exactly" )
+		Assert.Equal( false, Controller.addCommander2, "flag 2 restored independently of the setter" )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()
