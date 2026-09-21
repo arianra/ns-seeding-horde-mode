@@ -97,6 +97,74 @@ function Plugin:OnWorldReady( gamerules )
 	self:BindCommand( "sh_horde", "horde", function(Client)
 		self:OnHordeCommand(Client)
 	end, true )
+
+	-- Admin pair: no NoPerm, so Shine's permission check applies (i2c).
+	self:BindCommand( "sh_horde_stop", nil, function(Client)
+		self:OnHordeStop(Client)
+	end )
+
+	self:BindCommand( "sh_horde_status", nil, function(Client)
+		self:OnHordeStatus(Client)
+	end )
+end
+
+--- Status line, built from injected state so hordetest can assert every field in
+--- every phase without faking a live horde. RD6 makes this a test surface, not
+--- just a convenience: the teardown diff has to be readable somewhere.
+function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now)
+	local Remaining = Plugin.Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
+
+	return string.format(
+		"state=%s wave=%s cooldown=%s marines=%s aliens=%s players=%s/%s mouths=%s/%s",
+		Machine:GetState(),
+		Machine:GetWave(),
+		-- Units on the face of the value: a bare 50 could be seconds, percent or waves.
+		Remaining and string.format("%.0fs", Remaining) or "none",
+		tostring(Snapshot.RealMarineCount or 0),
+		tostring(Snapshot.RealAlienCount or 0),
+		tostring(Snapshot.PlayerCount or 0),
+		tostring(Snapshot.MaxPlayers or 0),
+		tostring(Machine.MouthsActive or "-"),
+		tostring(Machine.MouthsPool or "-"))
+end
+
+function Plugin:OnHordeStop(Client)
+	local Player = Client and Client:GetControllingPlayer() or nil
+	local Now = Shared.GetTime()
+
+	local Ok, Reason = self.Machine:Stop("admin sh_horde_stop", Now)
+
+	if not Ok then
+		self:Log("stop rejected: " .. tostring(Reason))
+
+		if Player then
+			self:Notify(Player, "Horde stop rejected: %s", true, Reason)
+		end
+
+		return
+	end
+
+	self:Log("teardown requested by admin - state " .. self.Machine:GetState())
+
+	-- Nothing destroyed here on purpose: i7a (M7) owns the registry walk, state
+	-- restore and timer cancellation. Until then Stop() only moves the state, and
+	-- this line is the seam it will hook into.
+
+	if Player then
+		self:Notify(Player, "Horde stopping: %s", true, self.Machine.TeardownReason or "admin stop")
+	end
+end
+
+function Plugin:OnHordeStatus(Client)
+	local Player = Client and Client:GetControllingPlayer() or nil
+	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(), self.Machine,
+		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime())
+
+	self:Log("status " .. Line)
+
+	if Player then
+		self:Notify(Player, "Horde %s", true, Line)
+	end
 end
 
 --- /horde entry: gates, then start. Rejection reason goes to the caller's chat

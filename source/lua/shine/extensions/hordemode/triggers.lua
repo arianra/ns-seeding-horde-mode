@@ -30,16 +30,27 @@ function Triggers.IsNotRunning(Snapshot, Machine)
 end
 
 --- 2. Post-teardown cooldown, from the machine's own clock (i2a sets EndedAt).
-function Triggers.CooldownOk(Snapshot, Machine, Config, Now)
+--- Remaining cooldown seconds, or nil when there is nothing to wait for.
+function Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
 	local Cooldown = (Config.Start and Config.Start.Cooldown) or 0
 	local SinceEnd = Machine:TimeSinceEnd(Now)
 
 	if not SinceEnd or Cooldown <= 0 then
-		return true, nil
+		return nil
 	end
 
-	if SinceEnd < Cooldown then
-		return false, string.format("%.0fs cooldown remaining", Cooldown - SinceEnd)
+	if SinceEnd >= Cooldown then
+		return nil
+	end
+
+	return Cooldown - SinceEnd
+end
+
+function Triggers.CooldownOk(Snapshot, Machine, Config, Now)
+	local Remaining = Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
+
+	if Remaining then
+		return false, string.format("%.0fs cooldown remaining", Remaining)
 	end
 
 	return true, nil

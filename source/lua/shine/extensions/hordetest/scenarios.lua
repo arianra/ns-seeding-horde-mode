@@ -394,6 +394,72 @@ function Plugin:InitialiseScenarios()
 		-- fields are not something this suite should depend on.
 	end )
 
+	-- i2c: status is a test surface (RD6), so assert its fields in each phase with
+	-- an injected machine rather than trying to fake a live horde.
+	local function StatusCase()
+		local horde = Shine.Plugins.hordemode
+		local Machine = horde.StateMachine.New(0, function() end)
+		local Config = { Start = { Cooldown = 60, MinPlayers = 1 } }
+		local Snap = {
+			GameState = kGameState.WarmUp, RealMarineCount = 3, RealAlienCount = 0,
+			PlayerCount = 4, MaxPlayers = 16,
+		}
+
+		return horde, Machine, Config, Snap
+	end
+
+	self:RegisterScenario( "status_reports_idle_state", false, function()
+		local horde, Machine, Config, Snap = StatusCase()
+		local Line = horde:BuildStatusLine(Snap, Machine, Config, 10)
+
+		Assert.True( Line:find("state=inactive") ~= nil, "state field: " .. Line )
+		Assert.True( Line:find("wave=0") ~= nil, "wave field: " .. Line )
+		Assert.True( Line:find("marines=3") ~= nil, "human marine count is visible: " .. Line )
+		Assert.True( Line:find("players=4/16") ~= nil, "seeding occupancy is visible: " .. Line )
+		Assert.True( Line:find("mouths=-/-") ~= nil, "unbuilt subsystems report as unknown, not zero: " .. Line )
+		Assert.True( Line:find("cooldown=none") ~= nil, "no cooldown before a horde has run: " .. Line )
+	end )
+
+	self:RegisterScenario( "status_tracks_wave_and_cooldown", false, function()
+		local horde, Machine, Config, Snap = StatusCase()
+
+		Machine:Start(10)
+		Assert.True( horde:BuildStatusLine(Snap, Machine, Config, 20):find("state=wave wave=1") ~= nil,
+			"running horde shows state and wave" )
+
+		Machine:EndWave(30)
+		Assert.True( horde:BuildStatusLine(Snap, Machine, Config, 31):find("state=intermission") ~= nil,
+			"intermission is distinguishable from wave" )
+
+		Machine:Stop("test loss", 40)
+		Machine:CompleteTeardown(50)
+		local After = horde:BuildStatusLine(Snap, Machine, Config, 60)
+		Assert.True( After:find("state=inactive") ~= nil, "back to idle after teardown" )
+		Assert.True( After:find("cooldown=50s") ~= nil, "remaining cooldown is shown with units: " .. After )
+
+		local Expired = horde:BuildStatusLine(Snap, Machine, Config, 200)
+		Assert.True( Expired:find("cooldown=none") ~= nil, "cooldown clears itself once elapsed" )
+	end )
+
+	self:RegisterScenario( "admin_stop_moves_state_only", false, function()
+		local horde, Machine = StatusCase()
+
+		-- Deliberately a local machine: these cases need phases no headless
+		-- server can reach on its own.
+		Assert.False( Machine:Stop("nothing running", 1), "stop on an idle horde is refused" )
+		Assert.True( Machine:Start(2), "start" )
+		Assert.True( Machine:Stop("admin sh_horde_stop", 3), "stop from wave" )
+		Assert.Equal( "teardown", Machine:GetState(), "state flipped, nothing destroyed yet (M7 owns that)" )
+		Assert.Equal( "admin sh_horde_stop", Machine.TeardownReason, "reason recorded for status and teardown messaging" )
+	end )
+
+	self:RegisterScenario( "admin_commands_are_bound", false, function()
+		local horde = Shine.Plugins.hordemode
+		Assert.NotNil( horde.Commands.sh_horde_stop, "sh_horde_stop registered" )
+		Assert.NotNil( horde.Commands.sh_horde_status, "sh_horde_status registered" )
+		Assert.NotNil( horde.Machine, "a live machine exists after world-ready" )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )
