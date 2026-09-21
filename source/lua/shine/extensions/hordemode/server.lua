@@ -89,6 +89,7 @@ end
 -- Seam for the beads that follow: i8a starts loss polling here, i7a owns teardown
 -- from here. Everything world-facing stays behind this call.
 function Plugin:OnWorldReady( gamerules )
+	self.BotController = gamerules.botTeamController
 	self.Machine = Plugin.StateMachine.New(Shared.GetTime(), function(Message)
 		print(("%s %s"):format(Plugin.LogPrefix, Message))
 	end)
@@ -96,6 +97,10 @@ function Plugin:OnWorldReady( gamerules )
 	-- Accounting truth for everything we spawn; the engine's bot count cannot tell
 	-- our bots from vanilla seeding ones (DESIGN.md:178,193).
 	self.HordeRegistry = Plugin.Registry.New()
+
+	-- Q7q7: /horde IS the horde warmup, so the vanilla fill is held off for the
+	-- duration and handed back intact. Created here, engaged by i6a's wave loop.
+	self.HordeTakeover = Plugin.Takeover.New(self.BotController, self.HordeRegistry)
 
 	-- NoPerm=true: /horde is a marine command, not an admin one (Q14 open access).
 	self:BindCommand( "sh_horde", "horde", function(Client)
@@ -115,11 +120,11 @@ end
 --- Status line, built from injected state so hordetest can assert every field in
 --- every phase without faking a live horde. RD6 makes this a test surface, not
 --- just a convenience: the teardown diff has to be readable somewhere.
-function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg)
+function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg, Not)
 	local Remaining = Plugin.Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
 
 	return string.format(
-		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s ours=%s players=%s/%s mouths=%s/%s",
+		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s ours=%s takeover=%s players=%s/%s mouths=%s/%s",
 		Machine:GetState(),
 		Machine:GetWave(),
 		-- Units on the face of the value: a bare 50 could be seconds, percent or waves.
@@ -130,6 +135,7 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg)
 		tostring(Snapshot.BotCount or 0),
 		-- ours= is the registry's own bot count: the distinction vanilla cannot make.
 		tostring(Reg and Reg:GetBotCount() or 0),
+		(Not and Not:IsEngaged()) and "engaged" or "idle", 
 		tostring(Snapshot.PlayerCount or 0),
 		tostring(Snapshot.MaxPlayers or 0),
 		tostring(Machine.MouthsActive or "-"),
@@ -204,7 +210,8 @@ function Plugin:OnHordeStatus(Client)
 
 	local Player = self:GetCommandPlayer(Client)
 	local Line = self:BuildStatusLine(Plugin.Triggers.TakeSnapshot(Client), self.Machine,
-		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime(), self.HordeRegistry)
+		self.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime(), self.HordeRegistry,
+		self.HordeTakeover)
 
 	self:Log("status " .. Line)
 

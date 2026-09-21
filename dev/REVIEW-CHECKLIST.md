@@ -33,6 +33,18 @@ not that the behaviour is right.
       so nobody reads it as a decision.
 
 ## Test honesty
+- **Two scenarios must not mutate the same global engine object across deferred
+  checks.** `spike_bot_players` and `takeover_live_cycle` both lock the one
+  `botTeamController`, and their deferred halves resolve at t+6 and t+15. Any
+  *absolute* assertion about `updateLock` is therefore unstable - a baseline read
+  before the other scenario releases will never match. Assert the delta measured
+  immediately around your own call, or take the global out of play.
+- Deferred checks are the price of testing bots: nothing about a spawned bot is
+  true in the tick after `CreateEntity`. `Plugin:Defer` exists so that is not faked.
+- A setup path that engages shared engine state must run under `pcall` with a
+  cleanup: the first version of the takeover test threw between `Engage` and
+  `Release` and left the controller locked for every later scenario.
+
 
 - [ ] A new assert helper ships with a negative control that must fail.
 - [ ] A PASS means the thing happened, not that nothing errored: assert on the observed

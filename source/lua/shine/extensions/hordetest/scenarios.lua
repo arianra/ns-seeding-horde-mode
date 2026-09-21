@@ -643,6 +643,123 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( false, Controller.addCommander2, "flag 2 restored independently of the setter" )
 	end )
 
+	-- i3b: the live cycle. Checks are recorded, not asserted inline, because an
+	-- assert that threw here would leave the engine's bot controller locked for every
+	-- later scenario - release must be unreachable-by-failure.
+	-- i3b: the live cycle. Two disciplines here: every check is *recorded* rather than
+	-- asserted inline, and setup runs under pcall with a cleanup, because a scenario
+	-- that throws between Engage and Release leaves the engine's bot controller locked
+	-- for everything that follows - which is precisely what the first version of this
+	-- test did when it called Defer on the wrong plugin.
+	-- i3b: the live cycle on the real controller. Two disciplines, both learned the
+	-- hard way here: setup runs under pcall with a cleanup, because a scenario that
+	-- throws between Engage and Release leaves the engine locked for everything after
+	-- it; and every lock assertion is a DELTA, because spike_bot_players locks and
+	-- unlocks this same global controller from its own deferred check.
+	self:RegisterScenario( "takeover_live_cycle", false, function()
+		local horde = Shine.Plugins.hordemode
+		local controller = horde.BotController
+		Assert.NotNil( controller, "world-ready resolved the bot controller" )
+
+		local Before = {
+			MaxBots = controller.MaxBots, commander1 = controller.addCommander1,
+			commander2 = controller.addCommander2,
+		}
+
+		local Takeover = horde.Takeover.New(controller, horde.HordeRegistry)
+		local Problems = {}
+		local Bot, BotId, Engaged, LockBaseline = nil, nil, false, 0
+
+		local function Cleanup()
+			if Bot then pcall(function() Bot:Disconnect() end) end
+			if Engaged then pcall(function() Takeover:Release() end) end
+			if BotId then horde.HordeRegistry:Unregister(BotId) end
+		end
+
+		local OkSetup, SetupErr = pcall( function()
+			LockBaseline = controller.updateLock
+
+			if not Takeover:Engage() then Problems[#Problems + 1] = "engage refused" end
+			Engaged = true
+
+			if controller.MaxBots ~= 0 then Problems[#Problems + 1] = "cap not lowered" end
+
+			if (controller.updateLock - LockBaseline) ~= 1 then
+				Problems[#Problems + 1] = string.format("our engage moved the lock by %s, not 1",
+					tostring(controller.updateLock - LockBaseline))
+			end
+
+			Bot = Server.CreateEntity(PlayerBot.kMapName)
+			Bot:Initialize(kTeam2Index, true)
+			Bot.lifeformEvolution = kTechId.Skulk
+			BotId = horde.HordeRegistry:Register(Bot, horde.Registry.Kind.Bot)
+
+			if BotId == nil then Problems[#Problems + 1] = "bot not registered" end
+
+			self:Defer( "takeover_bot_survives_and_releases", 15, false, function()
+				local EntityAlive = Shared.GetEntity(BotId) ~= nil
+				local AlienPlayer = Bot:GetPlayer()
+				local PlayerAlive = AlienPlayer ~= nil and AlienPlayer:GetIsAlive() == true
+
+				-- Evidence first: the entity handle and the live player are different
+				-- questions, and the first version of this test conflated them.
+				print(string.format(
+					"[TEST-DIAG] t+15 entity=%s player=%s alive=%s maxBots=%s lock=%s roster=%s",
+					tostring(EntityAlive), tostring(AlienPlayer ~= nil), tostring(PlayerAlive),
+					tostring(controller.MaxBots), tostring(controller.updateLock),
+					tostring(gServerBots and #gServerBots or -1)))
+
+				if not PlayerAlive then
+					Problems[#Problems + 1] = string.format(
+						"bot has no live player at t+15 (entity=%s, hasPlayer=%s)",
+						tostring(EntityAlive), tostring(AlienPlayer ~= nil))
+				end
+
+				if AlienPlayer and not AlienPlayer:GetIsVirtual() then
+					Problems[#Problems + 1] = "a bot client read as a real player"
+				end
+
+				-- Measured immediately around the call: another scenario (spike_bot_players)
+				-- releases ITS lock on this same global controller at t+6, so no absolute
+				-- baseline here is stable. What we can claim precisely is that our own
+				-- release removes exactly one lock.
+				local LockBeforeRelease = controller.updateLock
+				if not Takeover:Release() then Problems[#Problems + 1] = "release refused" end
+				Engaged = false
+
+				if (LockBeforeRelease - controller.updateLock) ~= 1 then
+					Problems[#Problems + 1] = string.format("our release moved the lock by %s, not -1",
+						tostring(controller.updateLock - LockBeforeRelease))
+				end
+
+				Bot:Disconnect()
+				horde.HordeRegistry:Unregister(BotId)
+				BotId = nil
+
+				if controller.MaxBots ~= Before.MaxBots then
+					Problems[#Problems + 1] = string.format("cap not restored (%s vs %s)",
+						tostring(controller.MaxBots), tostring(Before.MaxBots))
+				end
+
+				if tostring(controller.addCommander1) ~= tostring(Before.commander1)
+					or tostring(controller.addCommander2) ~= tostring(Before.commander2) then
+					Problems[#Problems + 1] = "commander flags not restored independently"
+				end
+
+				Assert.Equal( 0, horde.HordeRegistry:GetBotCount(), "registry emptied after the cycle" )
+
+				if #Problems > 0 then
+					error( { Detail = "live takeover cycle: " .. table.concat(Problems, "; ") } )
+				end
+			end )
+		end )
+
+		if not OkSetup then
+			Cleanup()
+			error( { Detail = "setup failed and was cleaned up: " .. tostring(SetupErr) } )
+		end
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )
