@@ -1015,6 +1015,237 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	-- i4a: the band, the dedupe and the sector rules ARE the design decisions (Q28,
+	-- spike tby), so they are asserted as pure geometry over injected tables. No map,
+	-- no entities, no engine - which is the only reason these are cheap to keep honest.
+	self:RegisterScenario( "placement_rules_are_pure", false, function()
+		local Placement = Shine.Plugins.hordemode.Placement
+		local Base = { x = 0, y = 0, z = 0 }
+
+		local function At(Distance)
+			return { x = Distance, y = 0, z = 0 }
+		end
+
+		local Ring = {
+			{ point = At(10) }, { point = At(60) }, { point = At(70) }, { point = At(200) }
+		}
+
+		local InBand = Placement.FilterBand(Ring, Base, 56, 90, 6)
+		Assert.Equal( 2, #InBand, "only 60m and 70m fall inside the 56-90m band" )
+
+		-- Adaptive path: a map whose anchors all sit outside the ring must still field
+		-- a horde, but never closer than BandMin - "inside the base room" is the one
+		-- thing the band exists to forbid.
+		local None = Placement.FilterBand({ { point = At(10) }, { point = At(120) }, { point = At(150) } }, Base, 56, 90, 6)
+		Assert.Equal( 2, #None, "empty band falls back to the nearest beyond BandMin" )
+		Assert.Equal( 120, None[1] and None[1].distance or -1, "fallback orders by distance" )
+
+		local RejectNear = Placement.FilterBand({ { point = At(5) }, { point = At(30) } }, Base, 56, 90, 6)
+		Assert.Equal( 0, #RejectNear, "fallback never reaches inside BandMin" )
+
+		local Dupes = Placement.GatherCandidates({ { At(0), At(1), At(200) } }, 5)
+		Assert.Equal( 2, #Dupes, "points within 5m collapse to one site" )
+
+		local Spread = {
+			{ point = { x = 70, y = 0, z = 0 }, distance = 70 },
+			{ point = { x = -35, y = 0, z = 60 }, distance = 70 },
+			{ point = { x = -35, y = 0, z = -60 }, distance = 70 }
+		}
+		Assert.Equal( 3, #Placement.SelectSectorSpread(Spread, Base, 3), "one mouth per sector, three sectors" )
+		Assert.Equal( 1, #Placement.SelectSectorSpread({ Spread[1], Spread[2] }, Base, 1), "count 1 keeps a single sector" )
+	end )
+
+	-- i4c (early): the engine-facing half on the real map. Asserts the anchor
+	-- classnames resolve and the configured ring selects something - the failure this
+	-- replaces was silent, which is why the old 20m band looked like working code.
+	self:RegisterScenario( "placement_collects_on_live_map", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig.Resolve(Shared.GetMapName())
+		local Chosen, Base, RawCount, BandedCount = horde.Placement.Collect(Config)
+
+		print( string.format( "[TEST] placement on %s: raw=%s banded=%s chosen=%s base=%s",
+			tostring(Shared.GetMapName()), tostring(RawCount), tostring(BandedCount), tostring(#Chosen),
+			tostring(Base ~= nil) ) )
+
+		Assert.True( RawCount > 0, "the live map exposes anchor entities to placement" )
+		Assert.True( BandedCount > 0, "the configured band selects at least one candidate" )
+		Assert.True( #Chosen <= (Config.Waves.PoolSize or 6), "pool never exceeds PoolSize" )
+	end )
+
+	-- i4b: a mouth really appears, is registered once its id is valid, and really goes
+	-- away. Same-tick registration is reported rather than asserted: whether the engine
+	-- has an id for a global CreateEntity result immediately is its business, and a
+	-- brittle assertion here would only prove we cannot read the engine.
+	self:RegisterScenario( "mouth_lifecycle", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Reg = horde.Registry.New()
+		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
+
+		local Anchor
+
+		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
+			Anchor = Ent:GetOrigin()
+			break
+		end
+
+		Assert.NotNil( Anchor, "the live map has a Location to place a mouth at" )
+
+		local Mouth, Reason = Spawn:SpawnMouth(Anchor)
+		Assert.NotNil( Mouth, "SpawnMouth returns an entity" )
+
+		local SameTickId = Reg:Register(Mouth, "mouth")
+		print( string.format( "[TEST] mouth same-tick register: id=%s", tostring(SameTickId) ) )
+		Reg:Clear()
+
+		self:Defer( "mouth_lifecycle_settles", 6, false, function()
+			local Registered = Spawn:Pump()
+			Assert.True( Registered >= 1, "the queued mouth registers once its id is valid" )
+
+			local Ids = Reg:GetAllIds()
+			Assert.Equal( 1, #Ids, "exactly one mouth on the books" )
+
+			local Id = Ids[1]
+			Assert.NotNil( Shared.GetEntity(Id), "the registered id resolves to a live entity" )
+
+			Assert.True( Spawn:DestroyMouth(Id), "DestroyMouth reports the entity it removed" )
+			Assert.Equal( 0, Reg:Count(), "registry is empty after destroy" )
+			Assert.Nil( Shared.GetEntity(Id), "the mouth is really gone from the world" )
+		end )
+	end )
+
+	-- i7b: RD6's bar - our created set is destroyed, the registry ends empty, and the
+	-- ids stop resolving. Asserted against real mouths: a diff that only passes against
+	-- doubles proves nothing about the engine's destroy order, and an entity that keeps
+	-- resolving after DestroyEntity would leak a mouth on every stop.
+	self:RegisterScenario( "teardown_destroys_what_we_made", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Reg = horde.Registry.New()
+		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
+
+		local Anchors = {}
+
+		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
+			Anchors[#Anchors + 1] = Ent:GetOrigin()
+
+			if #Anchors >= 2 then
+				break
+			end
+		end
+
+		Assert.True( #Anchors >= 2, "two anchors available for the created set" )
+
+		for _, Anchor in ipairs(Anchors) do
+			Spawn:SpawnMouth(Anchor)
+		end
+
+		self:Defer( "teardown_destroys_what_we_made_settled", 6, false, function()
+			Spawn:Pump()
+
+			local Ids = Reg:GetAllIds()
+			local Problems = {}
+
+			if #Ids < 2 then
+				Problems[#Problems + 1] = string.format("expected at least 2 registered mouths, got %s", tostring(#Ids))
+			end
+
+			local Destroyed, Failed, Total = horde.DestroyAll(Reg, {}, nil)
+
+			if #Failed > 0 then
+				Problems[#Problems + 1] = "destroy failures: " .. table.concat(Failed, "; ")
+			end
+
+			if Total < 2 then
+				Problems[#Problems + 1] = "drained fewer entries than were registered"
+			end
+
+			if Reg:Count() ~= 0 then
+				Problems[#Problems + 1] = "registry not empty after teardown"
+			end
+
+			for _, Id in ipairs(Ids) do
+				if Shared.GetEntity(Id) ~= nil then
+					Problems[#Problems + 1] = "entity " .. tostring(Id) .. " still resolves after destroy"
+				end
+			end
+
+			print( string.format( "[TEST] teardown diff: %s entries destroyed=%s, still registered=%s",
+				tostring(Total), tostring(Destroyed.mouth or 0), tostring(Reg:Count()) ) )
+
+			if #Problems > 0 then
+				error( { Detail = "teardown integrity: " .. table.concat(Problems, "; ") } )
+			end
+		end )
+	end )
+
+	-- The M4+M7 slice as Arian will hit it in-game: start the machine, place a wave's
+	-- mouths through the real plugin, let the tick pump register them, then stop and
+	-- tear down. This is the only scenario that exercises the *wiring* - BeginWave
+	-- reaching Placement and the Spawner, HordeTick registering what was queued,
+	-- Teardown emptying the registry and handing the controller back.
+	--
+	-- It swaps in private registry + spawner instances for the duration. That is not
+	-- shyness about destroying: the first version tore down the plugin's real registry
+	-- and correctly killed takeover_live_cycle's bot, which registers there at :732 and
+	-- checks it at t+8 - after this scenario's t+6 teardown. Teardown is a global
+	-- operation by design, so anything that calls it must own the state it covers.
+	self:RegisterScenario( "wave_slice_end_to_end", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig.Resolve(Shared.GetMapName())
+
+		Assert.NotNil( horde.Machine, "plugin is armed by test time" )
+
+		local SavedRegistry, SavedSpawner = horde.HordeRegistry, horde.HordeSpawner
+
+		horde.HordeRegistry = horde.Registry.New()
+		horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function(Message) print("[TEST] " .. Message) end)
+
+		horde.Machine:Start(Shared.GetTime())
+
+		local Placed = horde:BeginWave(Config)
+		Assert.True( Placed >= 1, "wave 1 places at least one mouth on the live map" )
+
+		self:Defer( "wave_slice_settles", 6, false, function()
+			local Problems = {}
+			local Registered = horde.HordeRegistry:CountByKind("mouth")
+
+			if Registered < 1 then
+				Problems[#Problems + 1] = "the tick pump registered no mouths"
+			end
+
+			local Ids = horde.HordeRegistry:GetAllIds()
+
+			horde.Machine:Stop("test slice", Shared.GetTime())
+			horde:Teardown(Shared.GetTime())
+
+			if horde.HordeRegistry:Count() ~= 0 then
+				Problems[#Problems + 1] = "plugin registry not empty after teardown"
+			end
+
+			if horde.HordeTakeover:IsEngaged() then
+				Problems[#Problems + 1] = "bot controller still held after teardown"
+			end
+
+			for _, Id in ipairs(Ids) do
+				if Shared.GetEntity(Id) ~= nil then
+					Problems[#Problems + 1] = "mouth " .. tostring(Id) .. " survived teardown"
+				end
+			end
+
+			if not horde.Machine:Is(horde.Phase.Inactive) then
+				Problems[#Problems + 1] = "machine did not return to inactive"
+			end
+
+			-- Hand the plugin's real bookkeeping back before anything can fail. A
+			-- scenario that leaves swapped state behind would poison every later run,
+			-- and the failure would surface as someone else's assertion.
+			horde.HordeRegistry, horde.HordeSpawner = SavedRegistry, SavedSpawner
+
+			if #Problems > 0 then
+				error( { Detail = "wave slice: " .. table.concat(Problems, "; ") } )
+			end
+		end )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )
