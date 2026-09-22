@@ -107,8 +107,10 @@ function Plugin:OnWorldReady( gamerules )
 	self.HordeTakeover = Plugin.Takeover.New(self.BotController, self.HordeRegistry)
 
 	-- NoPerm=true: /horde is a marine command, not an admin one (Q14 open access).
-	self:BindCommand( "sh_horde", "horde", function(Client)
-		self:OnHordeCommand(Client)
+	-- Arguments are forwarded: the handler must be able to see them, or a stray word
+	-- silently means "start".
+	self:BindCommand( "sh_horde", "horde", function(Client, ...)
+		self:OnHordeCommand(Client, { ... })
 	end, true )
 
 	-- Admin pair: no NoPerm, so Shine's permission check applies (i2c).
@@ -224,9 +226,30 @@ function Plugin:OnHordeStatus(Client)
 	end
 end
 
---- /horde entry: gates, then start. Rejection reason goes to the caller's chat
---- (Notify(Player, Message) - messaging.lua:201), never a silent no-op.
-function Plugin:OnHordeCommand(Client)
+--- /horde entry: argument guard, then gates, then start. Rejection reason goes to
+--- the caller's chat (Notify(Player, Message) - messaging.lua:201), never a silent
+--- no-op.
+---
+--- The guard exists because status/stop are console-only (i2c bound them with no
+--- chat alias), so `/horde status` used to fall straight through to "start" - and
+--- Shine's RunCommand logs its audit line AFTER the handler, so the server log read
+--- as a horde starting for no reason. A curious first thing to type must never be a
+--- state change.
+function Plugin:OnHordeCommand(Client, Args)
+	local Stray = Args and Args[1]
+
+	if Stray then
+		self:Log(string.format("/horde rejected: unexpected argument '%s' (sh_horde_status and sh_horde_stop are console commands)", tostring(Stray)))
+
+		local Player = self:GetCommandPlayer(Client)
+
+		if Player then
+			self:Notify(Player, "Horde: unknown argument '%s'. Status and stop are console commands.", true, tostring(Stray))
+		end
+
+		return
+	end
+
 	local Player = self:GetCommandPlayer(Client)
 	local Now = Shared.GetTime()
 	local Snapshot = Plugin.Triggers.TakeSnapshot(Client)

@@ -494,6 +494,39 @@ function Plugin:InitialiseScenarios()
 		Assert.True( horde.Machine == Saved, "machine restored for the rest of the suite" )
 	end )
 
+	-- status/stop are console-only (i2c bound them with no chat alias), so any word
+	-- after /horde used to fall straight through to "start". On a live server the very
+	-- first thing typed was `/horde status`, and it began wave 1 - visible in the log
+	-- only as a start with no preceding audit line, because Shine's RunCommand logs
+	-- AFTER the handler. Gates are opened deliberately here: the only thing allowed to
+	-- stop this start is the argument guard, and it must run before the machine.
+	self:RegisterScenario( "horde_rejects_stray_arguments", false, function()
+		local horde = Shine.Plugins.hordemode
+		local SavedMachine = horde.Machine
+		local SavedCheck = horde.Triggers.Check
+		local SavedSnapshot = horde.Triggers.TakeSnapshot
+		local Starts = 0
+
+		horde.Triggers.Check = function() return true end
+		horde.Triggers.TakeSnapshot = function() return {} end
+		horde.Machine = { Start = function() Starts = Starts + 1 return true end }
+
+		horde:OnHordeCommand(nil, { "status" })
+		local AfterStray = Starts
+		horde:OnHordeCommand(nil, {})
+		local AfterEmpty = Starts
+		horde:OnHordeCommand(nil)
+		local AfterNil = Starts
+
+		horde.Triggers.Check = SavedCheck
+		horde.Triggers.TakeSnapshot = SavedSnapshot
+		horde.Machine = SavedMachine
+
+		Assert.Equal( 0, AfterStray, "'/horde status' does not start a horde" )
+		Assert.Equal( 1, AfterEmpty, "'/horde' with no arguments still starts" )
+		Assert.Equal( 2, AfterNil, "the console path (no argument list) still starts" )
+	end )
+
 	-- i3a: the registry is accounting truth for teardown, so its bookkeeping is
 	-- asserted directly - with fake refs, since it deliberately touches no engine API.
 	local function FakeRef(Id)
