@@ -1,26 +1,53 @@
 #!/usr/bin/env bash
-# deploy.sh — sync repo extension source -> EVERY Shine workshop copy the machine
-# mounts from (server-side and client-side), and enable hordemode + hordetest in the
-# TEST config only (never the live one).
+# deploy.sh — sync repo extension source into the DEDICATED SERVER's copy of Shine,
+# and enable hordemode + hordetest in the TEST config only (never the live one).
 #
-#   ./dev/deploy.sh              mirror dev extensions to all workshop copies
+#   ./dev/deploy.sh                deploy into the server's mod storage
 #   ./dev/deploy.sh --no-test-ext  same, without the test harness
-#   ./dev/deploy.sh --clean      remove them again (vanilla-identical copies)
-#   ./dev/deploy.sh --check      verify parity against the repo without copying
-# Usage: ./dev/deploy.sh [--no-test-ext]
+#   ./dev/deploy.sh --clean        remove dev files everywhere, including any a
+#                                  previous revision planted in the Steam library
+#   ./dev/deploy.sh --check        verify state without writing (exit 1 = unsafe)
+#
+# READ THIS BEFORE CHANGING THE TARGETS
+# -------------------------------------
+# An earlier revision mirrored the payload into BOTH Shine copies - the server's and
+# the client's - to make "Different number of network messages" go away. That was
+# wrong, and it cost Arian the ability to join ANY server: the client copy lives under
+# Steam's managed tree, and files we put there fail Workshop consistency against every
+# other server ("your files are out of sync with the server"). We were damaging the
+# real game to make our dev server joinable.
+#
+# The supported shape, per Shine's own "Developing a Shine plugin" doc:
+#   "you need to make your own Steam Workshop mod, with the folder
+#    lua/shine/extensions ... Run your mod alongside the main Shine mod"
+# i.e. our plugins ship in OUR mod, never inside Shine's files. Until that mod exists,
+# dev files may live only in the server's own mod storage, which means a vanilla client
+# cannot join the dev server. That is the correct trade: headless bot testing works,
+# the game stays untouched. See dev/STANDARDS.md.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# NS2 requires the mod a server mounts and the mod a client mounts to AGREE.
-# The server takes its copy from %APPDATA%\...\workshop, the client from the Steam
-# library - two separate trees. Deploying to only one of them is what produced
-# "Different number of network messages on the Client from the Server" and the
-# resulting "Invalid data" kick: 15 dev files existed on one side only.
-# So every target gets the same payload, and --clean removes it from all of them.
-SHINE_EXT_TARGETS=(
-  "/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/workshop/content/4920/117887554/lua/shine/extensions"
-  "/mnt/c/Program Files (x86)/Steam/steamapps/workshop/content/4920/117887554/lua/shine/extensions"
-)
+
+# NS2's per-user mod storage. The dedicated server downloads and mounts from here;
+# Steam does not validate it and the game client never reads it.
+SERVER_EXT="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/workshop/content/4920/117887554/lua/shine/extensions"
+
+# The client's copy, under Steam's managed tree. Listed ONLY so --clean can undo the
+# damage an earlier revision of this script did here. Nothing may ever write to it.
+STEAM_EXT_REPAIR_ONLY="/mnt/c/Program Files (x86)/Steam/steamapps/workshop/content/4920/117887554/lua/shine/extensions"
+
+SHINE_EXT_TARGETS=("$SERVER_EXT")
+CLEAN_TARGETS=("$SERVER_EXT" "$STEAM_EXT_REPAIR_ONLY")
+
+# Hard refusal, evaluated before any write path so no code path can reach it first.
+for _target in "${SHINE_EXT_TARGETS[@]}"; do
+  case "$_target" in
+    */steamapps/*|*"/Program Files (x86)/Steam"*)
+      echo "[deploy] REFUSED: write target is Steam-managed content: $_target" >&2
+      echo "[deploy]        see dev/STANDARDS.md - this breaks the real game's mod consistency." >&2
+      exit 3 ;;
+  esac
+done
 # Only the TEST config is ever edited. The live config at D:/games/ns2srv belongs
 # to whatever server Arian is actually running.
 BASECFG="/mnt/d/games/ns2hordetest/cfg/shine/BaseConfig.json"
@@ -38,47 +65,65 @@ for Arg in "$@"; do
 done
 
 remove_from_targets() {
-  for ROOT in "${SHINE_EXT_TARGETS[@]}"; do
-    rm -rf "$ROOT/hordemode" "$ROOT/hordetest"
-    echo "[deploy] removed dev extensions from $ROOT"
+  # CLEAN_TARGETS, not SHINE_EXT_TARGETS: the Steam library copy must be repaired even
+  # though it is never a write target.
+  for ROOT in "${CLEAN_TARGETS[@]}"; do
+    if [[ -d "$ROOT/hordemode" || -d "$ROOT/hordetest" ]]; then
+      rm -rf "$ROOT/hordemode" "$ROOT/hordetest"
+      echo "[deploy] removed dev extensions from $ROOT"
+    fi
   done
 }
 
-verify_parity() {
-  # The invariant is not "copies match the repo" - a fully clean, vanilla machine is a
-  # legitimate state where client and server also agree. The invariant is that the copies
-  # agree WITH EACH OTHER, because that is what NS2 checks at join time. Mixed states are
-  # the dangerous ones, and they are invisible to every dev run that only ever boots
-  # headless. Each copy is hashed against the repo payload so "deployed" and "clean" are
-  # distinguishable in the output.
-  local WANT FIRST="" SEEN_DEPLOYED=0 SEEN_CLEAN=0
+verify_state() {
+  # Two different invariants, because the two copies are not the same kind of thing.
+  #
+  # 1. The Steam library copy MUST be pristine. Dev files there are not a "parity
+  #    mismatch" - they break the user's ability to play the game anywhere. This check
+  #    exists so that regression fails loudly instead of looking like a Steam problem.
+  # 2. The server copy may be deployed or clean, but if deployed it must match the repo,
+  #    so a half-written deploy cannot masquerade as a good one.
+  #
+  # "Deployed" deliberately no longer claims joins are safe: with dev files in the
+  # server's Shine copy the network message table differs from a vanilla client's, and
+  # it will be kicked. Headless bot testing is what this state supports.
+  local FAILED=0
+
+  if [[ -d "$STEAM_EXT_REPAIR_ONLY/hordemode" || -d "$STEAM_EXT_REPAIR_ONLY/hordetest" ]]; then
+    echo "[deploy] FAIL - dev extensions present in the CLIENT's Steam-managed copy:" >&2
+    echo "[deploy]        $STEAM_EXT_REPAIR_ONLY" >&2
+    echo "[deploy]        this makes every server reject Arian's client ('files out of sync')." >&2
+    echo "[deploy]        repair: ./dev/deploy.sh --clean" >&2
+    FAILED=1
+  else
+    echo "[deploy] client copy pristine (Steam-managed tree untouched)"
+  fi
+
+  local WANT
   WANT=$(cd "$REPO/source/lua/shine/extensions" && find hordemode hordetest -type f 2>/dev/null | sort | xargs -r md5sum | md5sum | cut -c1-8)
 
   for ROOT in "${SHINE_EXT_TARGETS[@]}"; do
-    local STATE
     if [[ -d "$ROOT/hordemode" ]]; then
-      local H
-      H=$(cd "$ROOT" && find hordemode hordetest -type f 2>/dev/null | sort | xargs -r md5sum | md5sum | cut -c1-8)
-      if [[ "$H" == "$WANT" ]]; then STATE="deployed"; SEEN_DEPLOYED=$((SEEN_DEPLOYED + 1)); else STATE="stale:$H"; SEEN_DEPLOYED=$((SEEN_DEPLOYED + 1)); fi
-    else
-      STATE="clean"; SEEN_CLEAN=$((SEEN_CLEAN + 1))
-    fi
+      local HAVE
+      HAVE=$(cd "$ROOT" && find hordemode hordetest -type f 2>/dev/null | sort | xargs -r md5sum | md5sum | cut -c1-8)
 
-    if [[ -z "$FIRST" ]]; then FIRST="$STATE"; elif [[ "$FIRST" != "$STATE" ]]; then
-      echo "[deploy] FAIL - workshop copies disagree: [$FIRST] vs [$STATE] ($ROOT)" >&2
-      echo "[deploy]        client/server mod mismatch -> joins are kicked with 'Invalid data'." >&2
-      echo "[deploy]        fix: ./dev/deploy.sh   (or ./dev/deploy.sh --clean for vanilla)" >&2
-      return 1
+      if [[ "$HAVE" != "$WANT" ]]; then
+        echo "[deploy] FAIL - server copy [$HAVE] does not match repo [$WANT]: $ROOT" >&2
+        FAILED=1
+      else
+        echo "[deploy] server copy deployed and matches repo [$WANT]"
+        echo "[deploy] NOTE - while this state holds, vanilla clients cannot join this server."
+      fi
+    else
+      echo "[deploy] server copy clean (vanilla) - any client may join"
     fi
-    echo "[deploy] $STATE: $ROOT"
   done
 
-  if [[ "$SEEN_CLEAN" -gt 0 && "$SEEN_DEPLOYED" -gt 0 ]]; then return 1; fi
-  echo "[deploy] copies agree (${FIRST}, ${#SHINE_EXT_TARGETS[@]} targets) - joins safe"
+  return $FAILED
 }
 
 if [[ $CHECK_ONLY -eq 1 ]]; then
-  verify_parity
+  verify_state
   exit $?
 fi
 
@@ -101,7 +146,7 @@ for ROOT in "${SHINE_EXT_TARGETS[@]}"; do
   echo "[deploy] synced dev extensions -> $ROOT"
 done
 
-verify_parity || exit 1
+verify_state || exit 1
 
 # Defence in depth against the 2026-09-21 incident, but aimed only at what is actually
 # dangerous: hordetest on a live server spawns bots, takes the commander chair and locks

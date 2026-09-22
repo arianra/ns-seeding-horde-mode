@@ -6,6 +6,17 @@ Everything below is a **judgment** check: run it against your own diff before th
 commit, because no static rule catches it. `dev/test.sh` proves the harness runs,
 not that the behaviour is right.
 
+## Managed content (hard rule - dev/STANDARDS.md)
+
+- [ ] Nothing writes under `steamapps\workshop\content`, `steamapps\common`, the server's
+      `ns2\` tree, or the client's own config. Those belong to Steam/the engine/the user, and
+      extra files in the client's mod copy make **every** server reject Arian with "files are
+      out of sync" - a local test win that breaks the game.
+- [ ] Dev plugins go in the server's `%APPDATA%` mod storage only. The supported long-term
+      shape is our own mod loaded alongside Shine, not files inside Shine's copy.
+- [ ] `./dev/deploy.sh --check` prints `client copy pristine` and exits 0.
+- [ ] A change that only passes by editing managed content is a failing change, not a fix.
+
 ## Engine contact
 
 - [ ] Nothing touches game APIs in `Initialise` — `GetGamerules()` is nil before world

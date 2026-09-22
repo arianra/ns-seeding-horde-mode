@@ -205,5 +205,13 @@ PY
   esac
 fi
 
+# Tripwire for the 2026-09-21 incident: a dev loop that leaves files in the client's
+# Steam-managed copy stops Arian joining ANY server. This is the only automatic check for
+# it - every headless run is structurally blind to the client side, which is precisely how
+# the damage survived a full green suite. See dev/STANDARDS.md.
+CHECK_OUT=$("$REPO/dev/deploy.sh" --check 2>&1); CHECK_RC=$?
+sed 's/^/[deploy]   /' <<<"$CHECK_OUT"
+[[ $CHECK_RC -eq 0 ]] || { echo "[test] FAIL - managed-content check failed (dev/STANDARDS.md)" >&2; exit 1; }
+
 echo "[test] OK — $PASS passed, 0 failed, ${EXPECTED:-0} expected (negative controls)"
 exit 0
