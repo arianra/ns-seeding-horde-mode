@@ -494,37 +494,41 @@ function Plugin:InitialiseScenarios()
 		Assert.True( horde.Machine == Saved, "machine restored for the rest of the suite" )
 	end )
 
-	-- status/stop are console-only (i2c bound them with no chat alias), so any word
-	-- after /horde used to fall straight through to "start". On a live server the very
-	-- first thing typed was `/horde status`, and it began wave 1 - visible in the log
-	-- only as a start with no preceding audit line, because Shine's RunCommand logs
-	-- AFTER the handler. Gates are opened deliberately here: the only thing allowed to
-	-- stop this start is the argument guard, and it must run before the machine.
-	self:RegisterScenario( "horde_rejects_stray_arguments", false, function()
+	-- Chat can only ever reach sh_horde (i2c bound status/stop console-only), so any
+	-- word after /horde fell through to "start": the first thing typed on a live server
+	-- was `/horde status` and it began wave 1. Routing is asserted by stubbing the three
+	-- destinations - the contract under test is *which handler runs*, not what each one
+	-- does, and those have their own scenarios.
+	self:RegisterScenario( "horde_command_routing", false, function()
 		local horde = Shine.Plugins.hordemode
 		local SavedMachine = horde.Machine
 		local SavedCheck = horde.Triggers.Check
 		local SavedSnapshot = horde.Triggers.TakeSnapshot
-		local Starts = 0
+		local SavedStatus = horde.OnHordeStatus
+		local SavedStop = horde.OnHordeStop
+		local Hits = { starts = 0, status = 0, stop = 0 }
 
 		horde.Triggers.Check = function() return true end
 		horde.Triggers.TakeSnapshot = function() return {} end
-		horde.Machine = { Start = function() Starts = Starts + 1 return true end }
+		horde.OnHordeStatus = function() Hits.status = Hits.status + 1 end
+		horde.OnHordeStop = function() Hits.stop = Hits.stop + 1 end
+		horde.Machine = { Start = function() Hits.starts = Hits.starts + 1 return true end }
 
 		horde:OnHordeCommand(nil, { "status" })
-		local AfterStray = Starts
+		horde:OnHordeCommand(nil, { "stop" })
+		horde:OnHordeCommand(nil, { "bogus" })
 		horde:OnHordeCommand(nil, {})
-		local AfterEmpty = Starts
 		horde:OnHordeCommand(nil)
-		local AfterNil = Starts
 
 		horde.Triggers.Check = SavedCheck
 		horde.Triggers.TakeSnapshot = SavedSnapshot
+		horde.OnHordeStatus = SavedStatus
+		horde.OnHordeStop = SavedStop
 		horde.Machine = SavedMachine
 
-		Assert.Equal( 0, AfterStray, "'/horde status' does not start a horde" )
-		Assert.Equal( 1, AfterEmpty, "'/horde' with no arguments still starts" )
-		Assert.Equal( 2, AfterNil, "the console path (no argument list) still starts" )
+		Assert.Equal( 1, Hits.status, "'/horde status' reports status" )
+		Assert.Equal( 1, Hits.stop, "'/horde stop' stops" )
+		Assert.Equal( 2, Hits.starts, "only a bare /horde starts (chat and console paths)" )
 	end )
 
 	-- i3a: the registry is accounting truth for teardown, so its bookkeeping is

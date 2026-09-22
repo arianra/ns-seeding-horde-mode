@@ -22,12 +22,17 @@ fi
 
 echo "[stop] stopping our server pid=$PID"
 
-# Ask it to close, do NOT -Force. Measured: Stop-Process -Force on every dev cycle
-# made NS2's crash handler write a dump per kill - 21 "server" entries in
-# dumps/dumplog.txt in one afternoon, which is what looked like a crash loop.
-# A plain Stop-Process lets the server shut down itself: same exit, zero dumps,
-# and the shutdown hooks actually run.
-powershell.exe -Command "Stop-Process -Id $PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+# Escalation order, politest first. `taskkill /PID` (no /F) sends a close request and is
+# worth trying before anything harsher; a plain Stop-Process is the same class of kill;
+# -Force is last and always writes a crash dump. An earlier revision claimed plain
+# Stop-Process was dump-free unconditionally - falsified repeatedly on 2026-09-21:
+# stopping a server whose test suite had run wrote a 60MB minidump and uploaded a crash
+# report in most trials (8s settle 2/2, 25s 0/2, 30s 2/2), while the live config with no
+# suite ran 4/4 clean. There is no graceful exit path available to us: no engine switch,
+# no window to close, and the web interface is not listening. So a dump after a suite run
+# is the suite's un-restored state (i7a teardown), not the choice of signal.
+
+powershell.exe -Command "taskkill /PID $PID" >/dev/null 2>&1 || true
 
 WAITED=0
 while [[ $WAITED -lt 20 ]]; do
@@ -38,7 +43,19 @@ while [[ $WAITED -lt 20 ]]; do
 done
 
 if [[ "$ALIVE" != "0" && -n "$ALIVE" ]]; then
-  echo "[stop] WARN - graceful close ignored after ${WAITED}s; forcing (this WILL write a crash dump)" >&2
+  echo "[stop] taskkill ignored after ${WAITED}s; trying Stop-Process (still without -Force)" >&2
+  powershell.exe -Command "Stop-Process -Id $PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
+  WAITED=0
+  while [[ $WAITED -lt 10 ]]; do
+    sleep 2
+    WAITED=$((WAITED + 2))
+    ALIVE=$(powershell.exe -Command "(Get-Process -Id $PID -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')
+    [[ "$ALIVE" == "0" || -z "$ALIVE" ]] && break
+  done
+fi
+
+if [[ "$ALIVE" != "0" && -n "$ALIVE" ]]; then
+  echo "[stop] WARN - polite stops ignored; forcing (this WILL write a crash dump)" >&2
   powershell.exe -Command "Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
   sleep 3
 fi

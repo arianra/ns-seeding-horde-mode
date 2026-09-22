@@ -226,31 +226,49 @@ function Plugin:OnHordeStatus(Client)
 	end
 end
 
---- /horde entry: argument guard, then gates, then start. Rejection reason goes to
---- the caller's chat (Notify(Player, Message) - messaging.lua:201), never a silent
---- no-op.
+--- /horde entry: dispatch on the first word, then gates, then start. Every path
+--- answers in chat (Notify(Player, Message) - messaging.lua:201); none is silent.
 ---
---- The guard exists because status/stop are console-only (i2c bound them with no
---- chat alias), so `/horde status` used to fall straight through to "start" - and
---- Shine's RunCommand logs its audit line AFTER the handler, so the server log read
---- as a horde starting for no reason. A curious first thing to type must never be a
---- state change.
+--- Before this, status/stop were console-only (i2c bound them with no chat alias), so
+--- `/horde status` fell straight through to "start" and began wave 1 - and because
+--- Shine's RunCommand writes its audit line AFTER the handler ran, the log showed a
+--- start with no command above it. The first word a curious player types must never
+--- be a state change.
 function Plugin:OnHordeCommand(Client, Args)
-	local Stray = Args and Args[1]
+	local Word = Args and Args[1]
+	local Player = self:GetCommandPlayer(Client)
 
-	if Stray then
-		self:Log(string.format("/horde rejected: unexpected argument '%s' (sh_horde_status and sh_horde_stop are console commands)", tostring(Stray)))
+	if Word == "status" then
+		self:OnHordeStatus(Client)
+		return
+	end
 
-		local Player = self:GetCommandPlayer(Client)
+	if Word == "stop" then
+		-- i2c's intent survives the alias: starting is open (Q14), stopping is not.
+		if not Shine:HasAccess(Client, "sh_horde_stop") then
+			self:Log("/horde stop refused: caller lacks sh_horde_stop access")
+
+			if Player then
+				self:Notify(Player, "Horde: you do not have access to stop the horde.", true)
+			end
+
+			return
+		end
+
+		self:OnHordeStop(Client)
+		return
+	end
+
+	if Word then
+		self:Log(string.format("/horde rejected: unknown argument '%s' (try /horde, /horde status, /horde stop)", tostring(Word)))
 
 		if Player then
-			self:Notify(Player, "Horde: unknown argument '%s'. Status and stop are console commands.", true, tostring(Stray))
+			self:Notify(Player, "Horde: unknown argument '%s'. Try /horde status.", true, tostring(Word))
 		end
 
 		return
 	end
 
-	local Player = self:GetCommandPlayer(Client)
 	local Now = Shared.GetTime()
 	local Snapshot = Plugin.Triggers.TakeSnapshot(Client)
 

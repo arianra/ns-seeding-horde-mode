@@ -118,6 +118,19 @@ while [[ $elapsed -lt $TIMEOUT ]]; do
   elapsed=$((elapsed + 5))
 done
 
+# Drain window. This is NOT a crash fix and must not be described as one: measured on
+# this box by counting dumps/dumplog.txt 55s after each stop, an 8s settle dumped 2/2, a
+# 25s settle 0/2, a 30s settle 2/2. The settle does not predict it. What is solid: the
+# live config with no suite ran 4/4 clean stops, while stopping a server whose suite had
+# run almost always writes a 60MB minidump and uploads a crash report - so the trigger is
+# state the suite leaves behind (bots, BTC lock, registry entities, timers), i.e. the
+# teardown that i7a has not implemented yet. Until that lands, treat a post-suite dump as
+# expected. This wait exists only so deferred checks finish logging before we go.
+if [[ -n "$ALDONE" ]]; then
+  echo "[test]   draining 8s for deferred checks before shutdown"
+  sleep 8
+fi
+
 echo "[test] 7/7 stopping server"
 "$REPO/dev/server-stop.sh" | sed 's/^/[stop] /' || true
 
