@@ -103,20 +103,22 @@ done
 
 verify_parity || exit 1
 
-# Defence in depth: if the live config somehow has the dev extensions on, turn them
-# off. A live server must never load hordetest (it spawns bots, takes the chair and
-# locks the bot controller) no matter what happened to the test config.
+# Defence in depth against the 2026-09-21 incident, but aimed only at what is actually
+# dangerous: hordetest on a live server spawns bots, takes the commander chair and locks
+# the bot controller. hordemode is the gameplay itself, and Arian enabling it on his own
+# server is a decision, not a leak - an earlier revision forced that off too and silently
+# reverted his flag mid-session, which is how "the server stopped loading hordemode" was
+# explained away as a config mystery. Only the test harness is vetoed here.
 if [[ -f "$LIVECFG" ]]; then
   python3 - "$LIVECFG" <<'PY'
 import json, sys
 path = sys.argv[1]
 cfg = json.load(open(path))
 ae = cfg.get("ActiveExtensions", {})
-if ae.get("hordemode") or ae.get("hordetest"):
-    ae["hordemode"] = False
+if ae.get("hordetest"):
     ae["hordetest"] = False
     json.dump(cfg, open(path, "w"), indent=4)
-    print("[deploy] forced hordemode+hordetest OFF in the live config (dev-only extensions)")
+    print("[deploy] forced hordetest OFF in the live config (test harness must never run on a live server)")
 PY
 fi
 
