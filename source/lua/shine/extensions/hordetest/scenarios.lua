@@ -1216,8 +1216,29 @@ function Plugin:InitialiseScenarios()
 
 		horde.Machine:Start(Shared.GetTime())
 
+		-- A successful start that says nothing is the exact complaint from the field,
+		-- so the broadcast is part of the contract, not decoration. Notify with a nil
+		-- target is Shine's broadcast path (ApplyNetworkMessage -> SendNetworkMessage
+		-- with no client), so the assertion is on the target, not on a log line.
+		local SavedNotify = horde.Notify
+		local Broadcasts = {}
+
+		horde.Notify = function(self, Target, Message, Format, ...)
+			if Target == nil then
+				Broadcasts[#Broadcasts + 1] = Message
+			end
+		end
+
 		local Placed = horde:BeginWave(Config)
+
+		horde.Notify = SavedNotify
+
 		Assert.True( Placed >= 1, "wave 1 places at least one mouth on the live map" )
+		Assert.Equal( 1, #Broadcasts, "a successful wave announces itself to everyone" )
+
+		if Broadcasts[1] and not Broadcasts[1]:find("WAVE 1") then
+			error( { Detail = "start broadcast does not name the wave: " .. tostring(Broadcasts[1]) } )
+		end
 
 		self:Defer( "wave_slice_settles", 6, false, function()
 			local Problems = {}

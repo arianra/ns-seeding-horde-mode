@@ -296,10 +296,10 @@ function Plugin:OnHordeCommand(Client, Args)
 	end
 
 	if Word then
-		self:Log(string.format("/horde rejected: unknown argument '%s' (try /horde, /horde status, /horde stop)", tostring(Word)))
+		self:Log(string.format("/horde rejected: unknown argument '%s'", tostring(Word)))
 
 		if Player then
-			self:Notify(Player, "Horde: unknown argument '%s'. Try /horde status.", true, tostring(Word))
+			self:Notify(Player, "HORDE: unknown argument '%s'. Commands: /horde | /horde status | /horde stop | /horde restart", true, tostring(Word))
 		end
 
 		return
@@ -325,7 +325,7 @@ function Plugin:StartWave(Client, Now)
 		self:Log(string.format("/horde rejected by %s: %s", Gate, Reason))
 
 		if Player then
-			self:Notify(Player, "Horde not started: %s", true, Reason)
+			self:Notify(Player, "HORDE: not started - %s. Use /horde status to see it, /horde stop to end it, /horde restart to reset.", true, Reason)
 		end
 
 		return
@@ -339,6 +339,7 @@ function Plugin:StartWave(Client, Now)
 	end
 
 	self:Log("horde started - wave 1")
+	self:Announce("HORDE: started. Clearing vanilla fill and opening the first wave...")
 	self:BeginWave(Config)
 end
 
@@ -370,12 +371,17 @@ function Plugin:BeginWave(Config)
 	if Spawned == 0 then
 		local Waves = (Config and Config.Waves) or {}
 
+		self:Announce("HORDE: the wave could NOT be placed - %s candidates found, %s in the band, %s chosen. Check Waves.BandMin/BandMax for this map.",
+			RawCount, BandedCount, #Chosen)
+
 		self:Log(string.format(
 			"wave 1 produced NO mouths: %s raw candidates, %s in band, %s chosen (band %s-%sm, pool %s, per wave %s)",
 			tostring(RawCount), tostring(BandedCount), tostring(#Chosen),
 			tostring(Waves.BandMin), tostring(Waves.BandMax), tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
 	else
 		self:Log(string.format("wave 1: %s mouths placed from %s candidates", tostring(Spawned), tostring(RawCount)))
+		self:Announce("HORDE: WAVE 1 - %s tunnel mouths opened (%s candidates on this map). /horde status | /horde stop | /horde restart",
+			Spawned, RawCount)
 	end
 
 	-- The status surface reads these off the machine, and nothing used to write them:
@@ -540,6 +546,17 @@ function Plugin:Teardown(Now)
 	end
 
 	return Ok
+end
+
+--- Broadcast to every player, and mirror it to the log.
+---
+--- Shine's Notify takes a player; a nil target reaches ApplyNetworkMessage, which calls
+--- SendNetworkMessage with no client - i.e. a broadcast (core/server/logging.lua:65-85).
+--- Verified rather than assumed: "silence unless refused" was exactly the complaint, and
+--- the fix is only real if the message actually reaches everyone.
+function Plugin:Announce(Message, ...)
+	self:Log(string.format("ANNOUNCE: %s", string.format(Message, ...)))
+	self:Notify(nil, Message, true, ...)
 end
 
 function Plugin:Log(Message)
