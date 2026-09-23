@@ -55,6 +55,7 @@ this document is the workflow that standard implies.
 | 20 | Boot auto-creates 7 JSONs + `shine/` in `config://`. `ProgressionConfig.json` is created by the **auto-mounted UWE Hotfix 344 mod**, not the engine | `ServerConfig.lua:65,90-95,276-282`; `core/lua/MapCycle.lua:39`; `ConfigFileUtility.lua:69-101` |
 | 21 | Every map change runs a Steam UGC update pass against a UWE **whitelist of 114 hotfix mods**, with join lockdown while installing. `workshopupdater` is a Shine extension (default **off**) that polls published-file details every 60 s and map-cycles to force re-download | boot log lines 23-58; Shine `Workshop-Updater.md` |
 | 22 | Windows→server packets arrive source-NATed as `172.30.128.1` (WSL/Hyper-V), so per-IP logic sees the gateway, not the client | boot log join lines |
+| 22b | **The shared engine log is rotated at boot, not appended to**: a successful boot replaced a 10873-byte file with a 7295-byte one. Byte-offset fencing breaks on this (offset points past the end of the new file) and a plain occurrence count breaks too (1 before, 1 after). Readiness now accepts *either* a count increase *or* a size shrink with ≥1 occurrence | measured 2026-09-22; `dev/server-start.sh:log_state` |
 
 ### Publishing
 
@@ -239,7 +240,7 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 | ~~**G1**~~ **PASSED 2026-09-22** | `-game` overlay mounts on the dedicated server and Shine discovers extensions inside it | §2b: `Extension 'hordemode' loaded` with the workshop copy verified clean; plugin-shape rules settled |
 | **G1b** | Same overlay, but the extension registers a datatable | **expected to fail vanilla joins** — proves facts 9-13 empirically and measures what "client must mount our mod" costs |
 | **G2** | `-webadmin` on DEV: enumerate actions, attempt graceful shutdown | clean exit with **0** new `dumplog.txt` entries, or a written "no graceful path" verdict |
-| **P1** | `dev/build.sh`: `source/` → `build/mod/` (deterministic, with the entry file) | two consecutive builds byte-identical |
+| ~~**P1**~~ **DONE** | `dev/build.sh` assembles the overlay from `source/`, rebuilt from empty each run so a renamed-away extension cannot survive and make the suite pass against dead code. No `.entry`, no `game_setup.xml` — §2b shows neither is needed and both change engine behaviour we don't own. It also **fails if dev extensions exist in any workshop copy**, because mount precedence is unmeasured and ambiguity would make a green run meaningless. | verified: `overlay matches repo [291f5a02], 15 files` |
 | **P2** | Rewrite `deploy.sh`: delete **every** write into any workshop `content/4920/<foreign-id>` dir; deploy = build + stage into `dev/overlay/`; keep `--clean` as the repair path for the Steam copy | `grep -rn "117887554" dev/*.sh` → nothing; suite green; `--check` pristine |
 | **P3** | Server standard S1-S5 (default DEV, `--live` opt-in, paired ports, isolated `-modstorage`, per-instance pidfile) | bare `./dev/server-start.sh` provably cannot touch LIVE |
 | **P4** | Config templates split DEV/LIVE + read-only `dev/config-check.sh` reporting LIVE drift | drift report produced; nothing written |
