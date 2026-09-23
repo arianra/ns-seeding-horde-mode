@@ -101,15 +101,63 @@ Why this shape and not the old one:
 **Priority is settled from source** (`ModLoader.lua:236-242`, fact 2c): higher loads first, so our
 entry uses **`Priority = 40`** to load after Shine's 50.
 
-What G1 actually risks is narrower than "does modding work": entry *discovery* is proven
-(`ModLoader.lua:215-218` globs `lua/entry/*.entry` over the merged FS, on the server install too).
-Unproven is whether a `-game` overlay's **non-entry** files become visible to Shine's
-`lua/shine/extensions/*.lua` glob, and whether they are visible **by the time Shine scans** —
-Shine scans during its own `FileHooks` load, so mount timing versus scan order is the failure
-mode to watch. If the overlay is not visible to the glob, the fallback is `-modstorage` with the
-mod placed as a numbered folder, which is a real mount rather than a search-path addition.
+**This risk is retired — see §2b.** The worry was that a `-game` overlay's non-entry files might
+not be visible to Shine's `lua/shine/extensions/*.lua` glob, or not in time. Measured: they are.
+Entry *discovery* was already proven from source (`ModLoader.lua:215-218` globs
+`lua/entry/*.entry` over the merged FS, and the server install ships the same ModLoader).
 
 ---
+
+## 2b. G1 result — packaging and mounting are proven on this machine
+
+Ran the experiment directly against `Server.exe` (no tooling changes), with the workshop copy
+verified **clean (0 dev dirs)** and the files present only in the overlay:
+
+```
+D:\games\ns2-server\x64\Server.exe -config_path D:\games\ns2hordetest\cfg -port 27025
+    -limit 16 -game D:\games\ns2hordetest\overlay +map ns2_summit
+
+[19:36:17]- Extension 'hordemode' loaded.
+[19:36:17]- Extension 'hordetest' loaded.
+[TEST] suite not authorised for this config (RunSuite=false) - hordetest idling
+```
+
+**`-game <absolute path>` mounts on the dedicated server, and Shine's merged-VFS glob finds
+extensions inside it.** No Workshop item, no subscription, no managed-content write. The whole
+dev loop can run out of a directory we own.
+
+The experiment also settled the plugin-shape rules, because three deliberately different probe
+shapes were mounted in one boot:
+
+| Shape placed in the overlay | Outcome | Rule |
+|---|---|---|
+| `hordemode/` (`shared.lua` + `server.lua`) | **loaded** | the working shape |
+| `hordehello/server.lua` only | not loaded, no error | a folder with no `shared.lua`/`client.lua` is **not a plugin** |
+| `hordehello2/shared.lua` doing `local Plugin = ...` | `Plugin loading error: attempt to index local 'Plugin' (a string value)` | in `shared.lua` the vararg is the **name string** |
+| `hordehello3.lua` (flat file, same mistake) | same error, but **discovered** (`ServerFile = …/hordehello3.lua`) | flat server-only files work, and still take the name |
+
+So the canonical scaffolding is:
+
+```lua
+-- lua/shine/extensions/<name>/shared.lua   -> receives the NAME
+local Plugin = Shine.Plugin( ... )
+Plugin.Version = "0.1"
+return Plugin
+
+-- lua/shine/extensions/<name>/server.lua   -> receives the TABLE
+local Plugin = ...
+```
+
+**Our repo already follows this** (`hordemode/shared.lua:18` `Shine.Plugin( ... )`, `:49`
+`return Plugin`; `hordemode/server.lua:22` `local Plugin = ...`). The i0a scaffold was right; it
+is now confirmed by experiment instead of by reading.
+
+Two caveats carried forward:
+- **Precedence is untested.** With the same extension present in both an overlay and a workshop
+  copy, which one wins has not been measured. Until P2 removes the workshop copy from the loop,
+  the overlay must be kept empty or the experiment is ambiguous.
+- **Client side is not yet proven.** `-game` on `NS2.exe` is documented (UWE + wiki) and the
+  tokens are in the binary, but we have not booted a client with an overlay. That is G1c.
 
 ## 3. Server standard (two instances, one box)
 
@@ -133,7 +181,8 @@ Fixes required, in priority order:
 1. **S1 — `server-start.sh:10` defaults to the LIVE config dir.** A bare invocation restarts
    your server. Invert: default DEV, require `--live`, and refuse any `-config_path` outside an
    allow-list.
-2. **S2 — isolate DEV mod storage** with `-modstorage` (verify in G1 that it takes effect).
+2. **S2 — isolate DEV mod storage** with `-modstorage` (switch is parse-verified; a boot proving
+   it takes effect is still outstanding — call it **G1d**).
 3. **S3 — paired ports** so both instances can run at once; document the Windows Defender UDP
    allow needed for each.
 4. **S4 — instance identity in logs.** Engine log and dumps are shared; the runner already
@@ -187,7 +236,7 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 
 | Step | Work | Acceptance (observable, before the next step) |
 |---|---|---|
-| **G1** | Build a **trivial** mod: `lua/entry/hordehello.entry` (`FileHooks`/`Shared`, `Priority = 40`) + `lua/shine/extensions/hordehello/server.lua` that prints on load, **no `shared.lua`** (vanilla-safe per fact 11). Mount via `-game` overlay on DEV server **and** DEV client | boot log: mod discovered, `Extension 'hordehello' loaded`, our print. If Shine's glob misses the overlay, record that and fall back to `-modstorage`. `deploy.sh --check` still pristine; a vanilla client still joins |
+| ~~**G1**~~ **PASSED 2026-09-22** | `-game` overlay mounts on the dedicated server and Shine discovers extensions inside it | §2b: `Extension 'hordemode' loaded` with the workshop copy verified clean; plugin-shape rules settled |
 | **G1b** | Same overlay, but the extension registers a datatable | **expected to fail vanilla joins** — proves facts 9-13 empirically and measures what "client must mount our mod" costs |
 | **G2** | `-webadmin` on DEV: enumerate actions, attempt graceful shutdown | clean exit with **0** new `dumplog.txt` entries, or a written "no graceful path" verdict |
 | **P1** | `dev/build.sh`: `source/` → `build/mod/` (deterministic, with the entry file) | two consecutive builds byte-identical |
