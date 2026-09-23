@@ -7,6 +7,7 @@
 #        ./dev/server-start.sh <config_path_win> [map]   # explicit config (legacy form)
 #        --no-game                                       # skip the -game overlay
 #        --port N                                        # override the instance port
+#        --with-suite                                    # let hordetest run (test.sh only)
 #
 # DEV is the default now. It used to be the LIVE config, so a bare invocation restarted
 # Arian's server — the same class of mistake as the workshop-copy incident (dev/STANDARDS.md).
@@ -27,12 +28,14 @@ LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
 
 LIVE=0
 USE_GAME=1
+WITH_SUITE=0
 PORT_OVERRIDE=""
 POS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live) LIVE=1; shift ;;
     --no-game) USE_GAME=0; shift ;;
+    --with-suite) WITH_SUITE=1; shift ;;
     --port=*) PORT_OVERRIDE="${1#*=}"; shift ;;
     --port)
       [[ $# -ge 2 && "${2}" =~ ^[0-9]+$ ]] || { echo "[start] --port needs a number" >&2; exit 2; }
@@ -74,6 +77,27 @@ MODS_ARG=""
 if [[ $LIVE -eq 0 && -d "$MODS_WSL" ]]; then
   MODS_ARG=",'-modstorage','$MODS_WIN'"
   echo "[start] using isolated -modstorage $MODS_WIN"
+fi
+
+# A DEV boot must be a server you can join. The suite spawns and destroys bots, takes the
+# commander chair and locks the bot controller, so leaving it armed made every manual boot
+# auto-start a horde and behave unpredictably for whoever was connected - which is exactly
+# what Arian caught. test.sh passes --with-suite explicitly; nothing else arms it. The LIVE
+# config is never touched here (dev/STANDARDS.md).
+HARDCFG="/mnt/d/games/ns2hordetest/cfg/shine/plugins/HordeTest.json"
+if [[ $LIVE -eq 0 && -d "/mnt/d/games/ns2hordetest/cfg/shine/plugins" ]]; then
+  # Written unconditionally, and WITHOUT jq: `jq` resolves in an interactive shell here but
+  # not inside a non-interactive script, so a condition built on it silently evaluated to
+  # empty and the disarm never ran - the suite then booted a second time while a human was
+  # connected and looked like the mod auto-starting. Always writing the wanted state has no
+  # such failure mode, and the file is two lines.
+  if [[ $WITH_SUITE -eq 1 ]]; then
+    printf '{\n    "RunSuite" : true\n}\n' > "$HARDCFG"
+    echo "[start] hordetest ARMED - the suite will run on this boot"
+  else
+    printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
+    echo "[start] hordetest disarmed - this boot is a joinable server (./dev/test.sh runs the suite)"
+  fi
 fi
 
 GAME_ARG=""

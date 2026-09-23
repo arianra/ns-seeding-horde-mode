@@ -96,7 +96,7 @@ sed 's/^/[deploy] /' <<<"$DEPLOY_OUT"
 [[ $DEPLOY_RC -eq 0 ]] || bail "deploy failed (exit $DEPLOY_RC)"
 
 echo "[test] 5/7 starting server (map=$MAP cfg=$CFG_WIN)"
-"$REPO/dev/server-start.sh" "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
+"$REPO/dev/server-start.sh" --with-suite "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
 START_RC=${PIPESTATUS[0]}
 [[ $START_RC -eq 0 ]] || bail "server never reached READY (see log above)"
 
