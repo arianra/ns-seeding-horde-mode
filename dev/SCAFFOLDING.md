@@ -142,6 +142,27 @@ ModLoader.GetLoadedModNames()    -- array of loaded mod names
 ModLoader.GetModInfo(name)       -- that mod's entry table
 ```
 
+### 6b. Client-side mount (G1c) — needs a human at the keyboard
+
+The dedicated server only runs the **Server** VM, so every green run above proves nothing about
+the client VM. This one cannot be automated from here: it launches the game on your desktop.
+
+```powershell
+# 1. DEV server up (agent side)
+#    ./dev/server-start.sh            -> DEV on port 27025, overlay mounted
+# 2. Client with the SAME overlay (your side, Steam running):
+& "C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2\NS2.exe" `
+   -game "D:\games\ns2hordetest\overlay" -hotload
+# 3. Join 127.0.0.1:27025, then:
+Select-String -Path "$env:APPDATA\Natural Selection 2\log.txt" -Pattern "Extension 'hordemode' loaded|Plugin loading error|network messages"
+```
+
+Expected on success: `Extension 'hordemode' loaded` in the **client** log and a clean join.
+Expected if the overlay is not mounted client-side: either no such line, or
+`Different number of network messages on the Client from the Server` — which is the same
+mismatch that produced the original "Invalid data" kick, and would tell us `-game` is
+server-side only. Either answer is useful; neither requires writing anything you own.
+
 Caveat when grepping the boot log: **the engine log is rotated at boot, not appended.** A
 byte-offset fence points past the end of the smaller new file and an occurrence-count delta can
 read `1 before, 1 after`. `server-start.sh` accepts a count increase *or* a size shrink.
