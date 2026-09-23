@@ -19,6 +19,8 @@ DEV_CFG_WIN='D:\games\ns2hordetest\cfg'
 LIVE_CFG_WIN='D:\games\ns2srv\cfg'
 OVERLAY_WIN='D:\games\ns2hordetest\overlay'
 OVERLAY_WSL='/mnt/d/games/ns2hordetest/overlay'
+MODS_WIN='D:\games\ns2hordetest\mods'
+MODS_WSL='/mnt/d/games/ns2hordetest/mods/content/4920'
 NS2SRV_WIN='D:\games\ns2-server'
 LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
 
@@ -54,6 +56,16 @@ if [[ ${#POS[@]} -ge 1 ]]; then
   else
     MAP="${POS[0]}"
   fi
+fi
+
+# G1d: give DEV its own mod storage. The engine keeps mod storage in %APPDATA% regardless of
+# -config_path, so without this a dev instance reads - and any dev edit writes - the SAME tree
+# the live server mounts. That shared tree is the exact channel the 2026-09-21 incident used:
+# a file placed for the dev loop was executed by Arian's server.
+MODS_ARG=""
+if [[ $LIVE -eq 0 && -d "$MODS_WSL" ]]; then
+  MODS_ARG=",'-modstorage','$MODS_WIN'"
+  echo "[start] using isolated -modstorage $MODS_WIN"
 fi
 
 GAME_ARG=""
@@ -106,7 +118,7 @@ echo "[start] log baseline: ready=$READY_BEFORE size=$SIZE_BEFORE"
 
 echo "[start] launching Server.exe (cfg=$CFG_WIN map=$MAP port=$PORT game=$USE_GAME)..."
 # Detached via Start-Process so this script can return and poll the log. Window hidden.
-NEW_PID=$(powershell.exe -Command "(Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16'${GAME_ARG},'+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden -PassThru).Id" 2>/dev/null | tr -dc '0-9')
+NEW_PID=$(powershell.exe -Command "(Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16'${MODS_ARG}${GAME_ARG},'+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden -PassThru).Id" 2>/dev/null | tr -dc '0-9')
 if [[ -z "$NEW_PID" ]]; then
   echo "[start] could not launch Server.exe" >&2
   exit 1
