@@ -163,8 +163,11 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg, Not)
 		(Not and Not:IsEngaged()) and "engaged" or "idle", 
 		tostring(Snapshot.PlayerCount or 0),
 		tostring(Snapshot.MaxPlayers or 0),
-		tostring(Machine.MouthsActive or "-"),
-		tostring(Machine.MouthsPool or "-"))
+		-- Live count comes from the registry, not a cached field: a cached
+		-- MouthsActive was stale by up to a tick and stayed non-zero after teardown,
+		-- which is how "mouths=-/-" lied about a wave that had three real mouths.
+		tostring(Reg and Reg:CountByKind("mouth") or 0),
+		tostring(Machine.MouthsPool or 0))
 end
 
 --- A command callback receives the *client*; the player is reached through
@@ -253,6 +256,30 @@ end
 function Plugin:OnHordeCommand(Client, Args)
 	local Word = Args and Args[1]
 	local Player = self:GetCommandPlayer(Client)
+	local Now = Shared.GetTime()
+
+	-- `/horde start` is the obvious thing to type, and silently starting on a bare
+	-- `/horde` while rejecting `/horde start` would be a strange contract.
+	if Word == "start" then
+		Word = nil
+	end
+
+	if Word == "restart" then
+		-- Restart is teardown-then-start, not start-over-start: the wave counter, the
+		-- cooldown clock and any live mouths all have to go back to a known state, and
+		-- BeginWave on top of a running wave would leave the old mouths orphaned.
+		if not self:RequireMachine("sh_horde restart", Client) then
+			return
+		end
+
+		if self.Machine:IsActive() then
+			self.Machine:Stop("admin sh_horde restart", Now)
+			self:Teardown(Now)
+		end
+
+		self:StartWave(Client, Now)
+		return
+	end
 
 	if Word == "status" then
 		self:OnHordeStatus(Client)
@@ -260,17 +287,10 @@ function Plugin:OnHordeCommand(Client, Args)
 	end
 
 	if Word == "stop" then
-		-- i2c's intent survives the alias: starting is open (Q14), stopping is not.
-		if not Shine:HasAccess(Client, "sh_horde_stop") then
-			self:Log("/horde stop refused: caller lacks sh_horde_stop access")
-
-			if Player then
-				self:Notify(Player, "Horde: you do not have access to stop the horde.", true)
-			end
-
-			return
-		end
-
+		-- Open by request (2026-09-22): `/horde` is a marine command with NoPerm, so a
+		-- stop that needs a Shine admin identity was unreachable in practice - and
+		-- unreachable means a stuck wave nobody in the game can end. The console command
+		-- sh_horde_stop keeps its permission check for anyone scripting the server.
 		self:OnHordeStop(Client)
 		return
 	end
@@ -285,7 +305,13 @@ function Plugin:OnHordeCommand(Client, Args)
 		return
 	end
 
-	local Now = Shared.GetTime()
+	return self:StartWave(Client, Now)
+end
+
+--- The gated start, shared by bare `/horde` and `/horde restart` so the two can never
+--- drift apart on which checks apply.
+function Plugin:StartWave(Client, Now)
+	local Player = self:GetCommandPlayer(Client)
 	local Snapshot = Plugin.Triggers.TakeSnapshot(Client)
 
 	if not self:RequireMachine("sh_horde", Client) then
@@ -320,6 +346,7 @@ end
 --- (bot spawner) and i6a (wave loop) - but a horde with no mouths is invisible, and
 --- this is the bead that makes /horde observable in-world.
 function Plugin:BeginWave(Config)
+	local Machine = self.Machine
 	local Chosen, Base, RawCount, BandedCount = Plugin.Placement.Collect(Config)
 
 	if not Base then
@@ -351,6 +378,14 @@ function Plugin:BeginWave(Config)
 		self:Log(string.format("wave 1: %s mouths placed from %s candidates", tostring(Spawned), tostring(RawCount)))
 	end
 
+	-- The status surface reads these off the machine, and nothing used to write them:
+	-- BuildStatusLine fell back to "-" while three real mouths sat in the world, so
+	-- the command actively reported an empty wave. MouthsActive is kept current by
+	-- HordeTick from the registry, which is the only accounting truth (RD6).
+	Config.Waves = Config.Waves or {}
+	Machine.MouthsPool = Spawned
+	Machine.MouthsActive = Spawned
+
 	return Spawned
 end
 
@@ -362,6 +397,13 @@ function Plugin:HordeTick()
 	end
 
 	local Reg = self.HordeRegistry
+
+	if Reg and self.Machine then
+		-- Prune below can drop dead refs, so the count is refreshed after it; keeping
+		-- the two adjacent is what makes the status line a measurement rather than a
+		-- number someone remembered to update.
+		self.Machine.MouthsActive = Reg:CountByKind("mouth")
+	end
 
 	if Reg then
 		Reg:Prune(function(Ref, Id)
@@ -458,6 +500,9 @@ function Plugin:Teardown(Now)
 
 		self.HordeTakeover:Release()
 	end
+
+	Machine.MouthsPool = 0
+	Machine.MouthsActive = 0
 
 	local Ok, Reason = Machine:CompleteTeardown(Now or Shared.GetTime())
 

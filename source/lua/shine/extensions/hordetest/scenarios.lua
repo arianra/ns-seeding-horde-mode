@@ -506,13 +506,18 @@ function Plugin:InitialiseScenarios()
 		local SavedSnapshot = horde.Triggers.TakeSnapshot
 		local SavedStatus = horde.OnHordeStatus
 		local SavedStop = horde.OnHordeStop
-		local Hits = { starts = 0, status = 0, stop = 0 }
+		local SavedStartWave = horde.StartWave
+		local Hits = { status = 0, stop = 0, wave = 0 }
 
 		horde.Triggers.Check = function() return true end
 		horde.Triggers.TakeSnapshot = function() return {} end
 		horde.OnHordeStatus = function() Hits.status = Hits.status + 1 end
 		horde.OnHordeStop = function() Hits.stop = Hits.stop + 1 end
-		horde.Machine = { Start = function() Hits.starts = Hits.starts + 1 return true end }
+		-- Every start route now funnels through StartWave (bare, `start`, `restart`),
+		-- so counting it is the assertion that matters; Machine:Start is reached only
+		-- from inside StartWave, which its own scenarios cover.
+		horde.StartWave = function() Hits.wave = Hits.wave + 1 end
+		horde.Machine = { IsActive = function() return false end }
 
 		-- Driven through Shine:RunCommand, NOT by calling the handler directly.
 		-- The first version of this scenario called OnHordeCommand(nil, {"status"})
@@ -523,6 +528,8 @@ function Plugin:InitialiseScenarios()
 		Shine:RunCommand(nil, "sh_horde", true, "status")
 		Shine:RunCommand(nil, "sh_horde", true, "stop")
 		Shine:RunCommand(nil, "sh_horde", true, "bogus")
+		Shine:RunCommand(nil, "sh_horde", true, "restart")
+		Shine:RunCommand(nil, "sh_horde", true, "start")
 		Shine:RunCommand(nil, "sh_horde", true)
 		Shine:RunCommand(nil, "sh_horde", true)
 
@@ -530,11 +537,13 @@ function Plugin:InitialiseScenarios()
 		horde.Triggers.TakeSnapshot = SavedSnapshot
 		horde.OnHordeStatus = SavedStatus
 		horde.OnHordeStop = SavedStop
+		horde.StartWave = SavedStartWave
 		horde.Machine = SavedMachine
 
 		Assert.Equal( 1, Hits.status, "'/horde status' reports status" )
-		Assert.Equal( 1, Hits.stop, "'/horde stop' stops" )
-		Assert.Equal( 2, Hits.starts, "only a bare /horde starts (chat and console paths)" )
+		Assert.Equal( 1, Hits.stop, "'/horde stop' stops without a permission check" )
+		-- bare x2 + `start` alias + `restart` = 4; `bogus` must contribute nothing.
+		Assert.Equal( 4, Hits.wave, "bare, start and restart all reach the gated start" )
 	end )
 
 	-- i3a: the registry is accounting truth for teardown, so its bookkeeping is
@@ -1218,6 +1227,26 @@ function Plugin:InitialiseScenarios()
 				Problems[#Problems + 1] = "the tick pump registered no mouths"
 			end
 
+			-- The status line reads these off the machine. BeginWave used to place
+			-- three real mouths and leave both fields nil, so BuildStatusLine printed
+			-- "mouths=-/-" and told the player the wave was empty. Asserting on the
+			-- REAL machine is the point: the older status scenarios inject their own
+			-- machine and can never see this class of bug.
+			if horde.Machine.MouthsPool ~= Registered then
+				Problems[#Problems + 1] = string.format("MouthsPool=%s but %s mouths registered",
+					tostring(horde.Machine.MouthsPool), tostring(Registered))
+			end
+
+			if horde.Machine.MouthsActive ~= Registered then
+				Problems[#Problems + 1] = "MouthsActive not refreshed by the tick"
+			end
+
+			if horde:BuildStatusLine(horde.Triggers.TakeSnapshot(nil), horde.Machine,
+				horde.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime(),
+				horde.HordeRegistry, horde.HordeTakeover):find("%-/%-") then
+				Problems[#Problems + 1] = "status still renders mouths as -/- while mouths exist"
+			end
+
 			local Ids = horde.HordeRegistry:GetAllIds()
 
 			horde.Machine:Stop("test slice", Shared.GetTime())
@@ -1225,6 +1254,10 @@ function Plugin:InitialiseScenarios()
 
 			if horde.HordeRegistry:Count() ~= 0 then
 				Problems[#Problems + 1] = "plugin registry not empty after teardown"
+			end
+
+			if horde.Machine.MouthsActive ~= 0 then
+				Problems[#Problems + 1] = "MouthsActive still counts mouths after teardown"
 			end
 
 			if horde.HordeTakeover:IsEngaged() then
