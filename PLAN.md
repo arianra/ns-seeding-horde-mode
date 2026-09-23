@@ -139,34 +139,49 @@ Two rules that come with it:
 
 ---
 
-## 7. Decisions I need (blocking, and I won't guess)
+## 7. Decisions — answered by Arian 2026-09-22
 
-- **D1 — supersede Q7q7?** Your spec restarts the round; the recorded decision says `/horde` is
-  the warmup and must *not* restart. I'll follow you, but it invalidates a written decision and
-  the bot-controller takeover design built on it. Confirm: **restart the round**.
-- **D2 — who can start it?** Today `/horde` is open to any marine (Q14). On a public server that
-  means any player can reset the round. Options: keep open (your server, your rules), or require
-  the same admin identity as stop.
-- **D3 — client-side component.** A countdown and a wave timer that are *visible* almost
-  certainly need client Lua or datatables, which means the mod must be mounted by clients — i.e.
-  the published-mod path stops being optional. Acceptable? (Your client already mounts the
-  overlay, so local playtesting is unaffected; remote testers would need the Workshop item.)
-- **D4 — what happens to vanilla WarmUp?** Fully suppressed during horde mode, or restored on
-  `/horde stop`? Current intent is restore (Q7q7's "handed back intact").
+Recorded properly in the Atlas as `decisions/td-clean-slate-session`, superseding Q7q7 rather
+than quietly editing it.
 
----
+- **D1 — `/horde` resets everything.** Clean slate: end the round, reposition players, countdown,
+  visible mode identity, horde world state established **before** anyone spawns. This supersedes
+  Q7q7 ("`/horde` IS the horde warmup", do not restart) and the bot-controller-takeover design
+  built on it.
+- **D2 — any marine can start it, under the gates** (no real aliens, marines present, below seeding
+  max). Open access retained; the gates are the restriction. Stop is open too.
+- **D3 — client changes are in scope, with a hard constraint:** *"server has the mod, client only
+  connects."* No subscribing, no downloading, no launch flags by the user.
+- **D4 — stop restores the prior state**, vanilla fill included.
 
-## 8. Working agreements, so this doesn't drift again
+### The gate D3 creates — and it comes before L3
 
-1. **One dev root**, everything materialised from the repo. No hand-edits under `D:\games`.
-2. **Nothing ships that you can't see.** If a change has no observable in-game effect, it is not
-   done — it's a refactor, and it says so.
-3. **Every command and every state change speaks.** Silence is a bug by definition.
-4. **A test that passes while the feature is broken gets rewritten**, not trusted. Two this
-   session: the routing test called the handler directly and missed a dispatch-layer bug; the
-   status scenarios injected their own machine and missed a reader-without-writer.
-5. **Measure before concluding.** Three of my confident claims today were falsified by
-   experiment (mirroring copies, dump-free stops, self-healing blip team). The ones I checked
-   were the ones I tested, not the ones I reasoned about.
-6. **Revert a half-working change rather than ship it.** The minimap reveal is currently out
-   because my first attempt made visibility worse, not better.
+**No client-side feature is built until the delivery path is proven on this machine.** The
+requirement is that a vanilla client ends up running our mod purely by connecting. Two candidates:
+
+1. **Workshop auto-download.** `Dedicated_Server_Usage.txt:180` states a connecting client
+   automatically downloads the mods the server is actively using. Unknown: whether that works for a
+   **Private / Friends-Only / Unlisted** item, and whether a server can fetch non-public content
+   while anonymous.
+2. **Self-hosted backup servers.** `ServerConfig.lua` exposes `mod_backup_servers` and
+   `mod_backup_before_steam`, consumed by UWE's bundled `utils/WorkshopBackup` — a mechanism for
+   serving mod archives from somewhere other than Steam. Unknown: whether it can deliver a mod that
+   has **no published id at all**.
+
+If neither works for a non-public item, the honest consequence is that **publishing is mandatory**,
+and the first release is public or unlisted. That is a product decision, not something to discover
+halfway through building a HUD. Research is in flight; the cheapest proving experiment will be run
+before any of it is trusted.
+
+### Ladder, reordered for the gate
+
+| Rung | Deliverable | Status |
+|---|---|---|
+| **L0** | **Prove mod delivery**: vanilla client connects to a server running our mod and ends up running it | **blocks L3+** |
+| L1 | Command + state messaging | **done** `d685ae9` |
+| L2 | No vanilla bots in dev | **done** (0 bot activity verified on boot) |
+| L3 | Round restart, reposition, countdown, "this is HORDE" identity | needs D1 mechanics (research in flight) |
+| L4 | Mouths exist and appear on the marine minimap | open — blip ordering unsolved |
+| L5 | Wave timer / HUD | needs L0 |
+| L6 | Aliens emerge (i5a) | — |
+| L7 | Wave loop, intermission, loss (i6a, i8a) | — |
