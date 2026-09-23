@@ -6,6 +6,7 @@
 #        ./dev/server-start.sh --live [map]              # Arian's live server, opt-in only
 #        ./dev/server-start.sh <config_path_win> [map]   # explicit config (legacy form)
 #        --no-game                                       # skip the -game overlay
+#        --port N                                        # override the instance port
 #
 # DEV is the default now. It used to be the LIVE config, so a bare invocation restarted
 # Arian's server — the same class of mistake as the workshop-copy incident (dev/STANDARDS.md).
@@ -26,13 +27,18 @@ LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
 
 LIVE=0
 USE_GAME=1
+PORT_OVERRIDE=""
 POS=()
-for Arg in "$@"; do
-  case "$Arg" in
-    --live) LIVE=1 ;;
-    --no-game) USE_GAME=0 ;;
-    -*) echo "[start] unknown option: $Arg" >&2; exit 2 ;;
-    *) POS+=("$Arg") ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --live) LIVE=1; shift ;;
+    --no-game) USE_GAME=0; shift ;;
+    --port=*) PORT_OVERRIDE="${1#*=}"; shift ;;
+    --port)
+      [[ $# -ge 2 && "${2}" =~ ^[0-9]+$ ]] || { echo "[start] --port needs a number" >&2; exit 2; }
+      PORT_OVERRIDE="$2"; shift 2 ;;
+    -*) echo "[start] unknown option: $1" >&2; exit 2 ;;
+    *) POS+=("$1"); shift ;;
   esac
 done
 
@@ -41,6 +47,8 @@ if [[ $LIVE -eq 1 ]]; then
 else
   CFG_WIN="$DEV_CFG_WIN"; PORT=27025
 fi
+
+[[ -n "$PORT_OVERRIDE" ]] && PORT="$PORT_OVERRIDE"
 
 MAP="ns2_summit"
 if [[ ${#POS[@]} -ge 1 ]]; then
