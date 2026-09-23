@@ -17,7 +17,9 @@ this document is the workflow that standard implies.
 | # | Fact | Source |
 |---|---|---|
 | 1 | A mod is a **plain overlay directory**. The only registration is `lua/entry/<name>.entry`, and the entry **file name is the mod name**. There is no `info.txt`/manifest | `ns2/lua/entry/readme.txt` (shipped); all three mounted mods have exactly one `.entry` and no manifest |
-| 2 | Entry format: `modEntry = { Client=…, Server=…, Predict=…, Shared=…, FileHooks=…, Priority=… }`. Load order: ModLoader first in every VM except GUIView; `FileHooks` immediately after ModLoader; `Shared` before Client/Server/Predict | `ns2/lua/entry/readme.txt`; verbatim sample `localmods/bootcamp/alien_1/lua/entry/Tut.entry` |
+| 2 | Entry format: the file is **executed as Lua** and must set a global `modEntry` table `{ Client=…, Server=…, Predict=…, Shared=…, FileHooks=…, Priority=… }`. A comma/colon string form is supported only as a legacy fallback (`type(modEntry)=="table" and modEntry or ParseEntryFile(modEntry)`). Load order: ModLoader first in every VM except GUIView; `FileHooks` immediately after ModLoader; `Shared` before Client/Server/Predict | `core/lua/ModLoader.lua:215-232`; `ns2/lua/entry/readme.txt`; real examples `shine.entry` (FileHooks+Priority 50), `NSLBadges` entry (Priority 999) |
+| 2b | **Mod name = the entry filename minus `.entry`**, set as `parsedEntry.ModName` | `ModLoader.lua:227-229` |
+| 2c | **Priority sort is `priority1 > priority2`, i.e. HIGHER loads FIRST**; absent priority defaults to 10. Shine is 50, NSL Badges 999. So to load **after** Shine we need a value **below 50** | `ModLoader.lua:236-242` |
 | 3 | Mod id = the workshop **folder name** (decimal published-file id); hex forms in logs are the same number base-16: `117887554 = 0x706d242` | arithmetic + `ns2/lua/ServerWebInterface.lua:141-165` (`ModsIdsToHex`/`ModIdsFromHex`) |
 | 4 | Loader discovers mods by union glob over the mounted FS | `core/lua/ModLoader.lua:196` |
 
@@ -96,9 +98,16 @@ Why this shape and not the old one:
 - Publishing stops being a dev-loop dependency (fact 29), so Steam latency and the 114-mod
   hotfix pass (fact 21) are no longer in our iteration path.
 
-**Priority value is deliberately TBD.** Our entry must load *after* Shine's so Shine exists when
-our extensions register; the two researchers gave opposite readings of the sort direction
-(40 vs 50). G1 determines it empirically; do not encode a guess.
+**Priority is settled from source** (`ModLoader.lua:236-242`, fact 2c): higher loads first, so our
+entry uses **`Priority = 40`** to load after Shine's 50.
+
+What G1 actually risks is narrower than "does modding work": entry *discovery* is proven
+(`ModLoader.lua:215-218` globs `lua/entry/*.entry` over the merged FS, on the server install too).
+Unproven is whether a `-game` overlay's **non-entry** files become visible to Shine's
+`lua/shine/extensions/*.lua` glob, and whether they are visible **by the time Shine scans** —
+Shine scans during its own `FileHooks` load, so mount timing versus scan order is the failure
+mode to watch. If the overlay is not visible to the glob, the fallback is `-modstorage` with the
+mod placed as a numbered folder, which is a real mount rather than a search-path addition.
 
 ---
 
@@ -178,7 +187,7 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 
 | Step | Work | Acceptance (observable, before the next step) |
 |---|---|---|
-| **G1** | Build a **trivial** mod: `lua/entry/hordehello.entry` + `lua/shine/extensions/hordehello/server.lua` that prints on load, **no `shared.lua`** (so it is vanilla-safe per fact 11). Mount via `-game` overlay on DEV server **and** DEV client | boot log: mod discovered, `Extension 'hordehello' loaded`, our print. Entry `Priority` value recorded. `deploy.sh --check` still says client pristine. A vanilla client still joins |
+| **G1** | Build a **trivial** mod: `lua/entry/hordehello.entry` (`FileHooks`/`Shared`, `Priority = 40`) + `lua/shine/extensions/hordehello/server.lua` that prints on load, **no `shared.lua`** (vanilla-safe per fact 11). Mount via `-game` overlay on DEV server **and** DEV client | boot log: mod discovered, `Extension 'hordehello' loaded`, our print. If Shine's glob misses the overlay, record that and fall back to `-modstorage`. `deploy.sh --check` still pristine; a vanilla client still joins |
 | **G1b** | Same overlay, but the extension registers a datatable | **expected to fail vanilla joins** — proves facts 9-13 empirically and measures what "client must mount our mod" costs |
 | **G2** | `-webadmin` on DEV: enumerate actions, attempt graceful shutdown | clean exit with **0** new `dumplog.txt` entries, or a written "no graceful path" verdict |
 | **P1** | `dev/build.sh`: `source/` → `build/mod/` (deterministic, with the entry file) | two consecutive builds byte-identical |
