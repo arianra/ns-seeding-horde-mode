@@ -180,8 +180,59 @@ before any of it is trusted.
 | **L0** | **Prove mod delivery**: vanilla client connects to a server running our mod and ends up running it | **blocks L3+** |
 | L1 | Command + state messaging | **done** `d685ae9` |
 | L2 | No vanilla bots in dev | **done** (0 bot activity verified on boot) |
-| L3 | Round restart, reposition, countdown, "this is HORDE" identity | needs D1 mechanics (research in flight) |
+| **L3** | Round restart, reposition, countdown, "this is HORDE" identity | **mechanism found, not gated by L0** — see §9 |
 | L4 | Mouths exist and appear on the marine minimap | open — blip ordering unsolved |
 | L5 | Wave timer / HUD | needs L0 |
 | L6 | Aliens emerge (i5a) | — |
 | L7 | Wave loop, intermission, loss (i6a, i8a) | — |
+
+---
+
+## 9. L3 mechanism — settled from source, and mostly free
+
+The important discovery: **there is no engine round-restart API.** `Server.RestartRound` and
+`Server.ChangeLevel` do not exist in build 344. What does exist, and what **Shine's own
+`pregame`/`tournamentmode`/`basecommands` extensions already use**, is a Lua-reachable sequence:
+
+```lua
+Gamerules:ResetGame()                        -- ns2/lua/NS2Gamerules.lua:496  in-place entity/team/bot reset
+Gamerules:SetGameState(kGameState.Countdown) -- :132
+Gamerules.countdownTime = N                  -- vanilla UpdatePregame (:1878) then drives it to Started
+```
+
+That buys us, with no client code at all:
+
+- **a real countdown** — `kGameState.Countdown` is replicated to every client through the
+  `GameInfo.state` networkVar (`GameInfo.lua:17-18`), and the client already renders
+  *"Game is starting"* during it (`Player_Client.lua:2616-2619`);
+- **input lock** — players are frozen during countdown (`Player.lua:1515-1518`, `GetCanControl`
+  `:2505`), which is precisely "the mode is set up before you can act";
+- **repositioning** — reset returns players to the Ready Room (`Gamerules:UpdateToReadyRoom`
+  `:904`), and spawn selection runs through `PlayingTeam:ReplaceRespawnAllPlayers` (`:681`);
+- **bot removal** — `Gamerules:SetMaxBots(0, false)` (`:1434`) plus `Bot:Disconnect()` loops
+  (`bots/Bot_Server.lua:131-136`), kept gone by the `filler_bots`/`rookie_only_bots`/
+  `auto_vote_add_commander_bots` zeros already committed in L2.
+
+`kCountDownLength = 6` (`Globals.lua:114`) is the vanilla length; ours can be longer.
+
+### What this changes about the plan
+
+1. **L3 is not blocked by L0.** The countdown, the reset and the lock are vanilla behaviour.
+   Only a *custom numeric on-screen timer with our own text* needs client datatables — Last
+   Stand's did — and that is L5, not L3.
+2. **A conflict to resolve inside L3:** our gates (`Triggers.Check`) were written for
+   `WarmUp`/seeding state. After `ResetGame()` the state is `NotStarted` → `Countdown`, so the
+   gates must be evaluated **at command time, before the reset**, and the start must not
+   re-check them afterwards. Sequencing bug waiting to happen; it goes in the L3 acceptance test.
+3. **Order matters for the mouths:** `ResetGame()` destroys entities, so mouths must be created
+   *after* the reset and *during* the countdown — which is exactly the "world state before you
+   spawn" requirement, and it is achievable.
+4. **Follow Shine's own pattern, don't invent one.** `pregame`/`tournamentmode` already do
+   reset → countdown → start. Read that code before writing ours.
+
+### Server-side feedback ceiling (for L5)
+
+Without client Lua we have: chat box, `SendTeamMessage` banners (enum-typed, playing teams only,
+`TeamMessenger.lua:111`), team sounds, and the vanilla countdown text. **There is no
+`SetScreenText`/`GetHudMessage` in shipped Lua at all.** So a persistent horde HUD is L5 and
+needs the L0 delivery path proven first.
