@@ -73,27 +73,61 @@ making silently — see §7 D1.
 
 ---
 
-## 4. The ladder
+## 4. The step protocol
 
-Each rung is one commit, one test, and one thing **you can see in game**. Nothing moves up the
-ladder until the rung below is confirmed at the keyboard, because the failure mode this project
-keeps hitting is "green suite, broken game."
+Rewritten 2026-09-22 after Arian's verdict that the collaboration isn't working. The failure
+pattern is specific and repeatable: I build several things at once, report them as done because
+the headless suite is green, and he then finds the feature is absent, wrong, or was never in the
+spec. Two changes fix it. **One observable behaviour per step**, and **the step is not done until
+he confirms it in game.**
 
-| Rung | Deliverable | What you will see | How it's verified |
-|---|---|---|---|
-| **L1** | Command feedback contract | every command answers; every state transition broadcasts | suite asserts the message text; you type each command |
-| **L2** | Bots gone in dev | a clean map, only you | server log bot count 0; you look around |
-| **L3** | Round restart + countdown | screen says HORDE, counts down, you spawn fresh | you experience it; log shows the sequence |
-| **L4** | Mouths exist *and* are on the minimap | 3 red blips, marine radar | blip relevancy assertion + your eyes |
-| **L5** | Wave timer / HUD | a running timer on screen | client-visible state, needs the datatable decision (§7 D3) |
-| **L6** | Aliens come out of the mouths (i5a) | a skulk walking toward you | live observation |
-| **L7** | Wave clear / intermission / loss (i6a, i8a) | the loop actually plays | suite + you |
+### Rules I work under
 
-L1 and L2 are code-and-config only — no unknowns — so they ship first. L3 depends on the round
-restart mechanism being researched (in flight). L4 depends on the minimap reveal ordering problem
-in §5.
+1. **One step at a time.** A step changes exactly one thing a player can observe. If I cannot
+   name the single thing he will see, the step is too big and gets split.
+2. **No forward progress without confirmation.** If the reply is "not working", the step is
+   **open**, not deferred. I do not stack the next feature on top of an unconfirmed one. That
+   stacking is how four unverified layers ended up in the build.
+3. **Suite-green is not evidence.** The suite proves the code does what I wrote, including when
+   what I wrote is not the spec. It passed while `/horde status` lied, while routing was inert,
+   and while the dev config violated the vanilla-game requirement.
+4. **Nothing outside horde mode may change.** Vanilla behaviour is the baseline. Bots, team
+   balance, votes, AFK kicks, seeding — all untouched until the horde starts, and restored when
+   it stops. A config override that alters non-horde play is a spec violation, not a convenience.
+   (This rule was broken today: `filler_bots: 0` sat in the dev config permanently. Reverted.)
+5. **No claim without a measurement.** "3 mouths placed from 42 candidates" proves
+   `CreateEntity` returned an object. It proves nothing about where the object is, whether it is
+   on the surface, or whether a player can see it. Placement steps must log coordinates and be
+   confirmed visually.
+6. **I never restart the server while he is connected**, and I say so before booting anything.
+   Killing a busy server is what produces the crash reports he keeps seeing.
+7. **Revert rather than ship half.** If a change makes the observable state worse, it comes back
+   out (the minimap reveal was pulled for exactly this reason).
 
----
+### The steps
+
+Deliberately starts below where the code currently is, because "the state and commands need to
+work correctly for starters" and they do not yet.
+
+| Step | The one observable thing | Pass condition (Arian, in game) |
+|---|---|---|
+| **S0** | State is truthful | `/horde status` reports exactly what the server log says, before and after a start. No world changes at all. |
+| **S1** | Starting is announced | `/horde` produces one unambiguous message that the mode has begun; `/horde stop` the same; no lockout between them |
+| **S2** | Clean slate | `/horde` gives a genuinely new round: he respawns in the base, prior structures gone, vanilla bots removed **as part of starting** |
+| **S3** | One mouth, provably on the surface | Exactly one mouth, its coordinates logged, and he can walk up to it and see it |
+| **S4** | Mouths on the minimap | Red blips visible to every marine, matching where the mouths actually are |
+| **S5** | Wave timer / HUD | A running timer he can read without opening a console (needs the client-delivery gate, L0) |
+| **S6** | Aliens emerge | Something walks out of a mouth toward him (i5a) |
+
+S0 and S1 are the current priority: they are the claim that everything else rests on, and they
+are the two he says are not even true yet.
+
+### What each step ships with
+
+- the change, and **nothing else**
+- a one-line test instruction for him
+- the log lines that should appear if it worked
+- an explicit statement of what is still broken or unverified
 
 ## 5. Messaging contract (L1)
 

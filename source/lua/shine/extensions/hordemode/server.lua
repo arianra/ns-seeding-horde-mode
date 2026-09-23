@@ -339,8 +339,99 @@ function Plugin:StartWave(Client, Now)
 	end
 
 	self:Log("horde started - wave 1")
-	self:Announce("HORDE: started. Clearing vanilla fill and opening the first wave...")
+
+	-- Clean slate (D1). Reset before the machine starts so a failed reset cannot leave a
+	-- half-initialised wave; the gates were already evaluated against the PRE-reset world,
+	-- which is the only moment "no aliens, below seeding max" means anything.
+	if Config.Start and Config.Start.ResetRound ~= false then
+		local OkReset, ResetErr = self:ResetWorldForHorde()
+
+		if not OkReset then
+			self:Log("clean slate failed: " .. tostring(ResetErr))
+
+			if Player then
+				self:Notify(Player, "HORDE: could not reset the round - %s", true, tostring(ResetErr))
+			end
+
+			return
+		end
+	end
+
+	local Seconds = self:BeginCountdown(Config.Start and Config.Start.CountdownSeconds)
+
 	self:BeginWave(Config)
+
+	self:Announce("HORDE: round reset, vanilla bots cleared. Wave 1 opens in %s seconds - you spawn when the count hits zero.", Seconds)
+end
+
+--- Clean slate: wipe what the previous session left, then hand the round to vanilla's
+--- own countdown. Decided 2026-09-22 (D1): /horde does NOT layer onto a running round.
+---
+--- There is no engine restart API - Server.RestartRound and Server.ChangeLevel do not
+--- exist in build 344. NS2Gamerules' own local StartCountdown (:1852) does exactly three
+--- public things, replicated here because the local function is unreachable: ResetGame,
+--- SetGameState(Countdown), countdownTime = kCountDownLength. UpdatePregame's Countdown
+--- branch (:1893-1911) then drives it to Started on its own, with players input-locked
+--- (Player.lua:1515-1518) and the client already showing "Game is starting"
+--- (Player_Client.lua:2616-2619) - so the countdown needs no client code at all.
+---
+--- Order is load-bearing and stated here because getting it wrong is invisible:
+--- ResetGame() calls DestroyLiveMapEntities (NS2Gamerules.lua:496-516), so anything we
+--- create BEFORE it is deleted by it. Mouths therefore come after the reset and during
+--- the countdown - which is exactly the "world state exists before you spawn" rule.
+function Plugin:ResetWorldForHorde()
+	local gamerules = GetGamerules()
+
+	if not gamerules then
+		return false, "no gamerules yet"
+	end
+
+	-- Our own leftovers first: the registry must not survive pointing at corpses.
+	Plugin.DestroyAll(self.HordeRegistry,
+		self.HordeSpawner and self.HordeSpawner:TakePending() or nil, nil)
+
+	-- Vanilla fill: cap both teams to zero and update, then disconnect whoever is left.
+	-- The config zeros committed in L2 are what stop it refilling on the next map; this
+	-- is what clears THIS round.
+	if gamerules.SetMaxBots then
+		pcall(function() gamerules:SetMaxBots(0, false) end)
+		pcall(function() gamerules:SetMaxBots(0, true) end)
+	end
+
+	if gServerBots then
+		for Index = #gServerBots, 1, -1 do
+			local Bot = gServerBots[Index]
+
+			pcall(function()
+				if Bot and Bot.Disconnect then Bot:Disconnect() end
+			end)
+		end
+	end
+
+	local Ok, Err = pcall(function() gamerules:ResetGame() end)
+
+	if not Ok then
+		return false, string.format("ResetGame failed: %s", tostring(Err))
+	end
+
+	return true, nil
+end
+
+--- Hand the round to vanilla's countdown. Returns the seconds the client will see.
+function Plugin:BeginCountdown(Seconds)
+	local gamerules = GetGamerules()
+
+	if not gamerules or not gamerules.SetGameState then
+		return 0
+	end
+
+	local Length = Seconds or kCountDownLength or 6
+
+	gamerules:SetGameState(kGameState.Countdown)
+	gamerules.countdownTime = Length
+	gamerules.lastCountdownPlayed = nil
+
+	return Length
 end
 
 --- Place and create this wave's mouths. Nothing walks out of them yet - that is i5a
