@@ -42,7 +42,7 @@ Current graph:
   `/mnt/d/projects/ns2-td/research/`; ded server fetches workshop mods on demand.
 - Workshop dir (151 items): `steamapps/workshop/content/4920/`
 
-## Layout (i0b, canonical — repo source/ is truth; dev/deploy.sh syncs to server)
+## Layout (i0b canonical; delivery reworked 2026-09-22 — repo source/ is truth, dev/deploy.sh builds a -game overlay)
 Shine resolves the server entry as `extensions/<name>/server.lua`, NOT `server/init.lua`
 (extensions.lua:257) — multi-file extensions are FLAT and load siblings via
 `Shine.LoadPluginFile`. The i0a scaffold used a `server/` subdir; i0b flattened it.
@@ -63,7 +63,10 @@ source/lua/shine/extensions/hordemode/
 source/lua/shine/extensions/hordetest/   -- headless scenario harness (dev cfg only)
 dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-cfg/
 ```
-Deploy target (dev): `C:\Users\aria\AppData\Roaming\Natural Selection 2\workshop\content\4920\117887554\lua\shine\extensions\`
+Deploy target (dev): the `-game` overlay `D:\games\ns2hordetest\overlay`, built by
+`dev/build.sh` from `source/`. **Never** a workshop copy of Shine — writing dev files into
+`...\workshop\content\4920\117887554\...` is what broke Arian's client against every server
+(see `dev/STANDARDS.md`, `dev/SCAFFOLDING.md`, `MODDING.md` §2b).
 
 ## Running tests (i0c runner, i0d harness)
 `./dev/test.sh [map] [timeout]` — the full loop, seven steps: static lint → stop any stale

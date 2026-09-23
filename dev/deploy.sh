@@ -145,17 +145,25 @@ if ae.get("hordetest"):
 PY
 fi
 
-# Enable our extensions in the TEST config only.
+# Enable extensions in the TEST config only. Every extension present in source/ is enabled
+# except the test harness when --no-test-ext was given: hard-coding the two original names
+# meant a newly scaffolded extension was discovered by Shine but never enabled, so it silently
+# did nothing and the loop looked broken when only the config was stale.
 if [[ -f "$BASECFG" ]]; then
-  python3 - "$BASECFG" "$INCLUDE_TEST" <<'PY'
-import json, sys
-path, include_test = sys.argv[1], sys.argv[2] == "1"
+  python3 - "$BASECFG" "$INCLUDE_TEST" "$REPO/source/lua/shine/extensions" <<'PY'
+import json, os, sys
+path, include_test, extdir = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
 cfg = json.load(open(path))
 ae = cfg.setdefault("ActiveExtensions", {})
-ae["hordemode"] = True
-ae["hordetest"] = include_test
+enabled = []
+for name in sorted(os.listdir(extdir)):
+    if not os.path.isdir(os.path.join(extdir, name)):
+        continue
+    on = True if name != "hordetest" else include_test
+    ae[name] = on
+    enabled.append(f"{name}={on}")
 json.dump(cfg, open(path, "w"), indent=4)
-print(f"[deploy] test config ActiveExtensions: hordemode=True hordetest={include_test}")
+print("[deploy] test config ActiveExtensions: " + " ".join(enabled))
 PY
 else
   echo "[deploy] WARN - no test BaseConfig at $BASECFG; boot once so Shine creates it, then re-run" >&2
