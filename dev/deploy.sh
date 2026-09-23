@@ -6,6 +6,13 @@
 #   ./dev/deploy.sh --no-test-ext  same, without the test harness
 #   ./dev/deploy.sh --clean      remove dev extensions from every workshop copy (repair)
 #   ./dev/deploy.sh --check      verify state without writing (exit 1 = unsafe)
+#   ./dev/deploy.sh --for-suite  leave the test harness ARMED (test.sh only)
+#
+# RunSuite defaults to false. This bit Arian on 2026-09-22: the on-disk test config had the
+# suite armed, so a plain `./dev/server-start.sh` booted a server that immediately started
+# spawning and destroying bots, taking the commander chair and locking the bot controller -
+# and he could not join it. A manual boot must be a server you can connect to; only test.sh
+# asks for the armed state.
 #
 # Why not workshop copies (2026-09-21 incident, dev/STANDARDS.md): the server mounts its Shine
 # copy from %APPDATA%, the client mounts its own from steamapps. Writing dev files into either
@@ -41,11 +48,13 @@ LIVECFG="/mnt/d/games/ns2srv/cfg/shine/BaseConfig.json"
 INCLUDE_TEST=1
 CLEAN_ONLY=0
 CHECK_ONLY=0
+FOR_SUITE=0
 for Arg in "$@"; do
   case "$Arg" in
     --no-test-ext) INCLUDE_TEST=0 ;;
     --clean) CLEAN_ONLY=1 ;;
     --check) CHECK_ONLY=1 ;;
+    --for-suite) FOR_SUITE=1 ;;
     *) echo "[deploy] unknown option: $Arg" >&2; exit 2 ;;
   esac
 done
@@ -167,6 +176,18 @@ print("[deploy] test config ActiveExtensions: " + " ".join(enabled))
 PY
 else
   echo "[deploy] WARN - no test BaseConfig at $BASECFG; boot once so Shine creates it, then re-run" >&2
+fi
+
+# Arm or disarm the harness explicitly rather than inheriting whatever the last run left.
+HARDCFG="/mnt/d/games/ns2hordetest/cfg/shine/plugins/HordeTest.json"
+if [[ -f "$HARDCFG" ]]; then
+  if [[ $FOR_SUITE -eq 1 ]]; then
+    printf '{\n    "RunSuite" : true\n}\n' > "$HARDCFG"
+    echo "[deploy] hordetest ARMED (test.sh run)"
+  else
+    printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
+    echo "[deploy] hordetest idle - this server is joinable; use ./dev/test.sh to run the suite"
+  fi
 fi
 
 echo "[deploy] done"

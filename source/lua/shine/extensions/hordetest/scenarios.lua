@@ -514,11 +514,17 @@ function Plugin:InitialiseScenarios()
 		horde.OnHordeStop = function() Hits.stop = Hits.stop + 1 end
 		horde.Machine = { Start = function() Hits.starts = Hits.starts + 1 return true end }
 
-		horde:OnHordeCommand(nil, { "status" })
-		horde:OnHordeCommand(nil, { "stop" })
-		horde:OnHordeCommand(nil, { "bogus" })
-		horde:OnHordeCommand(nil, {})
-		horde:OnHordeCommand(nil)
+		-- Driven through Shine:RunCommand, NOT by calling the handler directly.
+		-- The first version of this scenario called OnHordeCommand(nil, {"status"})
+		-- and passed while the feature was dead: Shine only forwards arguments that
+		-- match a declared parameter, so the real chat path delivered nothing and
+		-- "/horde status" started a horde. Testing the handler bypasses the exact
+		-- layer that broke.
+		Shine:RunCommand(nil, "sh_horde", true, "status")
+		Shine:RunCommand(nil, "sh_horde", true, "stop")
+		Shine:RunCommand(nil, "sh_horde", true, "bogus")
+		Shine:RunCommand(nil, "sh_horde", true)
+		Shine:RunCommand(nil, "sh_horde", true)
 
 		horde.Triggers.Check = SavedCheck
 		horde.Triggers.TakeSnapshot = SavedSnapshot

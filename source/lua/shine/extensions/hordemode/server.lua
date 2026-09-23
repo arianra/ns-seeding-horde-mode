@@ -122,9 +122,15 @@ function Plugin:OnWorldReady( gamerules )
 	-- NoPerm=true: /horde is a marine command, not an admin one (Q14 open access).
 	-- Arguments are forwarded: the handler must be able to see them, or a stray word
 	-- silently means "start".
-	self:BindCommand( "sh_horde", "horde", function(Client, ...)
+	local HordeCommand = self:BindCommand( "sh_horde", "horde", function(Client, ...)
 		self:OnHordeCommand(Client, { ... })
 	end, true )
+
+	-- Shine passes ONLY the arguments that match a declared parameter: with none
+	-- declared, `/horde status` arrived at the handler as a bare `/horde`, which
+	-- started a horde instead of reporting one. The audit line prints the raw text,
+	-- so the log happily read "with arguments: status" while the handler saw nothing.
+	HordeCommand:AddParam{ Type = "string", Optional = true }
 
 	-- Admin pair: no NoPerm, so Shine's permission check applies (i2c).
 	self:BindCommand( "sh_horde_stop", nil, function(Client)

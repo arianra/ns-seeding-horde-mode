@@ -91,7 +91,7 @@ print(f"[test]   config valid: tags={tags} extensions=hordemode+hordetest")
 PY
 
 echo "[test] 4/7 deploying repo extensions to the server's shine dir"
-DEPLOY_OUT=$("$REPO/dev/deploy.sh" 2>&1); DEPLOY_RC=$?
+DEPLOY_OUT=$("$REPO/dev/deploy.sh" --for-suite 2>&1); DEPLOY_RC=$?
 sed 's/^/[deploy] /' <<<"$DEPLOY_OUT"
 [[ $DEPLOY_RC -eq 0 ]] || bail "deploy failed (exit $DEPLOY_RC)"
 
