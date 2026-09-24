@@ -20,6 +20,12 @@ if [[ -z "$PID" ]]; then
   exit 0
 fi
 
+# Same interlock as server-start.sh: a forced stop of a busy server is indistinguishable
+# from a crash in dumps/dumplog.txt, and the last several of those were ours.
+if [[ "${SKIP_GUARD:-0}" != "1" ]]; then
+  "$REPO_DIR/dev/guard-server.sh" free || exit 4
+fi
+
 echo "[stop] stopping our server pid=$PID"
 
 # Escalation order, politest first. `taskkill /PID` (no /F) sends a close request and is

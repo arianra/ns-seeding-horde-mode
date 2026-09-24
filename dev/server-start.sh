@@ -98,6 +98,12 @@ if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   fi
 fi
 
+# Interlock: never disturb a server someone is playing on. Each kill of a busy server
+# makes NS2 write a crash dump, which reads to the user as a game bug.
+if [[ $LIVE -eq 0 && "${SKIP_GUARD:-0}" != "1" ]]; then
+  "$REPO_DIR/dev/guard-server.sh" free || exit 4
+fi
+
 # Stop ONLY the server this script started (tracked by PID). Killing every process named
 # "Server" would take down any server Arian is actually running - which is what happened:
 # every dev loop silently stopped the live one.

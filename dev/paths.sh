@@ -66,7 +66,7 @@ ENGINE_WSL='/mnt/d/games/ns2-server'
 # Engine logs, crash dumps and the default mod store ignore -config_path and are
 # shared by every instance on this box (MODDING.md fact 15).
 APPDATA_NS2_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2"
-LOG_WSL="$APPDATA_NS2_WSL/log-Server.txt"
+LOG_WSL="${NS2_LOG:-$APPDATA_NS2_WSL/log-Server.txt}"
 CLIENT_LOG_WSL="$APPDATA_NS2_WSL/log.txt"
 DUMPLOG_WSL="$APPDATA_NS2_WSL/dumps/dumplog.txt"
 

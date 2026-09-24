@@ -50,7 +50,15 @@ done
 
 bail() { echo "[test] FAIL: $*" >&2; exit 2; }
 
-echo "[test] 1/7 static lint"
+# Before any check that could silently do nothing: prove the tools the guards depend on
+# resolve in a non-interactive shell. A control that calls a missing binary and compares
+# an empty result is worse than no control, because it reports success.
+echo "[test] 0/8 environment parity"
+ENV_OUT=$("$REPO/dev/check-env.sh" 2>&1); ENV_RC=$?
+sed 's/^/[test]   /' <<<"$ENV_OUT"
+[[ $ENV_RC -eq 0 ]] || bail "environment check failed - a guard may silently no-op (exit $ENV_RC)"
+
+echo "[test] 1/8 static lint"
 # Cheapest gate first: a Lua syntax error costs two minutes to discover through a
 # server boot and a couple of seconds here. Note the capture — `cmd | sed || bail`
 # would test sed's status and pass on a lint failure.
@@ -58,10 +66,10 @@ LINT_OUT=$("$REPO/dev/lint.sh" 2>&1); LINT_RC=$?
 sed 's/^/[test]   /' <<<"$LINT_OUT"
 [[ $LINT_RC -eq 0 ]] || bail "static lint failed (exit $LINT_RC)"
 
-echo "[test] 2/7 stopping any stale server"
+echo "[test] 2/8 stopping any stale server"
 "$REPO/dev/server-stop.sh" >/dev/null 2>&1 || true
 
-echo "[test] 3/7 building test config -> $CFG_WIN"
+echo "[test] 3/8 building test config -> $CFG_WIN"
 [[ -d "$SRC_CFG_WSL" ]] || bail "source config missing: $SRC_CFG_WSL"
 rm -rf "$CFG_WSL"
 mkdir -p "$CFG_WSL/shine"
@@ -93,12 +101,12 @@ if not (ae.get("hordemode") and ae.get("hordetest")):
 print(f"[test]   config valid: tags={tags} extensions=hordemode+hordetest")
 PY
 
-echo "[test] 4/7 deploying repo extensions to the server's shine dir"
+echo "[test] 4/8 deploying repo artifact to the server's shine dir"
 DEPLOY_OUT=$("$REPO/dev/deploy.sh" --for-suite 2>&1); DEPLOY_RC=$?
 sed 's/^/[deploy] /' <<<"$DEPLOY_OUT"
 [[ $DEPLOY_RC -eq 0 ]] || bail "deploy failed (exit $DEPLOY_RC)"
 
-echo "[test] 5/7 starting server (map=$MAP cfg=$CFG_WIN)"
+echo "[test] 5/8 starting server (map=$MAP cfg=$CFG_WIN)"
 "$REPO/dev/server-start.sh" --with-suite "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
 START_RC=${PIPESTATUS[0]}
 [[ $START_RC -eq 0 ]] || bail "server never reached READY (see log above)"
@@ -109,7 +117,20 @@ START_RC=${PIPESTATUS[0]}
 LOG_OFFSET=$(stat -c %s "$LOG_WSL" 2>/dev/null || echo 0)
 echo "[test]   log fenced at byte $LOG_OFFSET (post-boot)"
 
-echo "[test] 6/7 waiting up to ${TIMEOUT}s for [TEST] ALL-DONE"
+# Fail fast with the real reason. If the harness never loaded, waiting 300s for a
+# completion line it cannot produce is indistinguishable from a hung suite. Today this
+# fires every time: the mod id is unpublished, so the engine refuses to mount it
+# ("Mod [999000001] wasn't available") and hordetest never exists.
+if [[ -n "$LOG_OFFSET" ]] && ! tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" 2>/dev/null | grep -q "Extension 'hordetest' loaded"; then
+  echo "[test] FAIL - hordetest did not load, so the suite cannot run." >&2
+  tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" 2>/dev/null | grep -aiE "wasn't available|not whitelisted|Failed to fetch info|Mounting mod" | tail -4 | sed 's/^/[test]   /' >&2
+  echo "[test]        most likely cause: the mod id in mod/mod.json is still a placeholder." >&2
+  echo "[test]        publication is a human step - see ./dev/publish.sh" >&2
+  "$REPO/dev/server-stop.sh" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+echo "[test] 6/8 waiting up to ${TIMEOUT}s for [TEST] ALL-DONE"
 elapsed=0
 ALDONE=""
 while [[ $elapsed -lt $TIMEOUT ]]; do
@@ -134,7 +155,7 @@ if [[ -n "$ALDONE" ]]; then
   sleep 8
 fi
 
-echo "[test] 7/7 stopping server"
+echo "[test] 7/8 stopping server"
 "$REPO/dev/server-stop.sh" | sed 's/^/[stop] /' || true
 
 if [[ -z "$ALDONE" ]]; then
@@ -212,6 +233,11 @@ fi
 # Steam-managed copy stops Arian joining ANY server. This is the only automatic check for
 # it - every headless run is structurally blind to the client side, which is precisely how
 # the damage survived a full green suite. See dev/STANDARDS.md.
+echo "[test] 8/8 state ledger and managed content"
+STATE_OUT=$("$REPO/dev/state.sh" 2>&1); STATE_RC=$?
+sed 's/^/[state]   /' <<<"$STATE_OUT"
+[[ $STATE_RC -eq 0 ]] || { echo "[test] FAIL - undeclared or violating state on disk" >&2; exit 1; }
+
 CHECK_OUT=$("$REPO/dev/deploy.sh" --check 2>&1); CHECK_RC=$?
 sed 's/^/[deploy]   /' <<<"$CHECK_OUT"
 [[ $CHECK_RC -eq 0 ]] || { echo "[test] FAIL - managed-content check failed (dev/STANDARDS.md)" >&2; exit 1; }
