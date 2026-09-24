@@ -121,9 +121,13 @@ echo "[test]   log fenced at byte $LOG_OFFSET (post-boot)"
 # completion line it cannot produce is indistinguishable from a hung suite. Today this
 # fires every time: the mod id is unpublished, so the engine refuses to mount it
 # ("Mod [999000001] wasn't available") and hordetest never exists.
-if [[ -n "$LOG_OFFSET" ]] && ! tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" 2>/dev/null | grep -q "Extension 'hordetest' loaded"; then
+# Whole-file grep, deliberately: the engine rotates log-Server.txt at boot, so the file
+# is this boot. The byte fence below exists for lines written AFTER it (ALL-DONE); reusing
+# it for a line emitted during boot would exclude that line and report a false failure -
+# which is exactly what the first version of this check did.
+if ! grep -q "Extension 'hordetest' loaded" "$LOG_WSL" 2>/dev/null; then
   echo "[test] FAIL - hordetest did not load, so the suite cannot run." >&2
-  tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" 2>/dev/null | grep -aiE "wasn't available|not whitelisted|Failed to fetch info|Mounting mod" | tail -4 | sed 's/^/[test]   /' >&2
+  grep -aiE "wasn't available|not whitelisted|Failed to fetch info|Mounting mod" "$LOG_WSL" 2>/dev/null | tail -4 | sed 's/^/[test]   /' >&2
   echo "[test]        most likely cause: the mod id in mod/mod.json is still a placeholder." >&2
   echo "[test]        publication is a human step - see ./dev/publish.sh" >&2
   "$REPO/dev/server-stop.sh" >/dev/null 2>&1 || true

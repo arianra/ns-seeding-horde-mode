@@ -96,6 +96,34 @@ needs the rule syntax verified, so it is deliberately not guessed at.
 `publishedFileId` is written **once and never edited** — Valve addresses every later update by
 it, and `publish.sh --id` refuses to change a value that is already set.
 
+## 3b. The published item
+
+| Field | Value |
+|---|---|
+| Workshop item | `https://steamcommunity.com/sharedfiles/filedetails/?id=3807461324` |
+| `PublishedFileId` | **3807461324** — written once, never edited |
+| Hex form (what the engine logs) | `e2f13fcc` |
+| Item title | `seedinghorde` |
+| Published | 2026-09-24 13:11, by Arian, via LaunchPad from the install root |
+| File size as published | 142.464 KB |
+| Visibility | public — verified by fetching the page unauthenticated |
+| Recorded in | `mod/mod.json` → `publishedFileId` |
+
+`publishedFileId` overrides the `modId` placeholder everywhere it is read
+(`dev/paths.sh`, `dev/package.sh`, `dev/deploy.sh`), so the placeholder id
+`999000001` no longer appears in any generated path. `dev/deploy.sh` retires a
+previous id automatically when the id changes — it removes the old mod folder and its
+`MapCycle.json` entry, because a stale entry logs `Mod [old] wasn't available` on every
+boot and makes a working system look broken.
+
+**Verified after publication:** the engine mounts it as a real mod —
+`Mounting mod 'seedinghorde'[3807461324]` — Shine loads both extensions from it
+(`Extension 'hordemode' loaded`, `Extension 'hordetest' loaded`), and the full suite
+passes **45 / 0 / 1** with no `-game` overlay anywhere in the loop.
+
+**Not yet verified:** that a vanilla client auto-downloads it on connect. That is the next
+test, and it is the last assumption in the pipeline.
+
 ## 4. Versioning
 
 Semver in `mod/mod.json`. `0.0.1` is deliberate: nothing is confirmed working in game yet.

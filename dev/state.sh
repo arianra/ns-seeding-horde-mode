@@ -32,15 +32,22 @@ for p in "$OUTPUT_WSL" "$DIST_WSL"; do
   fi
 done
 
-# Anything under D:\games that we did not declare is drift, by definition.
-echo "[state] scanning D:\\games for undeclared directories:"
+# Anything under D:\games we did not declare is reported, but it is NOT a failure: this
+# box is Arian's, and a guard that blocks the loop because he downloaded a game is a guard
+# that will get disabled. It fails only when the evidence says the directory is OURS -
+# a marker we write, or our mod's name inside it.
+echo "[state] scanning D:\\games for directories we may have created but not declared:"
 DECLARED="ns2-server|steamcmd|ns2srv|horde|.stale-.*"
 while IFS= read -r d; do
   name=$(basename "$d")
-  if ! [[ "$name" =~ ^($DECLARED)$ ]]; then
-    echo "  UNDECLARED: $d" >&2
-    echo "  " "        if it is ours, declare it in dev/paths.sh; if not, ask before deleting" >&2
+  if [[ "$name" =~ ^($DECLARED)$ ]]; then continue; fi
+  if [[ -e "$d/.installed-id" ]] || [[ -d "$d/seedinghorde" ]] || \
+     find "$d" -maxdepth 2 -iname "*seedinghorde*" -print -quit 2>/dev/null | grep -q .; then
+    echo "  OURS but undeclared: $d" >&2
+    echo "                     declare it in dev/paths.sh or remove it with ./dev/deploy.sh --clean" >&2
     fail=1
+  else
+    echo "  not ours, left alone: $name"
   fi
 done < <(find /mnt/d/games -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
 

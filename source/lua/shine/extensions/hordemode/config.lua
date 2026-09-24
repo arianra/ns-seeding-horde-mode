@@ -77,6 +77,7 @@ Plugin.DefaultConfig = {
 		-- cooldown, it is friction nobody asked for. The knob stays (validated below) and
 		-- gets a real default when loss triggers exist (i8a) - that is the case Q12's
 		-- cooldown was written for: preventing instant re-start after a run ended badly.
+		Cooldown = 0,
 		MinPlayers = 1,          -- real humans only; bot clients never count (verified, i0f)
 	},
 	Intermission = {

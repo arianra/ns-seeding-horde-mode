@@ -3,7 +3,7 @@
   "title": "Seeding Horde Mode (dev)",
   "description": "Alien wave horde mode for Natural Selection 2, delivered as a Shine plugin.",
   "modId": 999000001,
-  "publishedFileId": null,
+  "publishedFileId": 3807461324,
   "entryPriority": 40,
   "version": "0.0.1",
   "_notes": {

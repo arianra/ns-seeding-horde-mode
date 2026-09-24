@@ -178,6 +178,23 @@ mkdir -p "$DEV_MODS"
 cp -r "$ARTIFACT_DIR/." "$INSTALL_DIR/"
 echo "[deploy] installed -> $INSTALL_DIR"
 
+# --- 2b. retire the id we used last time ----------------------------------
+# When mod.json's id changes (placeholder -> published, or a re-publish), the old folder
+# and its MapCycle entry must go. Leaving them behind means every boot logs
+# "Mod [old] wasn't available" - real errors about a stale artifact, which is exactly the
+# noise that makes a working system look broken.
+MARKER="$DEV_MODS/.installed-id"
+if [[ -f "$MARKER" ]]; then
+  PREV=$(tr -dc '0-9' < "$MARKER")
+  if [[ -n "$PREV" && "$PREV" != "$MOD_ID" ]]; then
+    PREV_HEX=$(printf '%x' "$PREV")
+    rm -rf "$DEV_MODS/$PREV"
+    echo "[deploy] retired previous id $PREV (folder removed)"
+    python3 "$REPO/dev/prune-mapcycle.py" "$DEV_CFG/MapCycle.json" "$PREV_HEX" "$PREV"
+  fi
+fi
+mkdir -p "$(dirname "$MARKER")" && echo "$MOD_ID" > "$MARKER"
+
 # --- 3. configure the DEV server (never the live one) ---------------------
 python3 - "$DEV_CFG" "$HEX_ID" "$MOD_ID" <<'PY'
 import json, os, sys
