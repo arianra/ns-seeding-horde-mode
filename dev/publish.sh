@@ -58,10 +58,16 @@ echo "[publish] building the artifact"
 [[ -d "$ARTIFACT" ]] || { echo "[publish] artifact missing: $ARTIFACT" >&2; exit 1; }
 
 OUT="$MODPROJECT_WSL/output"
-echo "[publish] staging $ARTIFACT -> $OUT"
-rm -rf "$OUT"
-mkdir -p "$OUT"
-cp -r "$ARTIFACT/." "$OUT/"
+[[ -d "$OUT" ]] || { echo "[publish] FAIL - LaunchPad's output directory is missing: $OUT" >&2
+                     echo "[publish]       create the project with LaunchPad first; do not mkdir it" >&2; exit 1; }
+
+# Sync CONTENTS; never delete the directory itself. LaunchPad owns this path, and a
+# previous revision of this script did `rm -rf output/` while LaunchPad had the project
+# open - which made the directory it was holding vanish and produced the misleading
+# "You must specify an output directory." Removing stale files by name cannot do that.
+echo "[publish] staging $ARTIFACT -> $OUT (contents only)"
+find "$OUT" -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +
+cp -a "$ARTIFACT/." "$OUT/"
 
 # Verify, don't trust: the published bytes must be the built bytes.
 WANT=$(cd "$ARTIFACT" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
