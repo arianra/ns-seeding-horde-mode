@@ -1,0 +1,31 @@
+{
+  "name": "seedinghorde",
+  "version": "0.0.1",
+  "modId": 999000001,
+  "hexId": "3b8b87c1",
+  "published": false,
+  "modTreeHash": "14747cb3",
+  "archiveHash": "6c459132",
+  "archives": [
+    "seedinghorde-0.0.1.zip",
+    "m3b8b87c1_0.zip"
+  ],
+  "files": [
+    "lua/entry/seedinghorde.entry",
+    "lua/shine/extensions/hordemode/config.lua",
+    "lua/shine/extensions/hordemode/economy.lua",
+    "lua/shine/extensions/hordemode/hud.lua",
+    "lua/shine/extensions/hordemode/placement.lua",
+    "lua/shine/extensions/hordemode/registry.lua",
+    "lua/shine/extensions/hordemode/server.lua",
+    "lua/shine/extensions/hordemode/shared.lua",
+    "lua/shine/extensions/hordemode/spawner.lua",
+    "lua/shine/extensions/hordemode/statemachine.lua",
+    "lua/shine/extensions/hordemode/takeover.lua",
+    "lua/shine/extensions/hordemode/triggers.lua",
+    "lua/shine/extensions/hordemode/waves.lua",
+    "lua/shine/extensions/hordetest/scenarios.lua",
+    "lua/shine/extensions/hordetest/server.lua",
+    "lua/shine/extensions/hordetest/shared.lua"
+  ]
+}

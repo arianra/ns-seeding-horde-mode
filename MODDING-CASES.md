@@ -173,3 +173,62 @@ tournamentmode,readyroom}`; game `MapBlip.lua`, `MapBlipMixin.lua`, `LOSMixin.lu
 `[WEB]` ns2servers.pw (2026-09-23), Steam Workshop appid 4920, Steam news API (UWE EOL
 2023-02-14), Shine repository (pushed 2026-02-07), SteamCharts 2026, Last Stand item page
 (comments through 2024), Matched Play v1.0 notes (2022-12-09).
+
+---
+
+## 6. Delivery experiment — there is no Workshop-free path (2026-09-23)
+
+Run because the `-game` overlay is not what an end user receives, so developing against it
+validated nothing about packaging. Three states, same artifact, measured on this machine.
+
+**Test 1 — mod folder on disk, unpublished id.** Built a real artifact (`lua/entry/
+seedinghorde.entry` + `lua/shine/extensions/*`), installed it at
+`mods/content/4920/999000001/`, listed `3b8b87c1` in `MapCycle.json`, booted with the overlay
+disabled:
+
+```
+Adding mod 999000001 from MapCycle.json to active mod list
+Error: Failed to fetch info for Mod 999000001, steam returned file not found
+Mod 999000001 is unavailable because its has no cached versions to use.
+Error: SteamVersionAvailable was false for mod [999000001] with version 0
+Error: Mod [999000001] wasn't available
+```
+Shine, NSL Badges and UWE Hotfix mounted normally; **`hordemode` did not load.** A directory
+that exists is not a mod.
+
+**Test 2 — plus a backup server speaking the documented protocol.** Implemented
+`dev/modserver.sh` against UWE's own contract (`WorkshopBackup` `check_path`/`make_key`:
+`/m<hexId>_<version>.zip`, port 27020), served the artifact, and set
+`mod_backup_servers: ["http://127.0.0.1:27020"]` with `mod_backup_before_steam: true`. Verified
+retrievable: `HTTP 200, 144501 bytes`. Result:
+
+```
+Mod [999000001][999000001] is not whitelisted
+```
+
+**That is the gate.** The engine consults a mod whitelist — the same UWE list that produced
+`Found 114 mods in whitelist` at boot — and an id that has never existed on the Workshop is not
+on it. No backup server, protocol-correct or not, can substitute.
+
+**Test 3 (the earlier one) — `-game` overlay.** Works, and is the only Workshop-free mount. It
+is not a mod: no id, no delivery, no client download, no entry-file semantics.
+
+### Consequences
+
+1. **Publication is mandatory, and it is a one-time human action.** Publishing needs Steam
+   running under an account that owns NS2, LaunchPad started **from the install root** (never
+   `x64`), and acceptance of the Workshop legal agreement on first upload.
+2. **The pipeline is built and is the only producer of mod files.** `dev/package.sh` emits
+   `build/mod/`, a semver-named archive, the protocol-named `m<hex>_<version>.zip`, and a
+   manifest with hashes; deterministic (fixed timestamps, sorted members) so a rebuild cannot
+   silently change bytes. `mod/mod.json` is the single identity source. `dev/deploy.sh` installs
+   the **artifact** (and verifies the install matches the artifact, not the source), refuses
+   Steam-managed paths at parse time, and repairs the Workshop copies an earlier revision
+   polluted. `dev/modserver.sh` stays — after publication it becomes the resilience layer
+   WorkshopBackup's README recommends, not a workaround.
+3. **What is still unproven, stated plainly:** that a *published* item mounts and auto-downloads
+   to a client. That is the first thing to verify after publication — the pipeline's remaining
+   assumption. The placeholder id in `mod/mod.json` exists only to exercise the build; it is
+   replaced by the real `publishedFileId` and never changed afterwards.
+4. **Nothing is hot-rigged.** The dev loop and the release path run the same scripts and produce
+   the same artifact; the only difference after publication is which id is in `mod/mod.json`.
