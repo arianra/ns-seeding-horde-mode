@@ -78,6 +78,25 @@ if [[ "$WANT" != "$HAVE" ]]; then
 fi
 echo "[publish] output verified identical to artifact [$HAVE], $(find "$OUT" -type f | wc -l) files"
 
+# Stage source/ as well as output/.
+#
+# Two reasons, both from the shipped config rather than assumption:
+#   1. builder_setup.xml has rules for mapsrc/*.cinematic, *.fnt, *.render_setup,
+#      *.shader_template and materialsrc/*.psd - and NO rule for lua. So Builder will
+#      never copy our Lua into output; output must be populated directly.
+#   2. source/ was empty, which is the one thing about this project that is
+#      abnormal for a LaunchPad project. If any validation is complaining about a
+#      required entry being empty, an empty authoring tree is the obvious candidate.
+# Keeping both trees identical means the question cannot come up again.
+SRC_DIR="$MODPROJECT_WSL/source"
+if [[ -d "$SRC_DIR" ]]; then
+  find "$SRC_DIR" -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +
+  mkdir -p "$SRC_DIR/lua"
+  cp -a "$ARTIFACT/lua/." "$SRC_DIR/lua/"
+  SRC_HASH=$(cd "$SRC_DIR" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+  echo "[publish] source/ staged too [$SRC_HASH], $(find "$SRC_DIR" -type f | wc -l) files"
+fi
+
 # Keep the Workshop tile in sync with the repo if we ship one.
 if [[ -f "$REPO/mod/preview.jpg" ]]; then
   cp "$REPO/mod/preview.jpg" "$MODPROJECT_WSL/preview.jpg"
