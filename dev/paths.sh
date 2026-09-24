@@ -89,3 +89,10 @@ dist_dir_for() {          # $1 = version
 dist_dir_for_win() {      # $1 = version
   echo "$DIST_WIN\\$1"
 }
+
+# --- the player's game install -------------------------------------------------
+# Read-only to us (dev/STANDARDS.md). Defined here so no script hard-codes it when
+# telling a human where LaunchPad lives.
+CLIENT_INSTALL_WIN='C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2'
+CLIENT_INSTALL_WSL='/mnt/c/Program Files (x86)/Steam/steamapps/common/Natural Selection 2'
+LAUNCHPAD_WIN="$CLIENT_INSTALL_WIN\\LaunchPad.exe"
