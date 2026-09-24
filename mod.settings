@@ -1,0 +1,7 @@
+name        = "seedinghorde"
+source_dir  = "source/"
+output_dir  = "output/"
+description = [=[seedinghorde]=]
+image       = "preview.jpg"
+tag_modtype = "Custom Game Mode"
+tag_support = "Must be run on Server"

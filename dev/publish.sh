@@ -25,6 +25,7 @@ source "$REPO/dev/paths.sh"
 paths_validate || exit 3
 
 META="$REPO/mod/mod.json"
+SRC="$REPO/source"
 VERSION=$(python3 -c "import json;print(json.load(open('$META'))['version'])")
 ARTIFACT="$(dist_dir_for "$VERSION")/mod"
 NAME=$(python3 -c "import json;print(json.load(open('$META'))['name'])")
@@ -32,7 +33,7 @@ NAME=$(python3 -c "import json;print(json.load(open('$META'))['name'])")
 if [[ "${1:-}" == "--id" ]]; then
   NEW_ID="${2:-}"
   [[ "$NEW_ID" =~ ^[0-9]+$ ]] || { echo "[publish] --id needs the numeric PublishedFileId" >&2; exit 2; }
-  python3 - "$META" "$NEW_ID" <<'PY'
+  python3 - "$REPO/mod/mod.json" "$NEW_ID" <<'PY'
 import json, sys
 path, new_id = sys.argv[1:3]
 m = json.load(open(path))
@@ -42,66 +43,40 @@ if m.get("publishedFileId") not in (None, int(new_id)):
 m["publishedFileId"] = int(new_id)
 json.dump(m, open(path, "w"), indent=2)
 print(f"[publish] recorded PublishedFileId {new_id} in mod/mod.json")
-print("[publish] next: ./dev/deploy.sh   (installs under the real id) and ./dev/test.sh")
+print("[publish] next: ./dev/deploy.sh   (installs under the real id), then ./dev/test.sh")
 PY
   exit 0
 fi
 
-[[ -d "$MODPROJECT_WSL" ]] || {
-  echo "[publish] no LaunchPad project at $MODPROJECT_WSL" >&2
-  echo "[publish] create it: LaunchPad (from the install ROOT) -> New -> $HORDE_ROOT_WIN\\modproject -> name $NAME" >&2
-  exit 1
-}
+# package.sh is the only producer of output/. publish.sh verifies it is current and then
+# says what a human has to click. No copying between trees, no second copy of the mod.
+"$REPO/dev/package.sh"
 
-echo "[publish] building the artifact"
-"$REPO/dev/package.sh" >/dev/null
-[[ -d "$ARTIFACT" ]] || { echo "[publish] artifact missing: $ARTIFACT" >&2; exit 1; }
-
-OUT="$MODPROJECT_WSL/output"
-[[ -d "$OUT" ]] || { echo "[publish] FAIL - LaunchPad's output directory is missing: $OUT" >&2
-                     echo "[publish]       create the project with LaunchPad first; do not mkdir it" >&2; exit 1; }
-
-# Sync CONTENTS; never delete the directory itself. LaunchPad owns this path, and a
-# previous revision of this script did `rm -rf output/` while LaunchPad had the project
-# open - which made the directory it was holding vanish and produced the misleading
-# "You must specify an output directory." Removing stale files by name cannot do that.
-echo "[publish] staging $ARTIFACT -> $OUT (contents only)"
-find "$OUT" -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +
-cp -a "$ARTIFACT/." "$OUT/"
-
-# Verify, don't trust: the published bytes must be the built bytes.
-WANT=$(cd "$ARTIFACT" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
-HAVE=$(cd "$OUT" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
-if [[ "$WANT" != "$HAVE" ]]; then
-  echo "[publish] FAIL - staged output [$HAVE] != artifact [$WANT]" >&2
+if [[ ! -d "$OUTPUT_WSL/lua/entry" ]]; then
+  echo "[publish] FAIL - output/ missing after package; investigate instead of continuing" >&2
   exit 1
 fi
-echo "[publish] output verified identical to artifact [$HAVE], $(find "$OUT" -type f | wc -l) files"
+echo "[publish] output/ current: $(find "$OUTPUT_WSL" -type f | wc -l) files"
 
-# Stage source/ as well as output/.
-#
-# Two reasons, both from the shipped config rather than assumption:
-#   1. builder_setup.xml has rules for mapsrc/*.cinematic, *.fnt, *.render_setup,
-#      *.shader_template and materialsrc/*.psd - and NO rule for lua. So Builder will
-#      never copy our Lua into output; output must be populated directly.
-#   2. source/ was empty, which is the one thing about this project that is
-#      abnormal for a LaunchPad project. If any validation is complaining about a
-#      required entry being empty, an empty authoring tree is the obvious candidate.
-# Keeping both trees identical means the question cannot come up again.
-SRC_DIR="$MODPROJECT_WSL/source"
-if [[ -d "$SRC_DIR" ]]; then
-  find "$SRC_DIR" -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +
-  mkdir -p "$SRC_DIR/lua"
-  cp -a "$ARTIFACT/lua/." "$SRC_DIR/lua/"
-  SRC_HASH=$(cd "$SRC_DIR" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
-  echo "[publish] source/ staged too [$SRC_HASH], $(find "$SRC_DIR" -type f | wc -l) files"
-fi
+# ---------------------------------------------------------------- export
+# LaunchPad gets a plain Windows path and a self-contained project, generated one way
+# from the repo. Nothing is authored in it, so it can be deleted and recreated freely.
+mkdir -p "$PUBLISH_ROOT_WSL"
+rm -rf "$PUBLISH_PROJECT_WSL"
+mkdir -p "$PUBLISH_PROJECT_WSL"
+cp -a "$REPO/mod.settings" "$PUBLISH_PROJECT_WSL/mod.settings"
+[[ -f "$REPO/preview.jpg" ]] && cp -a "$REPO/preview.jpg" "$PUBLISH_PROJECT_WSL/preview.jpg"
+cp -a "$OUTPUT_WSL" "$PUBLISH_PROJECT_WSL/output"
+cp -a "$SRC" "$PUBLISH_PROJECT_WSL/source"
 
-# Keep the Workshop tile in sync with the repo if we ship one.
-if [[ -f "$REPO/mod/preview.jpg" ]]; then
-  cp "$REPO/mod/preview.jpg" "$MODPROJECT_WSL/preview.jpg"
-  echo "[publish] preview.jpg refreshed from repo"
+# Verify the export survived the copy rather than assuming it did.
+REPO_HASH=$(cd "$OUTPUT_WSL" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+EXP_HASH=$(cd "$PUBLISH_PROJECT_WSL/output" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+if [[ "$REPO_HASH" != "$EXP_HASH" ]]; then
+  echo "[publish] FAIL - exported output [$EXP_HASH] != repo output [$REPO_HASH]" >&2
+  exit 1
 fi
+echo "[publish] exported project -> $PUBLISH_PROJECT_WIN  (output verified [$EXP_HASH])"
 
 PUBLISHED=$(python3 -c "import json;print(json.load(open('$META')).get('publishedFileId') or '')")
 if [[ -z "$PUBLISHED" ]]; then
@@ -113,11 +88,12 @@ if [[ -z "$PUBLISHED" ]]; then
 
   1. Launch  $LAUNCHPAD_WIN
      (the copy in the INSTALL ROOT - never the one in x64\\)
-  2. Open the existing project: $MODPROJECT_WIN
-  3. Check Configure -> name/description. Note mod.settings currently declares
-     tag_support = "Must be run on Server"; our mod has a shared.lua, so clients DO
-     need it. "Must be run on Server" understates that - pick the option that means
-     server AND client unless you want to override the tag later on the Workshop page.
+  2. Open this project (File -> Open Mod): $PUBLISH_PROJECT_WIN
+  3. Configure -> check name/description and the tags. mod.settings says
+     tag_support = "Must be run on Server", but our extension has a shared.lua, so
+     clients must mount it too. Choose the server AND client option if offered.
+     Do NOT press Build: builder_setup.xml has no rule for lua, so Build can clean
+     output/ without repopulating it. Publish only.
   4. Publish.
   5. Then:  ./dev/publish.sh --id <PublishedFileId>
 

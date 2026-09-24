@@ -1,181 +1,175 @@
-# SCAFFOLDING.md — creating and packaging this mod
+# SCAFFOLDING.md — the mod, the pipeline, and how to publish
 
-Procedure, not theory. `MODDING.md` holds the cited facts, `MODDING-CASES.md` the case studies,
+Procedure. `MODDING.md` holds the cited engine facts, `MODDING-CASES.md` the case studies,
 `dev/STANDARDS.md` the ownership boundaries, `PLAN.md` the working method.
 
-Every path here comes from **`dev/paths.sh`** — the only place a location is defined. If a
-script hard-codes a path, that is a defect.
+## 1. The repo IS the LaunchPad project
 
----
+```
+~/projects/ns-seeding-horde-mode/
+  mod.settings          LaunchPad's project file: name, source_dir, output_dir, tags
+  preview.jpg           workshop tile (mod.settings: image) - NOT part of the mod
+  mod/mod.json          our identity file: version (semver), mod id, publishedFileId
+  source/               THE MOD. Hand-written, version-controlled, the only truth.
+    lua/entry/seedinghorde.entry      filename IS the mod name; sets global modEntry
+    lua/shine/extensions/hordemode/   our Shine plugin
+    lua/shine/extensions/hordetest/   headless scenario harness
+  output/               GENERATED copy of source/ - what LaunchPad publishes
+  dist/<version>/       GENERATED archives + manifest
+  dev/                  the scripts
+```
 
-## 1. Layout and ownership
+`D:\games\horde\` holds **runtime and handoff state only** — nothing is authored there:
 
-| Path | What it is | Owner |
-|---|---|---|
-| `source/lua/shine/extensions/<name>/` | extension source — the truth | repo |
-| `mod/mod.json` | identity: name, semver version, mod id, entry priority | repo |
-| `D:\games\horde\dist\<version>\mod\` | built mod tree (what gets zipped) | generated |
-| `D:\games\horde\dist\<version>\artifacts\` | `<name>-<version>.zip`, `m<hex>_<ver>.zip`, `manifest.json` | generated |
-| `D:\games\horde\modproject\seedinghorde\` | LaunchPad project — the publication vehicle | permanent |
-| `D:\games\horde\server\cfg\` | DEV server config (Shine state lives under here) | disposable |
-| `D:\games\horde\server\mods\` | DEV mod storage, isolated by `-modstorage` | disposable |
-| `D:\games\ns2srv\cfg\` | **LIVE server config** | **Arian — never written** |
-| `D:\games\ns2-server\` | engine + dedicated server | steamcmd |
-| `...\steamapps\workshop\content\4920\117887554\` | Shine's client copy | **never written** |
-| `%APPDATA%\Natural Selection 2\workshop\...` | Shine's server copy (default mod store) | **never written** |
+```
+  server/cfg/            DEV server config (disposable; deploy.sh rebuilds it)
+  server/mods/           DEV mod storage, isolated by -modstorage
+  publish/seedinghorde/  GENERATED export that LaunchPad opens (publish.sh)
+```
 
-Two constraints `paths_validate` enforces: no hyphens in any path we pass to the engine (its
-argument parser breaks on `-`), and no project write path inside `steamapps`.
+Why an export at all: the repo lives in WSL ext4, and `wslpath` resolves it to
+`\\wsl.localhost\Ubuntu\...`, which this instance cannot even list. A Windows GUI app
+using that as a project folder is unverified — and an unresolvable path is exactly what a
+message like *"output cannot be empty"* would come from. So `publish.sh` exports a
+self-contained project to a plain `D:\` path. **One direction: repo → export.** The export
+is disposable, regenerated on every run, and its hash is verified against the repo.
 
----
+There is one copy of every authored file. That is the point: an earlier layout kept
+`repo/source`, a build tree, a project `source/` and a project `output/` — four copies with
+no answer to which was real.
+
+Generated trees are gitignored. `dev/paths.sh` is the only place any path is defined.
 
 ## 2. The pipeline
 
 ```
-source/ ──dev/package.sh──► dist/<version>/{mod,artifacts}
-                                 │
-                     dev/deploy.sh (installs the ARTIFACT, verifies install==artifact)
-                                 │
-              D:\games\horde\server\mods\content\4920\<modId>\
-                                 │
-   dev/modserver.sh (backup protocol) ── or ── published Workshop item
-                                 │
-                    dev/server-start.sh  →  DEV server on :27025
-                                 │
-                        client connects → auto-downloads the mod
+edit source/
+   │
+   ├── ./dev/package.sh      validate → output/ (mirror of source/) → dist/<ver>/{zips,manifest}
+   │
+   ├── ./dev/deploy.sh       install output/ into the DEV mod storage + MapCycle + config
+   │
+   ├── ./dev/server-start.sh boot DEV on :27025 with -modstorage isolation
+   │
+   ├── ./dev/test.sh         arm hordetest, run the 45-scenario suite, stop
+   │
+   └── ./dev/publish.sh      refresh output/, then tell you what to click in LaunchPad
+          └── after you publish:  ./dev/publish.sh --id <PublishedFileId>
 ```
+
+| Script | Does | Never does |
+|---|---|---|
+| `paths.sh` | defines every path; validates the two hard rules | — |
+| `package.sh` | validate, mirror `source/`→`output/`, zip deterministically, write manifest | transform content |
+| `deploy.sh` | install the artifact into DEV, configure DEV, repair Workshop pollution | write to Steam or the live config |
+| `modserver.sh` | serve the artifact over NS2's backup protocol | substitute for publication |
+| `server-start.sh` | boot DEV (disarmed → joinable), wait for readiness | touch LIVE without `--live` |
+| `server-stop.sh` | stop **our** PID, escalating politely | kill by process name |
+| `test.sh` | arm the harness, run the suite, verify managed content untouched | — |
+| `publish.sh` | build, export the LaunchPad project to `D:\games\horde\publish\`, print the human steps, record the id once | change a recorded id, or author anything |
+| `new-extension.sh` | scaffold an extension with the correct vararg shapes | — |
+| `lint.sh` | static Lua gate | — |
+
+## 3. Publishing, step by step
 
 ```bash
-./dev/package.sh            # build the artifact only
-./dev/deploy.sh             # package + install + configure the DEV server
-./dev/modserver.sh start    # serve the artifact over NS2's backup protocol
-./dev/server-start.sh       # boot DEV (hordetest disarmed → joinable server)
-./dev/server-stop.sh        # PID-scoped; never kill by process name
-./dev/deploy.sh --check     # verify state without writing (exit 1 = unsafe)
-./dev/deploy.sh --clean     # uninstall + repair any Workshop copy we polluted
-./dev/test.sh               # arm hordetest, boot, run the suite, stop
+./dev/publish.sh
 ```
+then, in Windows:
 
-**`package.sh` is the only producer of mod files.** It is deterministic — fixed zip timestamps,
-sorted members — so a rebuild cannot silently change bytes. `deploy.sh` installs the artifact and
-verifies the installed tree hashes to the artifact, **not** to `source/`: an install that drifted
-from the build is a failure, not a detail.
+1. Launch `C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2\LaunchPad.exe`
+   — the **install-root** launcher, never the `x64` copy.
+2. **Open Mod** → `D:\games\horde\publish\seedinghorde` (printed by `publish.sh`).
+3. Configure → check name/description and **the tags**. `mod.settings` currently says
+   `tag_support = "Must be run on Server"`, but our extension has a `shared.lua`, so clients
+   must mount it too. Choose the server **and** client option if offered.
+4. **Publish** (first upload accepts the Workshop legal agreement).
+5. `./dev/publish.sh --id <PublishedFileId>`
 
-### Identity
+**Do not press Build.** `builder_setup.xml` ships rules for `.cinematic`, `.fnt`,
+`.render_setup`, `.shader_template` and `.psd` — **no rule for `lua`**. Build can therefore
+clean `output/` and fail to repopulate our Lua, producing an incomplete mod. `package.sh` is
+the only producer of `output/`. A project-local builder rule would make Build safe too; it
+needs the rule syntax verified, so it is deliberately not guessed at.
 
-`mod/mod.json` holds `name`, semver `version`, `modId` (placeholder until published) and
-`publishedFileId` (null until published). After the first publish the real id goes in and is
-**never changed** — Valve's ISteamUGC flow addresses every future update by it. Version is
-`0.0.1` deliberately: nothing here is confirmed working in game yet.
+`publishedFileId` is written **once and never edited** — Valve addresses every later update by
+it, and `publish.sh --id` refuses to change a value that is already set.
 
----
+## 4. Versioning
 
-## 3. What the artifact contains
+Semver in `mod/mod.json`. `0.0.1` is deliberate: nothing is confirmed working in game yet.
+`dist/<version>/` holds one directory per release with a manifest recording the output hash,
+the mod id, and whether the item is published.
 
-```
-lua/entry/seedinghorde.entry        generated; sets global modEntry with Priority
-lua/shine/extensions/hordemode/...  from source/
-lua/shine/extensions/hordetest/...  from source/ (excluded with --no-test-ext)
-preview.jpg                         optional 512x512 workshop tile
-```
+The protocol archive is named `m<hexModId>_<workshopVersion>.zip` because that is the request
+grammar NS2's backup-server protocol makes (`WorkshopBackup` `check_path`/`make_key`). Pre-
+publication the engine asks for version `0`, so that is what we emit; after publication
+`workshopVersion` in `mod.json` carries Steam's `time_updated`.
 
-The entry file **is** required for a real mod: its filename becomes the mod name
-(`ModLoader.lua:227-229`) and it is what makes the folder a mod to the loader. It declares no
-`Client`/`Server`/`Shared` scripts — Shine is the host and loads our extensions through its own
-merged-VFS scan. `Priority` is declared because it governs load order against Shine (50);
-**higher loads first** (`ModLoader.lua:236-242`).
-
-`game_setup.xml` is deliberately absent: it re-routes the Client/Server VM entry points for the
-whole game. We are not replacing the game.
-
----
-
-## 4. Creating an extension
+## 5. Creating an extension
 
 ```bash
-./dev/new-extension.sh myfeature        # emits the correct file shapes
+./dev/new-extension.sh myfeature     # writes source/lua/shine/extensions/myfeature/
 ./dev/deploy.sh && ./dev/server-start.sh
 ```
 
-### The vararg rules — the most common way to break a plugin silently
+### The vararg rules — the commonest way to break a plugin silently
 
 | File | `...` is | Correct first line |
 |---|---|---|
-| `shared.lua` | the plugin **name** (string) | `local Plugin = Shine.Plugin( ... )` |
-| flat `extensions/<name>.lua` | the **name** | `local Plugin = Shine.Plugin( ... )` |
+| `shared.lua` | the plugin **name** (string) | `local Plugin = Shine.Plugin( ... )` … `return Plugin` |
+| flat `extensions/<name>.lua` | the **name** | same |
 | `server.lua` / `client.lua` / `predict.lua` | the plugin **table** | `local Plugin = ...` |
 
-Measured by mounting three shapes in one boot. Get it wrong and you get
-`attempt to index local 'Plugin' (a string value)` at load, and the plugin never registers.
-Also: **a folder with only `server.lua` is not a plugin** — it needs `shared.lua` or
-`client.lua`. And `return Plugin` from `shared.lua` is what registers it.
+Measured by mounting three shapes in one boot. Wrong form gives
+`attempt to index local 'Plugin' (a string value)` and the plugin never registers.
+A folder with only `server.lua` **is not a plugin** — it needs `shared.lua` or `client.lua`.
+Extra modules are not auto-loaded: `Shine.LoadPluginFile( PluginName, "config.lua", Plugin )`.
 
-Extra modules are not auto-loaded; pull them in explicitly:
-`Shine.LoadPluginFile( PluginName, "config.lua", Plugin )`.
+## 6. Server-only vs client-visible
 
----
+The game requires **identical network-message counts** on both sides.
 
-## 5. Server-only vs client-visible — decide deliberately
-
-The game requires **identical network-message counts** on client and server.
-
-| Your plugin does | Vanilla clients can join |
+| Your plugin | Vanilla clients can join |
 |---|---|
-| server-side logic only, registers nothing networked | **yes** |
-| has any `shared.lua` (adds a `Shine_PluginSync` field) | **no** |
+| server-side only, registers nothing networked | **yes** |
+| any `shared.lua` (adds a `Shine_PluginSync` field) | **no** |
 | `SetupDataTable` / `AddDTVar` / `AddNetworkMessage` | **no** — one message per table plus one per key |
 
-Restricting datatable access does not help: the messages still register, access only gates who
-receives values. So client-visible state means the client must mount our mod — which is the
-delivery path in §2, not an optional extra.
+Restricting datatable access does not help: messages still register. So client-visible state
+means the client mounts our mod — which is §3, not an optional extra.
 
-**Declare a datatable var only if you write it.** `hordemode` shipped five declared vars that
-nothing ever assigned: the client had a contract and no data. If a field exists in
-`SetupDataTable`, a test must assert it changes.
+**Declare a datatable var only if you write it**, and add a test that asserts it changes.
 
----
-
-## 6. Verify
+## 7. Verify
 
 ```bash
-./dev/deploy.sh --check                       # artifact installed, matches build, MapCycle lists it
-grep -a "Extension 'hordemode' loaded" "$LOG" # boot log marker
-./dev/test.sh                                 # full headless suite
+./dev/deploy.sh --check                                  # artifact installed, mirrors source, listed, delivery configured
+grep -a "Extension 'hordemode' loaded" "$LOG"            # boot log
+./dev/test.sh                                            # headless suite
 ```
+Runtime assertion from Lua: `ModLoader.GetLoadedModNames()`, `ModLoader.GetModInfo(name)`.
 
-Runtime assertions available from Lua: `ModLoader.GetLoadedModNames()` and
-`ModLoader.GetModInfo(name)`.
+**Current blocker, stated plainly:** the id is unpublished, so the engine refuses to mount it
+(`Mod [999000001] wasn't available`) and `hordemode` does not load. That is the intended
+consequence of removing the `-game` overlay, not a regression. "A published item mounts and
+auto-downloads to a connecting client" is the pipeline's remaining unproven assumption — §6 of
+`MODDING-CASES.md` records why no Workshop-free route exists.
 
-**Delivery caveat, stated plainly:** an unpublished mod id will not mount — the engine checks a
-mod whitelist and reports `is not whitelisted` even when a protocol-correct backup server is
-serving the artifact (measured 2026-09-23, `MODDING-CASES.md` §6). Publication is mandatory, and
-"published item mounts and auto-downloads to a client" is the pipeline's remaining unproven
-assumption.
+## 8. Test-authoring rules, earned the hard way
 
----
-
-## 7. Test-authoring rules, earned the hard way
-
-- Assert **routing and behaviour through the public seam**. A chat command is exercised with
-  `Shine:RunCommand(client, "sh_horde", true, "status")`, never by calling the handler — the
-  handler-level test passed while the feature was dead, because Shine forwards only arguments
-  matching a declared `AddParam`.
-- Never assert against **injected** state when the claim is about real state. The status
-  scenarios supplied their own machine and could not see that the live machine's fields were
-  never written.
-- Never let a check read state a **previous run** could have written. The engine log rotates at
-  boot; byte-offset fences break and a plain occurrence count reads `1 before, 1 after`.
+- Exercise the **public seam**: chat commands via `Shine:RunCommand(...)`, never by calling the
+  handler — Shine forwards only arguments matching a declared `AddParam`.
+- Never assert against **injected** state when the claim is about real state.
+- Never read state a **previous run** could have written; the engine log rotates at boot.
 - A new check must be **demonstrated to fail** before it is allowed to pass.
-- A scenario that mutates shared plugin state must swap it back — teardown is global by design,
-  so a caller must own the state it covers.
+- A scenario that mutates shared plugin state must restore it — teardown is global by design.
 
----
-
-## 8. Never do these
+## 9. Never
 
 - Write into any `workshop\content\4920\<someone else's id>` directory, on either side.
-- Hand-edit anything under `D:\games` — generate it with the scripts.
-- Delete or truncate the shared engine log, `dumps/`, or any `%APPDATA%` file we did not create.
+- Hand-edit anything under `D:\games` — generate it.
+- Delete or truncate the shared engine log, `dumps/`, or any `%APPDATA%` file we didn't create.
 - Kill processes by name, or restart the server while someone is connected.
+- Press Build in LaunchPad (see §3).
 - Point a dev tool at the live config, or default to it.
-- Ship a client-visible feature before the delivery path is proven.

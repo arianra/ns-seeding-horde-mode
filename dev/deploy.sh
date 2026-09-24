@@ -52,8 +52,7 @@ MOD_ID=$(python3 -c "import json;m=json.load(open('$REPO/mod/mod.json'));print(m
 HEX_ID=$(printf '%x' "$MOD_ID")
 VERSION=$(python3 -c "import json;print(json.load(open('$REPO/mod/mod.json'))['version'])")
 INSTALL_DIR="$DEV_MODS/$MOD_ID"
-# The artifact is the only thing we install, so every consumer needs this in scope.
-ARTIFACT_DIR="$(dist_dir_for "$VERSION")/mod"
+ARTIFACT_DIR="$OUTPUT_WSL"
 
 repair_workshop_copies() {
   for ROOT in "${REPAIR_TARGETS[@]}"; do
@@ -108,7 +107,7 @@ verify_state() {
   HAVE=$(cd "$INSTALL_DIR" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
 
   if [[ -z "$WANT" ]]; then
-    echo "[deploy] FAIL - no artifact at $ARTIFACT_DIR; run ./dev/package.sh" >&2; FAILED=1
+    echo "[deploy] FAIL - no output/ at $ARTIFACT_DIR; run ./dev/package.sh" >&2; FAILED=1
   elif [[ "$WANT" != "$HAVE" ]]; then
     echo "[deploy] FAIL - installed mod [$HAVE] != artifact [$WANT]" >&2
     echo "[deploy]        re-run ./dev/deploy.sh (never patch the install directory)" >&2

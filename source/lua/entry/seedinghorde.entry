@@ -1,0 +1,14 @@
+-- The mod's registration entry. Its FILENAME is the mod name
+-- (core/lua/ModLoader.lua:227-229), and it is executed as Lua to set a global
+-- modEntry table.
+--
+-- No Client/Server/Shared scripts are declared: Shine is the host and loads our
+-- extensions through its own merged-VFS scan of lua/shine/extensions/*.lua
+-- (MODDING-CASES.md §2b). Anything we ran from here would duplicate that.
+--
+-- Priority is authored rather than generated so this file stays the whole truth.
+-- HIGHER loads first (ModLoader.lua:236-242); Shine is 50, so 40 means our files
+-- mount after Shine's and our extensions are seen by its scan.
+modEntry = {
+    Priority = 40
+}

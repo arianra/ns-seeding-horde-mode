@@ -1,130 +1,132 @@
 #!/usr/bin/env bash
-# package.sh — build the shippable mod artifact. The ONLY producer of mod files.
+# package.sh — assemble output/ from source/ and produce the release archives.
 #
-#   ./dev/package.sh              build/  ->  mod tree + distribution archives + manifest
-#   ./dev/package.sh --clean      remove build/
+#   ./dev/package.sh            build output/ and dist/<version>/
+#   ./dev/package.sh --clean    remove output/ and dist/
 #
-# Nothing in this repo copies a file into a running game or a Workshop directory.
-# Everything the server or a client needs is produced here, from the repo, from
-# mod/mod.json. That is deliberate: the artifact a tester mounts and the artifact a
-# player downloads are the same bytes, so packaging cannot be "fixed later".
+# The repo IS the LaunchPad project (mod.settings names source/ and output/), so this
+# script's job is deliberately small:
 #
-# Outputs
-#   D:\games\horde\dist\<version>\mod\           the mod tree (what gets zipped)
-#   D:\games\horde\dist\<version>\artifacts\<name>-<version>.zip
-#                                   human-readable release archive
-#   ...\artifacts\m<hexId>_<version>.zip
-#                                   the name the engine's backup-server protocol
-#                                   requests (WorkshopBackup check_path/make_key)
-#   ...\artifacts\manifest.json     version, id, hashes, file list
+#   source/   the mod tree, hand-written, version-controlled - the only truth
+#   output/   a copy of source/, what LaunchPad publishes - generated, gitignored
+#   dist/     versioned archives + manifest - generated, gitignored
 #
-# Version is semantic (mod/mod.json -> version). Pre-1.0 is intentional: nothing here
-# has been confirmed working in game yet. The distribution filename uses
-# version=0 while the item has no PublishedFileId, because that is what the engine
-# asked for when it looked the mod up ("mod [999000001] with version 0"). Once the
-# item is published, publishedFileId replaces modId and Steam's time_updated replaces
-# the 0, and this script is the only place either is read.
+# There is no transformation to perform. The entry file lives in
+# source/lua/entry/ because it is authored content, not generated. So output/ is a
+# mirror, and it exists only because that is what LaunchPad publishes.
+#
+# KNOWN LIMITATION, stated rather than hidden: builder_setup.xml ships rules for
+# .cinematic/.fnt/.render_setup/.shader_template/.psd and NO rule for lua. If you press
+# Build in LaunchPad it may clean output/ and then fail to repopulate our Lua, yielding
+# an incomplete mod. Use this script to produce output/ and LaunchPad only to Publish.
+# Adding a lua copy rule to a project-local builder setup would fix that; it needs the
+# rule syntax verified, so it is deliberately not guessed at here.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=paths.sh
 source "$REPO/dev/paths.sh"
-paths_validate || exit 1
+paths_validate || exit 3
 
 META="$REPO/mod/mod.json"
-SRC="$REPO/source/lua/shine/extensions"
-
-[[ -f "$META" ]] || { echo "[package] missing $META" >&2; exit 1; }
+SETTINGS="$REPO/mod.settings"
+SRC="$REPO/source"
+OUT="$REPO/output"
+DIST="$REPO/dist"
 
 if [[ "${1:-}" == "--clean" ]]; then
-  rm -rf "$DIST_WSL"
-  echo "[package] removed $DIST_WSL"
+  rm -rf "$OUT" "$DIST"
+  echo "[package] removed output/ and dist/"
   exit 0
 fi
 
-[[ -d "$SRC" ]] || { echo "[package] missing source: $SRC" >&2; exit 1; }
+for req in "$META" "$SETTINGS" "$SRC"; do
+  [[ -e "$req" ]] || { echo "[package] missing required input: $req" >&2; exit 1; }
+done
 
 eval "$(python3 -c "
 import json
 m = json.load(open('$META'))
-name, ver, mid = m['name'], m['version'], m.get('publishedFileId') or m['modId']
-print(f'NAME={name}'); print(f'VERSION={ver}')
-print(f'MOD_ID={mid}'); print(f'HEX_ID={mid:x}')
-print(f'DIST_VERSION={0 if m.get(\"publishedFileId\") is None else 1}')
-print(f'PRIORITY={m.get(\"entryPriority\", 40)}')
-print(f'PRE_PUBLISHED={1 if m.get(\"publishedFileId\") is None else 0}')
+mid = m.get('publishedFileId') or m['modId']
+print(f'VERSION={m[\"version\"]}')
+print(f'MOD_ID={mid}')
+print(f'HEX_ID={mid:x}')
+print(f'UNPUBLISHED={1 if m.get(\"publishedFileId\") is None else 0}')
+# The protocol filename carries the mod VERSION, which for a Workshop item is Steam
+# time_updated, not our semver. Pre-publication the engine asks for version 0 (observed:
+# mod [999000001] with version 0), so 0 is the honest placeholder. After publication,
+# record Steam number in mod.json workshopVersion and it is used verbatim.
+print(f'ARCHIVE_VERSION={0 if m.get(\"publishedFileId\") is None else (m.get(\"workshopVersion\") or 0)}')
 ")"
 
-# A semver string cannot contain the characters that would break a path, but check
-# anyway: a typo here silently produces an artifact nobody can install.
+# ---------------------------------------------------------------- validation
+# Two files name the mod: mod.json (ours) and mod.settings (LaunchPad's). A mismatch
+# would publish a tree whose entry filename disagrees with the project, which is the
+# kind of silent inconsistency this project has already been bitten by.
+SETTINGS_NAME=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$SETTINGS")
+[[ "$SETTINGS_NAME" == "$MOD_NAME" ]] || {
+  echo "[package] FAIL - mod name mismatch: mod.json '$MOD_NAME' vs mod.settings '$SETTINGS_NAME'" >&2
+  echo "[package]        the entry filename IS the mod name (ModLoader.lua:227-229)" >&2; exit 1; }
+
+[[ -f "$SRC/lua/entry/$MOD_NAME.entry" ]] || {
+  echo "[package] FAIL - no source/lua/entry/$MOD_NAME.entry" >&2
+  echo "[package]        LaunchPad's mod name comes from this file; without it the folder" >&2
+  echo "[package]        is not a mod to the loader" >&2; exit 1; }
+
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
-  echo "[package] version '$VERSION' is not semver (e.g. 0.0.1 or 0.1.0-rc1)" >&2; exit 1; }
+  echo "[package] FAIL - version '$VERSION' is not semver (0.0.1, 0.1.0-rc1)" >&2; exit 1; }
 
-BUILD=$(dist_dir_for "$VERSION")
-MODDIR="$BUILD/mod"            # the mod tree - what gets zipped
-DIST="$BUILD/artifacts"        # release archives + manifest
-rm -rf "$BUILD"
-mkdir -p "$MODDIR/lua/entry" "$DIST"
+# ---------------------------------------------------------------- assemble
+rm -rf "$OUT"
+mkdir -p "$OUT"
+cp -a "$SRC/." "$OUT/"
+# preview.jpg is NOT copied into output/: mod.settings declares it as `image`, i.e. a
+# project-level workshop tile, not mod content. Copying it here broke the mirror check
+# below, which is exactly the check that catches a stale or partial output/.
 
-# ---------------------------------------------------------------- the entry file
-# Executed as Lua; must set a global modEntry. The entry FILENAME is the mod name
-# (core/lua/ModLoader.lua:227-229). No Client/Server/Shared scripts are declared:
-# Shine is the host and loads our extensions through its own merged-VFS scan
-# (MODDING-CASES.md §2b). Priority is declared because it governs load order against
-# Shine (50) - HIGHER loads first (ModLoader.lua:236-242).
-cat > "$MODDIR/lua/entry/$NAME.entry" <<EOF
--- Generated by dev/package.sh from mod/mod.json. Do not edit: edit the source and
--- re-run. version $VERSION
-modEntry = {
-    Priority = $PRIORITY
-}
-EOF
-
-# ---------------------------------------------------------------- the extensions
-mkdir -p "$MODDIR/lua/shine/extensions"
-cp -r "$SRC/." "$MODDIR/lua/shine/extensions/"
-
-# Optional workshop tile
-[[ -f "$REPO/mod/preview.jpg" ]] && cp "$REPO/mod/preview.jpg" "$MODDIR/preview.jpg"
+SRC_HASH=$(cd "$SRC" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+OUT_HASH=$(cd "$OUT" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+[[ "$SRC_HASH" == "$OUT_HASH" ]] || {
+  echo "[package] FAIL - output [$OUT_HASH] does not mirror source [$SRC_HASH]" >&2; exit 1; }
 
 # ---------------------------------------------------------------- archives
-# Deterministic zip: fixed timestamp and sorted members, so the same inputs always
-# produce the same bytes. Without this, "rebuild the artifact" changes the hash and
-# the version-skew problems documented in WorkshopBackup's README become invisible.
-python3 - "$MODDIR" "$DIST/$NAME-$VERSION.zip" "$DIST/m${HEX_ID}_${DIST_VERSION}.zip" <<'PY'
+BUILD_DIST="$DIST/$VERSION"
+mkdir -p "$BUILD_DIST"
+python3 - "$OUT" "$BUILD_DIST/$MOD_NAME-$VERSION.zip" "$BUILD_DIST/m${HEX_ID}_${ARCHIVE_VERSION}.zip" <<'PY'
 import os, sys, zipfile
-src, out_a, out_b = sys.argv[1:4]
-files = sorted(os.path.relpath(os.path.join(r, f), src)
-               for r, _, fs in os.walk(src) for f in fs)
-for out in (out_a, out_b):
+src, a, b = sys.argv[1:4]
+files = sorted(os.path.relpath(os.path.join(r, f), src) for r, _, fs in os.walk(src) for f in fs)
+# Fixed timestamps and sorted members: a rebuild of identical inputs must produce
+# identical bytes, or "the artifact changed" and "the source changed" become
+# indistinguishable - the exact confusion WorkshopBackup's README documents as
+# version skew between server and clients.
+for out in (a, b):
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in files:
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+        for n in files:
+            info = zipfile.ZipInfo(n, date_time=(1980, 1, 1, 0, 0, 0))
             info.external_attr = 0o644 << 16
-            with open(os.path.join(src, name), "rb") as fh:
+            with open(os.path.join(src, n), "rb") as fh:
                 z.writestr(info, fh.read())
 print(f"[package] {len(files)} files per archive")
 PY
 
-MOD_HASH=$(cd "$MODDIR" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
-ZIP_HASH=$(md5sum "$DIST/$NAME-$VERSION.zip" | cut -c1-8)
-
-python3 - "$DIST/manifest.json" "$NAME" "$VERSION" "$MOD_ID" "$HEX_ID" "$MOD_HASH" "$ZIP_HASH" "$PRE_PUBLISHED" <<'PY'
-import json, sys, os
-out, name, version, mod_id, hex_id, mod_hash, zip_hash, pre = sys.argv[1:9]
-files = sorted(os.path.relpath(os.path.join(r, f), os.path.join(os.path.dirname(out), "..", "mod"))
-               for r, _, fs in os.walk(os.path.join(os.path.dirname(out), "..", "mod")) for f in fs)
+python3 - "$BUILD_DIST/manifest.json" "$MOD_NAME" "$VERSION" "$MOD_ID" "$HEX_ID" "$OUT_HASH" "$UNPUBLISHED" "$ARCHIVE_VERSION" <<'PY'
+import json, os, sys
+out, name, version, mod_id, hex_id, tree_hash, unpub, arver = sys.argv[1:9]
+base = os.path.dirname(out)
+files = sorted(os.path.relpath(os.path.join(r, f), os.path.join(base, "..", "..", "output"))
+               for r, _, fs in os.walk(os.path.join(base, "..", "..", "output")) for f in fs)
 json.dump({
-    "name": name, "version": version,
-    "modId": int(mod_id), "hexId": hex_id,
-    "published": pre != "1",
-    "modTreeHash": mod_hash, "archiveHash": zip_hash,
-    "archives": [f"{name}-{version}.zip", f"m{hex_id}_{0 if pre == '1' else 1}.zip"],
+    "name": name, "version": version, "modId": int(mod_id), "hexId": hex_id,
+    "published": unpub == "0",
+    "workshopVersion": int(arver),
+    "outputHash": tree_hash,
+    "archives": [f"{name}-{version}.zip", f"m{hex_id}_{int(arver)}.zip"],
     "files": files,
 }, open(out, "w"), indent=2)
-print(f"[package] manifest -> {out}")
 PY
 
-echo "[package] mod '$NAME' v$VERSION id=$MOD_ID (hex $HEX_ID, dist version $DIST_VERSION)"
-echo "[package] tree [$MOD_HASH]  archive [$ZIP_HASH]"
-ls -1 "$DIST" | sed 's/^/[package]   /'
+echo "[package] mod '$MOD_NAME' v$VERSION  id=$MOD_ID (hex $HEX_ID, protocol version $ARCHIVE_VERSION$( [ "$UNPUBLISHED" = 1 ] && echo ', UNPUBLISHED'))"
+echo "[package] output mirrors source [$OUT_HASH]"
+echo "[package] dist -> $BUILD_DIST"
+ls -1 "$BUILD_DIST" | sed 's/^/[package]   /'

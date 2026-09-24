@@ -9,6 +9,8 @@
   "_notes": {
     "modId": "PLACEHOLDER. A mod id is the workshop folder name in decimal, so any number works for the server's local mount test. Replace with the real PublishedFileId after the first LaunchPad publish and NEVER change it afterwards - Valve's ISteamUGC flow says store it forever, and every update is addressed by it.",
     "publishedFileId": "null until the item exists on the Workshop. Client auto-download of a server's active mods is the delivery mechanism for end users; an unpublished id cannot be fetched by a client, which is exactly what the mount test measures.",
-    "entryPriority": "HIGHER loads first (ModLoader.lua:236-242). Shine is 50; NS2_GorgeTunnel ships 84 to beat UWE. 40 loads after Shine, which is what a plugin riding on Shine wants. Raise it only if we later need FileHooks that must run before Shine."
-  }
+    "entryPriority": "HIGHER loads first (ModLoader.lua:236-242). Shine is 50; NS2_GorgeTunnel ships 84 to beat UWE. 40 loads after Shine, which is what a plugin riding on Shine wants. Raise it only if we later need FileHooks that must run before Shine.",
+    "workshopVersion": "Steam's time_updated for the published item. The backup-server protocol names archives m<hexId>_<version>.zip, so this - not our semver - is the version in the filename. null/0 while unpublished, which is what the engine itself asked for."
+  },
+  "workshopVersion": null
 }

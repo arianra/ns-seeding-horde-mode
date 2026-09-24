@@ -1,7 +1,6 @@
-# logs & temp
+/output/
+/dist/
+/build/
+/dev/.server.pid
+/dev/.modserver.pid
 *.log
-dev/.server.pid
-dev/horde-test-cfg/shine/logs/
-
-# os
-.DS_Store
