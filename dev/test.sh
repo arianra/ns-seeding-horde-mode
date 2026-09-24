@@ -13,11 +13,14 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_CFG_WIN='D:\games\ns2srv\cfg'
-SRC_CFG_WSL="/mnt/d/games/ns2srv/cfg"
-CFG_WIN='D:\games\ns2hordetest\cfg'      # hyphen-free: -config_path breaks on hyphens
-CFG_WSL="/mnt/d/games/ns2hordetest/cfg"
-LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
+# shellcheck source=paths.sh
+source "$REPO/dev/paths.sh"
+paths_validate || bail "path policy violated (see dev/paths.sh)"
+SRC_CFG_WIN="$LIVE_CFG_WIN"
+SRC_CFG_WSL="$LIVE_CFG_WSL"
+CFG_WIN="$DEV_CFG_WIN"     # hyphen-free by construction; paths_validate enforces it
+CFG_WSL="$DEV_CFG_WSL"
+LOG_WSL="$LOG_WSL"
 MAP="ns2_summit"
 TIMEOUT=0
 BAD_CONFIG=0

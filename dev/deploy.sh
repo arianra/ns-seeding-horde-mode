@@ -6,6 +6,7 @@
 #   ./dev/deploy.sh --clean        remove our mod from the dev storage AND repair any
 #                                 dev files an earlier revision left in a Workshop copy
 #   ./dev/deploy.sh --check        verify state without writing (exit 1 = unsafe)
+#   ./dev/deploy.sh --for-suite    arm hordetest so it runs on boot (test.sh only)
 #
 # This script installs an ARTIFACT, it does not copy source into a running game. The
 # distinction is the whole lesson of 2026-09-21/23: dev files were once mirrored into
@@ -18,42 +19,41 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=paths.sh
+source "$REPO/dev/paths.sh"
+paths_validate || exit 3
 
-DEV_ROOT="/mnt/d/games/ns2hordetest"
-DEV_CFG="$DEV_ROOT/cfg"
-DEV_MODS="$DEV_ROOT/mods/content/4920"
-DEV_OVERLAY="$DEV_ROOT/overlay"
+DEV_CFG="$DEV_CFG_WSL"
+DEV_MODS="$DEV_MODS_WSL/content/4920"
 
 # Repair targets: removed by --clean, never written to. Listed so this tool can undo
 # what an earlier revision of itself did.
-SERVER_SHINE_EXT="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/workshop/content/4920/117887554/lua/shine/extensions"
-CLIENT_SHINE_EXT="/mnt/c/Program Files (x86)/Steam/steamapps/workshop/content/4920/117887554/lua/shine/extensions"
 REPAIR_TARGETS=("$SERVER_SHINE_EXT" "$CLIENT_SHINE_EXT")
 
-LIVECFG="$DEV_CFG/../.."   # never used for writes; the live config is not this script's business
+# LIVE_CFG_WSL is defined in paths.sh and is deliberately never written here.
 
 INCLUDE_TEST=1
 CLEAN_ONLY=0
 CHECK_ONLY=0
+FOR_SUITE=0
 for Arg in "$@"; do
   case "$Arg" in
     --no-test-ext) INCLUDE_TEST=0 ;;
     --clean) CLEAN_ONLY=1 ;;
     --check) CHECK_ONLY=1 ;;
+    --for-suite) FOR_SUITE=1 ;;
     *) echo "[deploy] unknown option: $Arg" >&2; exit 2 ;;
   esac
 done
 
-# Refuse, at parse time, to write anywhere Steam owns.
-case "$DEV_ROOT" in
-  */steamapps/*|*"/Program Files (x86)/Steam"*)
-    echo "[deploy] REFUSED: dev root is Steam-managed: $DEV_ROOT" >&2; exit 3 ;;
-esac
+
 
 MOD_ID=$(python3 -c "import json;m=json.load(open('$REPO/mod/mod.json'));print(m.get('publishedFileId') or m['modId'])")
 HEX_ID=$(printf '%x' "$MOD_ID")
-MOD_NAME=$(python3 -c "import json;print(json.load(open('$REPO/mod/mod.json'))['name'])")
+VERSION=$(python3 -c "import json;print(json.load(open('$REPO/mod/mod.json'))['version'])")
 INSTALL_DIR="$DEV_MODS/$MOD_ID"
+# The artifact is the only thing we install, so every consumer needs this in scope.
+ARTIFACT_DIR="$(dist_dir_for "$VERSION")/mod"
 
 repair_workshop_copies() {
   for ROOT in "${REPAIR_TARGETS[@]}"; do
@@ -104,11 +104,11 @@ verify_state() {
   fi
 
   local WANT HAVE
-  WANT=$(cd "$REPO/build/mod" 2>/dev/null && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
+  WANT=$(cd "$ARTIFACT_DIR" 2>/dev/null && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
   HAVE=$(cd "$INSTALL_DIR" && find . -type f | sort | xargs -r md5sum | md5sum | cut -c1-8)
 
   if [[ -z "$WANT" ]]; then
-    echo "[deploy] FAIL - no artifact in build/mod; run ./dev/package.sh" >&2; FAILED=1
+    echo "[deploy] FAIL - no artifact at $ARTIFACT_DIR; run ./dev/package.sh" >&2; FAILED=1
   elif [[ "$WANT" != "$HAVE" ]]; then
     echo "[deploy] FAIL - installed mod [$HAVE] != artifact [$WANT]" >&2
     echo "[deploy]        re-run ./dev/deploy.sh (never patch the install directory)" >&2
@@ -127,7 +127,7 @@ verify_state() {
 
   # 4. delivery: unpublished ids only mount via the backup server
   if [[ "$(python3 -c "import json;print(json.load(open('$REPO/mod/mod.json')).get('publishedFileId'))")" == "None" ]]; then
-    if grep -q "127.0.0.1:27020" "$DEV_CFG/ServerConfig.json" 2>/dev/null; then
+    if grep -q "127.0.0.1:$MODSERVER_PORT" "$DEV_CFG/ServerConfig.json" 2>/dev/null; then
       echo "[deploy] dev server configured to fetch mods from the local backup server"
     else
       echo "[deploy] FAIL - mod is unpublished and no backup server is configured;" >&2
@@ -150,7 +150,9 @@ if [[ $CLEAN_ONLY -eq 1 ]]; then
   echo "[deploy] --clean: uninstalling dev mod and repairing Workshop copies"
   uninstall
   repair_workshop_copies
-  [[ -d "$DEV_OVERLAY" ]] && rm -rf "$DEV_OVERLAY" && echo "[deploy] removed the obsolete -game overlay"
+  for _ov in "/mnt/d/games/ns2hordetest/overlay" "$HORDE_ROOT_WSL/overlay"; do
+    [[ -d "$_ov" ]] && rm -rf "$_ov" && echo "[deploy] removed obsolete -game overlay: $_ov"
+  done
   exit 0
 fi
 
@@ -160,22 +162,21 @@ echo "[deploy] repo=$REPO  mod=$MOD_NAME id=$MOD_ID"
 "$REPO/dev/package.sh"
 repair_workshop_copies
 
-# The overlay is gone on purpose. It was a search-path shortcut that let us develop
-# without ever exercising mod mounting, delivery, or the entry file.
-if [[ -d "$DEV_OVERLAY" ]]; then
-  rm -rf "$DEV_OVERLAY"
-  echo "[deploy] removed obsolete -game overlay (dev now installs the real artifact)"
-fi
+# The -game overlay was a search-path shortcut that let us develop without exercising
+# mounting, delivery or the entry file. Delete it wherever an older layout left it.
+for _ov in "/mnt/d/games/ns2hordetest/overlay" "$HORDE_ROOT_WSL/overlay"; do
+  [[ -d "$_ov" ]] && rm -rf "$_ov" && echo "[deploy] removed obsolete -game overlay: $_ov"
+done
 
 if [[ $INCLUDE_TEST -eq 0 ]]; then
-  rm -rf "$REPO/build/mod/lua/shine/extensions/hordetest"
+  rm -rf "$ARTIFACT_DIR/lua/shine/extensions/hordetest"
   echo "[deploy] dropped hordetest from the artifact (--no-test-ext)"
 fi
 
 # --- 2. install ------------------------------------------------------------
 rm -rf "$INSTALL_DIR"
 mkdir -p "$DEV_MODS"
-cp -r "$REPO/build/mod/." "$INSTALL_DIR/"
+cp -r "$ARTIFACT_DIR/." "$INSTALL_DIR/"
 echo "[deploy] installed -> $INSTALL_DIR"
 
 # --- 3. configure the DEV server (never the live one) ---------------------
@@ -208,10 +209,18 @@ if os.path.exists(sc_path):
 PY
 
 # --- 4. test-harness arming stays explicit (a manual boot must be joinable)
+# Arming is explicit. A manual boot must be a server you can join; only test.sh asks
+# for the harness to run, because the suite spawns and destroys bots and takes the
+# commander chair.
 HARDCFG="$DEV_CFG/shine/plugins/HordeTest.json"
 if [[ -f "$HARDCFG" ]]; then
-  printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
-  echo "[deploy] hordetest idle - this server is joinable; ./dev/test.sh arms it"
+  if [[ $FOR_SUITE -eq 1 ]]; then
+    printf '{\n    "RunSuite" : true\n}\n' > "$HARDCFG"
+    echo "[deploy] hordetest ARMED - the suite will run on this boot"
+  else
+    printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
+    echo "[deploy] hordetest idle - joinable server; ./dev/test.sh arms it"
+  fi
 fi
 
 verify_state || exit 1

@@ -29,10 +29,13 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="$REPO/build/dist"
-PORT="${MODSERVER_PORT:-27020}"
+# shellcheck source=paths.sh
+source "$REPO/dev/paths.sh"
+VERSION=$(python3 -c "import json;print(json.load(open('$REPO/mod/mod.json'))['version'])")
+DIST="$(dist_dir_for "$VERSION")/artifacts"
+PORT="$MODSERVER_PORT"
 PIDFILE="$REPO/dev/.modserver.pid"
-LOG="$REPO/build/modserver.log"
+LOG="$(dist_dir_for "$VERSION")/modserver.log"
 
 url() { echo "http://127.0.0.1:$PORT"; }
 

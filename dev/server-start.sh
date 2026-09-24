@@ -5,7 +5,6 @@
 # Usage: ./dev/server-start.sh [map]                     # DEV instance (safe default)
 #        ./dev/server-start.sh --live [map]              # Arian's live server, opt-in only
 #        ./dev/server-start.sh <config_path_win> [map]   # explicit config (legacy form)
-#        --no-game                                       # skip the -game overlay
 #        --port N                                        # override the instance port
 #        --with-suite                                    # let hordetest run (test.sh only)
 #
@@ -17,24 +16,23 @@
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-DEV_CFG_WIN='D:\games\ns2hordetest\cfg'
-LIVE_CFG_WIN='D:\games\ns2srv\cfg'
-OVERLAY_WIN='D:\games\ns2hordetest\overlay'
-OVERLAY_WSL='/mnt/d/games/ns2hordetest/overlay'
-MODS_WIN='D:\games\ns2hordetest\mods'
-MODS_WSL='/mnt/d/games/ns2hordetest/mods/content/4920'
-NS2SRV_WIN='D:\games\ns2-server'
-LOG_WSL="/mnt/c/Users/aria/AppData/Roaming/Natural Selection 2/log-Server.txt"
+# shellcheck source=paths.sh
+source "$REPO_DIR/dev/paths.sh"
+paths_validate || exit 3
+
+DEV_CFG_WIN="$HORDE_ROOT_WIN\\server\\cfg"
+LIVE_CFG_WIN="$LIVE_CFG_WIN"
+MODS_WIN="$HORDE_ROOT_WIN\\server\\mods"
+MODS_WSL="$DEV_MODS_WSL/content/4920"
+NS2SRV_WIN="$ENGINE_WIN"
 
 LIVE=0
-USE_GAME=1
 WITH_SUITE=0
 PORT_OVERRIDE=""
 POS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live) LIVE=1; shift ;;
-    --no-game) USE_GAME=0; shift ;;
     --with-suite) WITH_SUITE=1; shift ;;
     --port=*) PORT_OVERRIDE="${1#*=}"; shift ;;
     --port)
@@ -46,9 +44,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $LIVE -eq 1 ]]; then
-  CFG_WIN="$LIVE_CFG_WIN"; PORT=27015
+  CFG_WIN="$LIVE_CFG_WIN"; PORT=$LIVE_PORT
 else
-  CFG_WIN="$DEV_CFG_WIN"; PORT=27025
+  CFG_WIN="$DEV_CFG_WIN"; PORT=$DEV_PORT
 fi
 
 [[ -n "$PORT_OVERRIDE" ]] && PORT="$PORT_OVERRIDE"
@@ -62,7 +60,7 @@ if [[ ${#POS[@]} -ge 1 ]]; then
   # One positional is the map, unless it looks like a config path (legacy callers pass cfg first).
   if [[ "${POS[0]}" == *cfg ]]; then
     CFG_WIN="${POS[0]}"
-    [[ "${POS[0]}" == "$LIVE_CFG_WIN" ]] && PORT=27015
+    [[ "${POS[0]}" == "$LIVE_CFG_WIN" ]] && PORT=$LIVE_PORT
     [[ ${#POS[@]} -ge 2 ]] && MAP="${POS[1]}"
   else
     MAP="${POS[0]}"
@@ -84,8 +82,8 @@ fi
 # auto-start a horde and behave unpredictably for whoever was connected - which is exactly
 # what Arian caught. test.sh passes --with-suite explicitly; nothing else arms it. The LIVE
 # config is never touched here (dev/STANDARDS.md).
-HARDCFG="/mnt/d/games/ns2hordetest/cfg/shine/plugins/HordeTest.json"
-if [[ $LIVE -eq 0 && -d "/mnt/d/games/ns2hordetest/cfg/shine/plugins" ]]; then
+HARDCFG="$DEV_CFG_WSL/shine/plugins/HordeTest.json"
+if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   # Written unconditionally, and WITHOUT jq: `jq` resolves in an interactive shell here but
   # not inside a non-interactive script, so a condition built on it silently evaluated to
   # empty and the disarm never ran - the suite then booted a second time while a human was
@@ -98,12 +96,6 @@ if [[ $LIVE -eq 0 && -d "/mnt/d/games/ns2hordetest/cfg/shine/plugins" ]]; then
     printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
     echo "[start] hordetest disarmed - this boot is a joinable server (./dev/test.sh runs the suite)"
   fi
-fi
-
-GAME_ARG=""
-if [[ $USE_GAME -eq 1 && $LIVE -eq 0 && -d "$OVERLAY_WSL/lua/shine/extensions/hordemode" ]]; then
-  GAME_ARG=",'-game','$OVERLAY_WIN'"
-  echo "[start] using -game overlay $OVERLAY_WIN"
 fi
 
 # Stop ONLY the server this script started (tracked by PID). Killing every process named
@@ -148,9 +140,9 @@ log_state() {
 read -r READY_BEFORE SIZE_BEFORE <<<"$(log_state)"
 echo "[start] log baseline: ready=$READY_BEFORE size=$SIZE_BEFORE"
 
-echo "[start] launching Server.exe (cfg=$CFG_WIN map=$MAP port=$PORT game=$USE_GAME)..."
+echo "[start] launching Server.exe (cfg=$CFG_WIN map=$MAP port=$PORT)..."
 # Detached via Start-Process so this script can return and poll the log. Window hidden.
-NEW_PID=$(powershell.exe -Command "(Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16'${MODS_ARG}${GAME_ARG},'+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden -PassThru).Id" 2>/dev/null | tr -dc '0-9')
+NEW_PID=$(powershell.exe -Command "(Start-Process -FilePath '$NS2SRV_WIN\\x64\\Server.exe' -ArgumentList '-config_path','$CFG_WIN','-port','$PORT','-limit','16'${MODS_ARG},'+map','$MAP' -WorkingDirectory '$NS2SRV_WIN' -WindowStyle Hidden -PassThru).Id" 2>/dev/null | tr -dc '0-9')
 if [[ -z "$NEW_PID" ]]; then
   echo "[start] could not launch Server.exe" >&2
   exit 1

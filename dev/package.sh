@@ -10,12 +10,13 @@
 # player downloads are the same bytes, so packaging cannot be "fixed later".
 #
 # Outputs
-#   build/mod/                                  the mod tree (what gets zipped)
-#   build/dist/<name>-<version>.zip             human-readable release archive
-#   build/dist/m<hexId>_<version>.zip           the name the engine's backup-server
-#                                               protocol requests (WorkshopBackup
-#                                               check_path / make_key: 'm%x_%d.zip')
-#   build/dist/manifest.json                    version, id, hash, file list
+#   D:\games\horde\dist\<version>\mod\           the mod tree (what gets zipped)
+#   D:\games\horde\dist\<version>\artifacts\<name>-<version>.zip
+#                                   human-readable release archive
+#   ...\artifacts\m<hexId>_<version>.zip
+#                                   the name the engine's backup-server protocol
+#                                   requests (WorkshopBackup check_path/make_key)
+#   ...\artifacts\manifest.json     version, id, hashes, file list
 #
 # Version is semantic (mod/mod.json -> version). Pre-1.0 is intentional: nothing here
 # has been confirmed working in game yet. The distribution filename uses
@@ -26,17 +27,18 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=paths.sh
+source "$REPO/dev/paths.sh"
+paths_validate || exit 1
+
 META="$REPO/mod/mod.json"
 SRC="$REPO/source/lua/shine/extensions"
-BUILD="$REPO/build"
-MODDIR="$BUILD/mod"
-DIST="$BUILD/dist"
 
 [[ -f "$META" ]] || { echo "[package] missing $META" >&2; exit 1; }
 
 if [[ "${1:-}" == "--clean" ]]; then
-  rm -rf "$BUILD"
-  echo "[package] removed $BUILD"
+  rm -rf "$DIST_WSL"
+  echo "[package] removed $DIST_WSL"
   exit 0
 fi
 
@@ -58,6 +60,9 @@ print(f'PRE_PUBLISHED={1 if m.get(\"publishedFileId\") is None else 0}')
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
   echo "[package] version '$VERSION' is not semver (e.g. 0.0.1 or 0.1.0-rc1)" >&2; exit 1; }
 
+BUILD=$(dist_dir_for "$VERSION")
+MODDIR="$BUILD/mod"            # the mod tree - what gets zipped
+DIST="$BUILD/artifacts"        # release archives + manifest
 rm -rf "$BUILD"
 mkdir -p "$MODDIR/lua/entry" "$DIST"
 
