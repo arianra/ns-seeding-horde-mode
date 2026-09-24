@@ -25,7 +25,7 @@ D:\games\ns2hordetest\              DEV root — ours, disposable
 D:\games\.stale-20260922\           archived junk (see §6)
 ```
 
-Everything else is in the repo (`~/projects/ns-seeding-horde-mode`), which is the source of
+Everything else is in the repo (`D:\projects\ns-seeding-horde-mode`), which is the source of
 truth. **Rule: if it isn't reproducible from the repo, it doesn't exist.** No hand-editing files
 under `D:\games` — `dev/deploy.sh` materialises them.
 

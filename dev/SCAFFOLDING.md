@@ -6,7 +6,7 @@ Procedure. `MODDING.md` holds the cited engine facts, `MODDING-CASES.md` the cas
 ## 1. The repo IS the LaunchPad project
 
 ```
-~/projects/ns-seeding-horde-mode/
+D:\projects\ns-seeding-horde-mode/
   mod.settings          LaunchPad's project file: name, source_dir, output_dir, tags
   preview.jpg           workshop tile (mod.settings: image) - NOT part of the mod
   mod/mod.json          our identity file: version (semver), mod id, publishedFileId
@@ -19,20 +19,21 @@ Procedure. `MODDING.md` holds the cited engine facts, `MODDING-CASES.md` the cas
   dev/                  the scripts
 ```
 
-`D:\games\horde\` holds **runtime and handoff state only** — nothing is authored there:
+`D:\games\horde\server\` holds **runtime state only** — nothing is authored there:
 
 ```
-  server/cfg/            DEV server config (disposable; deploy.sh rebuilds it)
-  server/mods/           DEV mod storage, isolated by -modstorage
-  publish/seedinghorde/  GENERATED export that LaunchPad opens (publish.sh)
+  cfg/     DEV server config (disposable; deploy.sh rebuilds it)
+  mods/    DEV mod storage, isolated by -modstorage
 ```
 
-Why an export at all: the repo lives in WSL ext4, and `wslpath` resolves it to
-`\\wsl.localhost\Ubuntu\...`, which this instance cannot even list. A Windows GUI app
-using that as a project folder is unverified — and an unresolvable path is exactly what a
-message like *"output cannot be empty"* would come from. So `publish.sh` exports a
-self-contained project to a plain `D:\` path. **One direction: repo → export.** The export
-is disposable, regenerated on every run, and its hash is verified against the repo.
+The repo lives on `D:\` deliberately. It **is** the LaunchPad project, and LaunchPad is a
+Windows program: when the repo was in WSL, `wslpath` resolved it to
+`\\wsl.localhost\Ubuntu\...`, LaunchPad mangled that to `C:\wsl.localhost\...`, and then
+truthfully reported *"output directory cannot be empty"* about a project that was fine on
+disk. Measured after moving: `git commit` works, `git status` 0.21 s, `git log` 0.27 s, and
+the beads/Dolt tracker runs — so there was no cost to pay, only the export layer removed.
+`core.fileMode false` is required, because 9P reports every file `0777` and git would
+otherwise see 48 phantom mode changes.
 
 There is one copy of every authored file. That is the point: an earlier layout kept
 `repo/source`, a build tree, a project `source/` and a project `output/` — four copies with
@@ -66,7 +67,7 @@ edit source/
 | `server-start.sh` | boot DEV (disarmed → joinable), wait for readiness | touch LIVE without `--live` |
 | `server-stop.sh` | stop **our** PID, escalating politely | kill by process name |
 | `test.sh` | arm the harness, run the suite, verify managed content untouched | — |
-| `publish.sh` | build, export the LaunchPad project to `D:\games\horde\publish\`, print the human steps, record the id once | change a recorded id, or author anything |
+| `publish.sh` | build, register the repo with LaunchPad, print the human steps, record the id once | change a recorded id, or author anything |
 | `new-extension.sh` | scaffold an extension with the correct vararg shapes | — |
 | `lint.sh` | static Lua gate | — |
 
