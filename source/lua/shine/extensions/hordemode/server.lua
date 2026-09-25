@@ -359,9 +359,12 @@ function Plugin:StartWave(Client, Now)
 
 	local Seconds = self:BeginCountdown(Config.Start and Config.Start.CountdownSeconds)
 
-	self:BeginWave(Config)
+	-- Order matters to the person reading chat. The first version announced "WAVE 1 - 3
+	-- tunnel mouths opened" from inside BeginWave and only then said the round was being
+	-- reset, which reads as a mode that started, stopped and started again.
+	self:Announce("HORDE: round reset - vanilla bots cleared. You spawn when the count reaches zero (%s s).", Seconds)
 
-	self:Announce("HORDE: round reset, vanilla bots cleared. Wave 1 opens in %s seconds - you spawn when the count hits zero.", Seconds)
+	self:BeginWave(Config)
 end
 
 --- Clean slate: wipe what the previous session left, then hand the round to vanilla's
@@ -471,7 +474,9 @@ function Plugin:BeginWave(Config)
 			tostring(Waves.BandMin), tostring(Waves.BandMax), tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
 	else
 		self:Log(string.format("wave 1: %s mouths placed from %s candidates", tostring(Spawned), tostring(RawCount)))
-		self:Announce("HORDE: WAVE 1 - %s tunnel mouths opened (%s candidates on this map). /horde status | /horde stop | /horde restart",
+		-- "placed", not "opened": nothing comes out of a mouth until the bot spawner
+		-- (i5a) exists, and saying opened oversells what the player is about to see.
+		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map). /horde status | /horde stop | /horde restart",
 			Spawned, RawCount)
 	end
 

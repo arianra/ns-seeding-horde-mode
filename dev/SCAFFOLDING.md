@@ -121,8 +121,10 @@ boot and makes a working system look broken.
 (`Extension 'hordemode' loaded`, `Extension 'hordetest' loaded`), and the full suite
 passes **45 / 0 / 1** with no `-game` overlay anywhere in the loop.
 
-**Not yet verified:** that a vanilla client auto-downloads it on connect. That is the next
-test, and it is the last assumption in the pipeline.
+**Verified 2026-09-24:** a vanilla client launched from Steam with **no launch options and no
+`-game` flag** joined the dev server and received the mod. That closes the last assumption in
+the pipeline — the product requirement *"the server has the mod, the client only connects"*
+holds, so remote playtesting needs nothing from a player beyond connecting.
 
 ## 4. Versioning
 
