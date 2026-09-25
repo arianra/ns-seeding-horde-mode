@@ -80,10 +80,20 @@ not that the behaviour is right.
   Now: deploy targets `D:\games\ns2hordetest\cfg` only, forces the live config off if it finds
   those flags on, and `hordetest` additionally requires `HordeTest.json RunSuite=true` — being
   *enabled* is not authorisation to run.
-- **Process control is by PID, never by name.** `Stop-Process -Name Server -Force` killed every
-  `Server.exe` on the box, including any real one. `dev/.server.pid` is written at launch and
-  only that PID is stopped; a missing pid file means "nothing to stop", and other Server
-  processes are reported, never touched.
+- **Process control is by PID *and* verified identity, never by name.** `Stop-Process -Name
+  Server -Force` killed every `Server.exe` on the box, including any real one. So
+  `dev/.server.pid` is written at launch and only that PID is stopped; a missing pid file means
+  "nothing to stop", and other Server processes are reported, never touched.
+- **A PID is not an identity — check the command line before killing.** Windows reuses numbers,
+  so a stale pidfile is a loaded gun pointed at whatever occupies that PID next. Found
+  2026-09-24 while fixing something else: `server-stop.sh` referenced an undefined `$REPO_DIR`
+  under `set -u`, so it died at its guard call on *every* run — which meant the pidfile was
+  never removed, and `server-start.sh`'s own inline `Stop-Process` (no identity check, no guard)
+  was the only thing ever stopping a server. Now the stop is one script: it reads
+  `Win32_Process.CommandLine` for the tracked PID, refuses unless it carries the expected
+  `-config_path`, releases the claim instead of killing a stranger, and the start script calls
+  it rather than duplicating the kill. Proven in both directions: a dead PID reports
+  "not running", an unrelated live PID reports REFUSED and survives.
 - **`dumps/dumplog.txt` is written asynchronously, ~7s after the dump job, so measure it
   after a delay.** Measuring immediately after a stop made two "no dump" results look real
   when the entries appeared seconds later, and I briefly concluded the scenario suite caused

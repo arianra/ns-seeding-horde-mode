@@ -104,21 +104,16 @@ if [[ $LIVE -eq 0 && "${SKIP_GUARD:-0}" != "1" ]]; then
   "$REPO_DIR/dev/guard-server.sh" free || exit 4
 fi
 
-# Stop ONLY the server this script started (tracked by PID). Killing every process named
-# "Server" would take down any server Arian is actually running - which is what happened:
-# every dev loop silently stopped the live one.
+# Clear the previous tracked instance through server-stop.sh, which owns the whole policy:
+# PID-scoped, identity-checked against -config_path, politest signal first. The inline
+# Stop-Process this replaces had no identity check, so a stale pidfile could kill whatever
+# Windows had reusing that number - including a live server with people on it.
 PIDFILE="$REPO_DIR/dev/.server.pid"
 
 if [[ -f "$PIDFILE" ]]; then
-  OLD_PID=$(tr -dc '0-9' < "$PIDFILE")
-  if [[ -n "$OLD_PID" ]]; then
-    powershell.exe -Command "Stop-Process -Id $OLD_PID -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      sleep 2
-      LEFT=$(powershell.exe -Command "(Get-Process -Id $OLD_PID -ErrorAction SilentlyContinue | Measure-Object).Count" 2>/dev/null | tr -dc '0-9')
-      [[ "$LEFT" == "0" || -z "$LEFT" ]] && break
-    done
-  fi
+  LIVEFLAG=""
+  [[ $LIVE -eq 1 ]] && LIVEFLAG="--live"
+  "$REPO_DIR/dev/server-stop.sh" $LIVEFLAG || echo "[start] WARN: previous instance not released (see [stop] lines above)" >&2
 fi
 
 # The engine log is shared by every instance on this box (it does not follow -config_path) and

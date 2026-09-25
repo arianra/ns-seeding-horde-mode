@@ -1,9 +1,27 @@
 #!/usr/bin/env bash
-# server-stop.sh — stop the NS2 dedicated server and verify no process remains.
-# Usage: ./dev/server-stop.sh
+# server-stop.sh — stop the NS2 dedicated server WE started, and verify it is gone.
+#
+# Usage: ./dev/server-stop.sh          # the DEV instance (what the pidfile tracks)
+#        ./dev/server-stop.sh --live   # Arian's live server, deliberately
+#
+# Two rules the 2026-09-21 incident wrote into us: touch only the PID we track, and prove that
+# PID still IS the instance we think it is. Windows reuses pids, so a stale pidfile is a loaded
+# gun - the number can belong to anything running on this box, including the live server.
 set -uo pipefail
 
-PIDFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dev/.server.pid"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=paths.sh
+source "$REPO_DIR/dev/paths.sh"
+paths_validate || exit 3
+
+PIDFILE="$REPO_DIR/dev/.server.pid"
+
+case "${1:-}" in
+  --live) EXPECT_CFG="$LIVE_CFG_WIN" ;;
+  '')     EXPECT_CFG="$DEV_CFG_WIN" ;;
+  *) echo "[stop] unknown option: $1 (usage: server-stop.sh [--live])" >&2; exit 2 ;;
+esac
 
 if [[ ! -f "$PIDFILE" ]]; then
   # Nothing we started is tracked. Do NOT go hunting for processes named Server:
@@ -18,6 +36,25 @@ if [[ -z "$PID" ]]; then
   echo "[stop] pid file empty — nothing to stop"
   rm -f "$PIDFILE"
   exit 0
+fi
+
+# Identity gate: read the command line the OS has for this pid and require our config path in
+# it. No match means the pid was recycled or belongs to somebody else's server - either way the
+# only safe action is to drop our claim on it and say so loudly.
+CMDLINE=$(powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=$PID' -ErrorAction SilentlyContinue).CommandLine" 2>/dev/null | tr -d '\r\n')
+
+if [[ -z "$CMDLINE" ]]; then
+  echo "[stop] pid $PID is not running — dropping the stale pidfile, nothing stopped"
+  rm -f "$PIDFILE"
+  exit 0
+fi
+
+if [[ "$CMDLINE" != *"-config_path $EXPECT_CFG"* ]]; then
+  echo "[stop] REFUSED: pid $PID is not the '$EXPECT_CFG' instance." >&2
+  echo "[stop]        it reports: $CMDLINE" >&2
+  echo "[stop]        a recycled or foreign pid — releasing the claim instead of killing it." >&2
+  rm -f "$PIDFILE"
+  exit 3
 fi
 
 # Same interlock as server-start.sh: a forced stop of a busy server is indistinguishable
