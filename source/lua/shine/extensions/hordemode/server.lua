@@ -417,7 +417,66 @@ function Plugin:ResetWorldForHorde()
 		return false, string.format("ResetGame failed: %s", tostring(Err))
 	end
 
+	-- After ResetGame, never before: ResetGame clears preventGameEnd
+	-- (NS2Gamerules.lua:702), so engaging it first would be undone by the very
+	-- call that starts the round.
+	self:SuppressGameEnd()
+
 	return true, nil
+end
+
+--- Switch vanilla's automatic win/loss off for the duration of a horde round, and only
+--- for its duration.
+---
+--- Why this is load-bearing, not cosmetic: `PlayingTeam:GetHasTeamLost`
+--- (ns2/lua/PlayingTeam.lua:536-546) reports a loss when a team has no alive command
+--- structure, OR no players, OR nothing alive that can respawn. A horde round has no alien
+--- hive and - until the bot spawner (i5a) exists - no aliens at all, so both the hive and
+--- the player-count conditions are true on the first frame and `CheckGameEnd` hands the
+--- marines the win the moment the round starts. Observed: the marine joined and was shown
+--- the victory screen immediately.
+---
+--- `preventGameEnd` is the engine's own switch and the only field `CheckGameEnd` consults
+--- (ns2/lua/NS2Gamerules.lua:1788), so one assignment suppresses the whole family - team
+--- wipe, missing hive, auto-concede, draw. Nothing is replaced and no world entity is
+--- faked, which is what keeps the isolation promise honest: the mode touches one field on
+--- one object, and the field is the engine's, so the engine's own reset semantics apply.
+---
+--- Those semantics are the trap: `ResetGame` clears it (NS2Gamerules.lua:702). So the flag
+--- is read from the gamerules object rather than mirrored on ourselves, and the tick
+--- re-asserts it - a voteresetgame or map change mid-round cannot bring the vanilla win
+--- back unnoticed.
+function Plugin:SuppressGameEnd()
+	local gamerules = GetGamerules()
+
+	if not gamerules or not gamerules.SetPreventGameEnd then
+		return false
+	end
+
+	if gamerules.preventGameEnd then
+		return false
+	end
+
+	gamerules:SetPreventGameEnd(true)
+	self:Log("game-end suppression engaged - vanilla win/loss cannot fire while a horde round is live")
+
+	return true
+end
+
+--- Hand game-end decisions back to vanilla. Idempotent, and it reports through the engine's
+--- field, not our memory of it, so a teardown after a surprise reset still says the truth.
+function Plugin:RestoreGameEnd(Reason)
+	local gamerules = GetGamerules()
+
+	if not gamerules or not gamerules.SetPreventGameEnd or not gamerules.preventGameEnd then
+		return false
+	end
+
+	gamerules:SetPreventGameEnd(nil)
+	self:Log(string.format("game-end suppression released (%s) - vanilla win/loss is active again",
+		tostring(Reason)))
+
+	return true
 end
 
 --- Hand the round to vanilla's countdown. Returns the seconds the client will see.
@@ -496,6 +555,12 @@ end
 function Plugin:HordeTick()
 	if self.HordeSpawner then
 		self.HordeSpawner:Pump()
+	end
+
+	-- One second is the worst case for a vanilla reset slipping the engine's win check
+	-- back in under a live horde.
+	if self.Machine and self.Machine:IsActive() then
+		self:SuppressGameEnd()
 	end
 
 	local Reg = self.HordeRegistry
@@ -626,6 +691,8 @@ function Plugin:Teardown(Now)
 			Leaked[#Leaked + 1] = Id
 		end
 	end
+
+	self:RestoreGameEnd("teardown")
 
 	self:Log(string.format("teardown %s: %s of %s destroyed (%s), controller released=%s, %s id(s) still live",
 		#Leaked == 0 and "PASS" or "FAIL",

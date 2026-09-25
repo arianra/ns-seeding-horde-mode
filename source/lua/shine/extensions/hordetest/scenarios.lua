@@ -1306,6 +1306,55 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	-- The victory screen a joining marine saw on frame one was not a wave bug: with no
+	-- hive and no aliens, vanilla's own loss check fires immediately
+	-- (ns2/lua/PlayingTeam.lua:536-546). What matters for the clean-slate promise is that
+	-- we suppress exactly one engine field, keep it suppressed against resets, and give it
+	-- back - so this asserts the round trip on the live gamerules object.
+	self:RegisterScenario( "game_end_suppression_is_isolated", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Gamerules = GetGamerules()
+
+		Assert.NotNil( Gamerules, "the suite runs against a live gamerules object" )
+		Assert.NotNil( horde.SuppressGameEnd, "hordemode exposes game-end suppression" )
+		Assert.NotNil( horde.RestoreGameEnd, "hordemode exposes the release" )
+
+		horde:RestoreGameEnd("scenario entry")
+
+		Assert.True( horde:SuppressGameEnd(), "suppression engages on the engine's own switch" )
+		Assert.Equal( true, Gamerules.preventGameEnd, "preventGameEnd is set on the gamerules object itself" )
+		Assert.True( not horde:SuppressGameEnd(), "engaging twice is a no-op, not a second claim of credit" )
+
+		-- ResetGame clears the flag (NS2Gamerules.lua:702). The tick is what notices, so
+		-- simulate the surprise clear rather than paying for a whole round reset.
+		Gamerules.preventGameEnd = nil
+
+		local RealMachine = horde.Machine
+
+		horde.Machine = { IsActive = function() return true end }
+		horde:HordeTick()
+		horde.Machine = RealMachine
+
+		Assert.Equal( true, Gamerules.preventGameEnd, "the tick re-engages after a vanilla reset cleared it" )
+
+		-- A stopped horde must not keep re-engaging it, or the suppression outlives the
+		-- mode and the server silently stops awarding wins.
+		horde.Machine = { IsActive = function() return false end }
+		Gamerules.preventGameEnd = nil
+		horde:HordeTick()
+		horde.Machine = RealMachine
+
+		Assert.True( Gamerules.preventGameEnd == nil, "an inactive horde leaves game end alone" )
+
+		horde.Machine = { IsActive = function() return true end }
+		horde:SuppressGameEnd()
+		horde.Machine = RealMachine
+
+		Assert.True( horde:RestoreGameEnd("scenario exit"), "release reports that it changed the field" )
+		Assert.True( Gamerules.preventGameEnd == nil, "vanilla win/loss is back exactly where we found it" )
+		Assert.True( not horde:RestoreGameEnd("scenario exit twice"), "releasing an already-released field is a no-op" )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )
