@@ -110,8 +110,8 @@ At `/horde`, the server sculpts the map (all tracked in HordeRegistry):
   near the base — unpaired vanilla `TunnelEntrance` entities (1000 HP/100
   armor baseline, mouth model, no teleport pairing). Placed procedurally at
   `/horde`: pool of 5–8 validated points (pathing-sampled around CC in band
-  ~[25m,60m] + cyst points + adjacent-room Location origins; never inside
-  base room; sector-spread; GetPathPoints-validated to CC). Active subset
+  ~[56m,90m] + cyst points + adjacent-room Location origins; never inside base
+  room; sector-spread; GetPathPoints-validated to CC). Active subset
   ~3 per wave, **re-drawn every wave**; destroyed mouths rebuilt at
   intermission. Killing all active mouths mid-wave = marine bonus + early
   wave end; mouth HP rides difficulty curve (wave-1 near-indestructible
@@ -279,7 +279,7 @@ Starter schema (full proposal in levers note §6):
   "Governance": { "Skulk":"players", "Onos":"cc", "Default":"players" },
   "SupportComm": { "IncomePerWave": {"Start":5,"End":30}, "Patterns": "scripted" },
   "Tunnels": { "Placement": "procedural", "PoolSize": 6, "ActivePerWave": 3,
-               "MinDistFromCC": 25, "MaxDistFromCC": 60,
+               "MinDistFromCC": 56, "MaxDistFromCC": 90,   // spike tby: summit's reachable near-base ring is 56-80 m; the pre-spike 20-25 m guess selects nothing on any vanilla map (see MODDING.md §7, §8.7)
                "HPCurve": {"Start": 4, "End": 1, "Bezier": [0.25,0.1,0.25,1]},
                "KillAllBonus": 30, "RebuildOnIntermission": true },
   "Teardown": { "AssertEntityDiff": true },

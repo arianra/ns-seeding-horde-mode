@@ -243,12 +243,12 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 | **G1b** | Same overlay, but the extension registers a datatable | **expected to fail vanilla joins** — proves facts 9-13 empirically and measures what "client must mount our mod" costs |
 | **G2** | `-webadmin` on DEV: enumerate actions, attempt graceful shutdown | clean exit with **0** new `dumplog.txt` entries, or a written "no graceful path" verdict |
 | ~~**P1**~~ **DONE** | `dev/build.sh` assembles the overlay from `source/`, rebuilt from empty each run so a renamed-away extension cannot survive and make the suite pass against dead code. No `.entry`, no `game_setup.xml` — §2b shows neither is needed and both change engine behaviour we don't own. It also **fails if dev extensions exist in any workshop copy**, because mount precedence is unmeasured and ambiguity would make a green run meaningless. | verified: `overlay matches repo [291f5a02], 15 files` |
-| **P2** | Rewrite `deploy.sh`: delete **every** write into any workshop `content/4920/<foreign-id>` dir; deploy = build + stage into `dev/overlay/`; keep `--clean` as the repair path for the Steam copy | `grep -rn "117887554" dev/*.sh` → nothing; suite green; `--check` pristine |
-| **P3** | Server standard S1-S5 (default DEV, `--live` opt-in, paired ports, isolated `-modstorage`, per-instance pidfile) | bare `./dev/server-start.sh` provably cannot touch LIVE |
-| **P4** | Config templates split DEV/LIVE + read-only `dev/config-check.sh` reporting LIVE drift | drift report produced; nothing written |
-| **P5** | Bead + doc reconciliation (§7) | `bd ready` matches reality; `WORKFLOW.md:66` no longer names a forbidden target |
-| **P6** | Real mod: move `hordemode`/`hordetest` into `mod/`, mount via overlay, re-run the 45-scenario suite | suite green from the overlay, not from Shine's dir |
-| **P7** | Publishing via LaunchPad, FriendsOnly; your client subscribes/auto-downloads | you join DEV **and** still join a public server afterwards |
+| ~~**P2**~~ **DONE** | `deploy.sh` writes to no workshop copy: deploy = build + stage into the `-game` overlay, and since `d51eda9` the loop needs no overlay at all because the extensions ship in our own mod. Two read-only references to Shine's PublishedFileId remain in `dev/paths.sh` — they are the *pristine checks* (`test.sh` fails if a dev file appears in either Workshop copy), not write targets, so the original acceptance line ("grep → nothing") was written too broadly and is corrected here rather than faked | `dev/state.sh` reports 0 dev extensions in any Workshop copy; `test.sh` step 8 proves both copies byte-identical to Steam's |
+| ~~**P3**~~ **DONE** | Server standard S1-S5: DEV default, `--live` opt-in (passing the live config path positionally is REFUSED), paired ports, isolated `-modstorage`, PID-scoped start/stop, `guard-server.sh` interlock | proven the expensive way on 2026-09-21 — see `dev/STANDARDS.md` and the incidents in `Atlas/_frontier.md`; a bare `./dev/server-start.sh` cannot reach LIVE |
+| **P4** | Config templates split DEV/LIVE + read-only `dev/config-check.sh` reporting LIVE drift. Still open: `dev/state.sh` covers disk state, not config drift | drift report produced; nothing written |
+| ~~**P5**~~ **DONE 2026-09-24** | Bead + doc reconciliation (§7) | tracker matches the code: every bead whose work landed is closed with a commit ref, the one inverted dependency edge (`i7a` blocked by `i6c`) is corrected, `WORKFLOW.md:66` names the overlay, not Shine's directory |
+| ~~**P6**~~ **DONE** | Real mod: `hordemode`/`hordetest` live in `mod/` and mount as `seedinghorde[3807461324]`; the suite runs from the published artifact, not from Shine's directory | suite green with **no `-game` overlay anywhere in the loop** (`d51eda9`) |
+| ~~**P7**~~ **DONE** | Published through LaunchPad, **public**; client auto-download verified with a vanilla client and no launch options | the mod was mounted by a real joining client (`bbe3005`); remaining gate is **G1c**, which is about the *overlay*, not about publishing |
 
 **G1 is load-bearing for everything.** If `-game` does not mount on the dedicated server, the
 fallback is `-modstorage` + a hand-placed folder (fact 15), and if that also fails, publishing
@@ -256,15 +256,28 @@ becomes the dev path and iteration inherits Steam's latency (fact 29).
 
 ---
 
-## 7. Drift to clear
+## 7. Drift
 
-- Beads: **16 closed / 16 open**; `i4a (hpo)`, `i4b (tc1)`, `i7a (q4s)` are still open though
-  `9536c74` landed them. Close with commit refs. `i4c (t6u)` is **partial** —
-  `placement_collects_on_live_map` covers pool/band on summit but not the ">60° apart" assertion.
-- File new infra beads for G1, G1b, G2, P1-P4.
-- `WORKFLOW.md:66` still documents the forbidden deploy target (Shine's own directory).
-- `DESIGN.md:282` says tunnel band 25-60 m; shipped defaults are 56-90 m from spike tby.
-  DESIGN.md is canonical, so one of them is wrong.
+**Cleared 2026-09-24 (P5).**
+
+- Beads now match the code: `i4a (hpo)`, `i4b (tc1)`, `i7a (q4s)`, `i7b (bk2)` were closed with
+  refs to `9536c74` (they landed there), and the milestones with no open children — M0, M1, M2,
+  M3, M7 — were closed with them. `i4c (t6u)` was the one genuinely partial bead:
+  `placement_collects_on_live_map` checked band/pool counts only. It now asserts the exclusion
+  ring against live geometry, one-mouth-per-sector, and a real spawn→register→destroy→unresolve
+  round trip, plus a sector-normalisation case in `placement_rules_are_pure`.
+- **A dependency was wired backwards.** `i7a` (teardown procedure) *depended on* `i6c` (3-wave
+  integration test), which is why `bd close` refused it: teardown never needed the wave loop, the
+  wave loop needs teardown to clean up after itself. Reversed (`q4s --blocks qfk`). Same trap as
+  `Atlas/Shared/lessons/skill-stack-rewire.md` — `bd`'s bare/`--deps` form means "THIS depends on
+  that", so read the refusal message, not the intent.
+- `WORKFLOW.md` deploy target: fixed (`-game` overlay, workshop copy named as forbidden).
+- `DESIGN.md` tunnel band: aligned with the shipped spike numbers; see §8.7.
+- Infra beads filed for what is actually left: G1c (`jl8`), G1b (`wkl`), G2 (`agn`), S4
+  (`7sv`), the ~8s deferred-check ceiling (`0k3`, decides before M5), P4 (`7g4`), and the
+  summit sector finding (`5ss`).
+- Suite green over the completed `i4c` scenario: **47 passed, 0 failed, 1 expected** on
+  `ns2_summit` (`7690db3`), so M4 (`knw`) closed with it.
 
 ---
 
@@ -282,4 +295,8 @@ becomes the dev path and iteration inherits Steam's latency (fact 29).
    message table even when disabled. Options: (a) ship it in a **separate dev-only mod** never
    mounted for release, (b) strip its `shared.lua` so it is server-only, (c) accept it in the
    mod and gate on config. I recommend (a).
-7. **Band 25-60 vs 56-90:** which is authoritative?
+7. **Band 25-60 vs 56-90:** proposed answer, already what the code ships — 56-90 m. `DESIGN.md`'s
+   config block says its numbers are placeholders for the balance pass, and spike tby measured
+   summit's reachable near-base ring at 56-80 m (the old 20 m guess selects nothing on any vanilla
+   map), so the geometry settles it rather than the balance sheet. `DESIGN.md` updated to match;
+   say the word if you want the literal 25-60 ring back and we will find a map that can honour it.
