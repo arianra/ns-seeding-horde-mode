@@ -1068,23 +1068,145 @@ function Plugin:InitialiseScenarios()
 		}
 		Assert.Equal( 3, #Placement.SelectSectorSpread(Spread, Base, 3), "one mouth per sector, three sectors" )
 		Assert.Equal( 1, #Placement.SelectSectorSpread({ Spread[1], Spread[2] }, Base, 1), "count 1 keeps a single sector" )
+
+		-- Sector membership comes from a normalised angle, and with three mouths per wave a
+		-- sector is 120 degrees wide. This case discriminates on both facts: the candidate
+		-- at 250 degrees (atan2 reports it as -110) must claim sector 2 even though it is the
+		-- FARTHEST thing on the map. Un-normalised, sector 2 looks empty, the nearest-first
+		-- fallback runs instead, and a second mouth lands 10 degrees from the first - the
+		-- exact failure the rule exists to prevent, and invisible to a count-only assertion.
+		local function AtDeg(Deg, Dist)
+			local Rad = math.rad(Deg)
+
+			return { point = { x = math.cos(Rad), y = 0, z = math.sin(Rad) }, distance = Dist }
+		end
+
+		local Ring = { AtDeg(10, 60), AtDeg(20, 70), AtDeg(130, 70), AtDeg(250, 80) }
+		local Sectors = Placement.SelectSectorSpread(Ring, Base, 3)
+
+		Assert.Equal( 3, #Sectors, "three sectors claim three of four candidates" )
+		Assert.True( Sectors[1] == Ring[1], "sector 0 takes its nearest candidate" )
+		Assert.True( Sectors[2] == Ring[3], "sector 1 is filled from its own side of the map" )
+		Assert.True( Sectors[3] == Ring[4], "the -110-degree candidate is sector 2, not a leftover" )
+		-- The fallback may under-fill, but it cannot manufacture coverage: two candidates
+		-- in one sector are two places, not three mouths.
+		Assert.Equal( 2, #Placement.SelectSectorSpread({ Ring[1], Ring[2] }, Base, 3),
+			"one populated sector yields the candidates it has, no more" )
 	end )
 
-	-- i4c (early): the engine-facing half on the real map. Asserts the anchor
-	-- classnames resolve and the configured ring selects something - the failure this
-	-- replaces was silent, which is why the old 20m band looked like working code.
+	-- i4c: the engine-facing half, on the real map. What the pure scenario cannot say is
+	-- whether this map's anchors actually field a wave, whether the band floor really
+	-- holds against live geometry (a mouth inside the base room looks like working code
+	-- in-game and is unwinnable), and whether a placed point survives a trip through the
+	-- entity system. So this spawns the selected mouths and destroys them for real.
 	self:RegisterScenario( "placement_collects_on_live_map", false, function()
 		local horde = Shine.Plugins.hordemode
 		local Config = horde.HordeConfig.Resolve(Shared.GetMapName())
 		local Chosen, Base, RawCount, BandedCount = horde.Placement.Collect(Config)
+		local Waves = Config.Waves or {}
+		local BandMin = Waves.BandMin or 56
+		local PerWave = Waves.ActivePerWave or 3
 
-		print( string.format( "[TEST] placement on %s: raw=%s banded=%s chosen=%s base=%s",
+		print( string.format( "[TEST] placement on %s: raw=%s banded=%s chosen=%s base=%s band=%s-%sm",
 			tostring(Shared.GetMapName()), tostring(RawCount), tostring(BandedCount), tostring(#Chosen),
-			tostring(Base ~= nil) ) )
+			tostring(Base ~= nil), tostring(BandMin), tostring(Waves.BandMax) ) )
 
 		Assert.True( RawCount > 0, "the live map exposes anchor entities to placement" )
 		Assert.True( BandedCount > 0, "the configured band selects at least one candidate" )
-		Assert.True( #Chosen <= (Config.Waves.PoolSize or 6), "pool never exceeds PoolSize" )
+		Assert.True( #Chosen <= (Waves.PoolSize or 6), "pool never exceeds PoolSize" )
+		-- A wave must get its full sector count unless the map simply does not have that
+		-- many banded candidates - comparing against BandedCount keeps this honest on a
+		-- sparse map without turning the assertion into "whatever we got is fine".
+		Assert.True( #Chosen >= math.min(PerWave, BandedCount),
+			string.format("the wave gets %s mouths from %s banded candidates", tostring(PerWave), tostring(BandedCount)) )
+
+		local Nearest
+		local Occupied = {}
+
+		if Base then
+			local SectorWidth = (math.pi * 2) / PerWave
+
+			for _, Candidate in ipairs(Chosen) do
+				-- Measured with the module's own 2D distance, not the stored field: the ring
+				-- is the rule, and it has to hold against real map geometry, not injected.
+				local Distance = horde.Placement.Distance2D(Candidate.point, Base)
+				Assert.True( Distance >= BandMin,
+					string.format("a chosen mouth sits %sm from base, inside the %sm exclusion ring",
+						tostring(Distance), tostring(BandMin)) )
+
+				Nearest = Nearest and math.min(Nearest, Distance) or Distance
+
+				local Angle = math.atan2(Candidate.point.z or Candidate.point[3],
+					Candidate.point.x or Candidate.point[1])
+
+				if Angle < 0 then
+					Angle = Angle + math.pi * 2
+				end
+
+				Occupied[math.floor(Angle / SectorWidth) + 1] = true
+			end
+
+			-- Distinct mouths, not one site counted twice. GatherCandidates collapses
+			-- anything within 5 m, so two chosen points closer than that means the pool and
+			-- the selection disagree about what "a place" is - and the wave would arrive down
+			-- one corridor while every sector assertion still passed.
+			for A = 1, #Chosen do
+				for B = A + 1, #Chosen do
+					local Apart = horde.Placement.Distance2D(Chosen[A].point, Chosen[B].point)
+					Assert.True( Apart > 5,
+						string.format("mouths %s and %s are the same site (%sm apart)",
+							tostring(A), tostring(B), tostring(Apart)) )
+				end
+			end
+		end
+
+		local SectorCount = 0
+
+		for _ in pairs(Occupied) do
+			SectorCount = SectorCount + 1
+		end
+
+		-- Reported, not asserted: this is the bead's "document the actual band" deliverable.
+		-- One-per-sector is a promise the selector can only keep where the map has candidates
+		-- in that sector, and summit fields three mouths out of two sectors - the third comes
+		-- from the nearest-first fallback. A repeated sector is a fact about the map; an
+		-- occupied sector producing no mouth would be a bug in the code, and that is what the
+		-- pure scenario pins.
+		print( string.format( "[TEST] %s/%s mouths in %s of %s sectors, nearest %sm from base (band %s-%sm)",
+			tostring(#Chosen), tostring(BandedCount), tostring(SectorCount), tostring(PerWave),
+			tostring(Nearest), tostring(BandMin), tostring(Waves.BandMax) ) )
+
+		local Reg = horde.Registry.New()
+		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
+		local Queued = 0
+
+		for _, Candidate in ipairs(Chosen) do
+			local Mouth, Reason = Spawn:SpawnMouth(Candidate.point)
+
+			if Mouth then
+				Queued = Queued + 1
+			else
+				print( string.format("[TEST] chosen point rejected by the engine: %s", tostring(Reason)) )
+			end
+		end
+
+		Assert.True( Queued > 0, "a selected point accepts a tunnel entrance" )
+
+		self:Defer( "placement_collects_on_live_map_settles", 6, false, function()
+			Spawn:Pump()
+
+			local Ids = Reg:GetAllIds()
+			Assert.Equal( Queued, #Ids, "every queued mouth registered once its id was real" )
+
+			local _, Failed, Total = horde.DestroyAll(Reg, {}, nil)
+			Assert.Equal( Queued, Total, "teardown drained everything that was placed" )
+			Assert.Equal( 0, #Failed, "no destroy failures: " .. table.concat(Failed, "; ") )
+			Assert.Equal( 0, Reg:Count(), "nothing left on the books" )
+
+			for _, Id in ipairs(Ids) do
+				Assert.Nil( Shared.GetEntity(Id), string.format("mouth %s still resolves after destroy", tostring(Id)) )
+			end
+		end )
 	end )
 
 	-- i4b: a mouth really appears, is registered once its id is valid, and really goes
