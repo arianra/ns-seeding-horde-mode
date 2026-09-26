@@ -61,10 +61,12 @@ edit source/
 | Script | Does | Never does |
 |---|---|---|
 | `paths.sh` | defines every path; validates the two hard rules | — |
-| `package.sh` | validate, mirror `source/`→`output/`, zip deterministically, write manifest | transform content |
+| `package.sh` | validate, mirror `source/`→`output/`, zip deterministically, write manifest, prune artifacts of superseded ids | transform content |
 | `deploy.sh` | install the artifact into DEV, configure DEV, repair Workshop pollution | write to Steam or the live config |
-| `modserver.sh` | serve the artifact over NS2's backup protocol | substitute for publication |
-| `server-start.sh` | boot DEV (disarmed → joinable), wait for readiness | touch LIVE without `--live` |
+| `modserver.sh` | serve the artifact over NS2's backup protocol; liveness by **identity** (own command line + own cwd) and success by **sha256 against `dist/`** | substitute for publication; trust a pidfile or an HTTP 200 as evidence |
+| `check-delivery.sh` | ask that server for our exact filename and compare bytes; advertise `mod_backup_servers` only when they match, withdraw the claim when they do not | touch the live config; advertise a path it has not verified |
+| `set-mod-delivery.py` | the one implementation of that rule, called by `check-delivery.sh` from both deploy and boot | overwrite a config file it cannot parse |
+| `server-start.sh` | boot DEV (disarmed → joinable), authorise per-boot flags, verify delivery, wait for readiness | touch LIVE without `--live` |
 | `server-stop.sh` | stop **our** PID, after proving that PID still IS our instance | kill by process name, or kill a recycled pid |
 | `set-reveal.py` | write `Debug.RevealMouths` into the DEV config (joinable boot = on, suite boot = off), read it back and fail if it did not take | touch the live config, or overwrite a file it cannot parse |
 | `test.sh` | arm the harness, run the suite, verify managed content untouched | — |

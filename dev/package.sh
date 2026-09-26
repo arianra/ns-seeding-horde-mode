@@ -110,6 +110,16 @@ for out in (a, b):
 print(f"[package] {len(files)} files per archive")
 PY
 
+# Drop archives the protocol can no longer address. The pre-publication placeholder sat in this
+# folder beside the published one, and "the first m*_*.zip" found IT - then reported HTTP 200
+# about the wrong bytes. A generated directory that keeps answering to a superseded name is a
+# trap for anything that lists it, so it does not get to keep them.
+while IFS= read -r STALE; do
+  [[ -n "$STALE" ]] || continue
+  echo "[package] removing superseded artifact: $(basename "$STALE")"
+  rm -f "$STALE"
+done < <(find "$BUILD_DIST" -maxdepth 1 -name 'm*_*.zip' ! -name "m${HEX_ID}_${ARCHIVE_VERSION}.zip" 2>/dev/null)
+
 python3 - "$BUILD_DIST/manifest.json" "$MOD_NAME" "$VERSION" "$MOD_ID" "$HEX_ID" "$OUT_HASH" "$UNPUBLISHED" "$ARCHIVE_VERSION" <<'PY'
 import json, os, sys
 out, name, version, mod_id, hex_id, tree_hash, unpub, arver = sys.argv[1:9]

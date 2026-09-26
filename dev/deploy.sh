@@ -209,20 +209,12 @@ if os.path.exists(mc_path):
         json.dump(mc, open(mc_path, "w"), indent=2)
     print(f"[deploy] dev MapCycle mods: {mods}")
 
-sc_path = os.path.join(cfg_dir, "ServerConfig.json")
-if os.path.exists(sc_path):
-    sc = json.load(open(sc_path))
-    st = sc.setdefault("settings", {})
-    url = "http://127.0.0.1:27020"
-    servers = st.get("mod_backup_servers") or []
-    if url not in servers:
-        servers.append(url)
-    st["mod_backup_servers"] = servers
-    # Unpublished items cannot be resolved by Steam at all, so try the backup first.
-    st["mod_backup_before_steam"] = True
-    json.dump(sc, open(sc_path, "w"), indent=2)
-    print(f"[deploy] dev ServerConfig: mod_backup_servers={servers}, before_steam=True")
 PY
+
+# Mod delivery is decided by what actually answers, not by a hope written into config: the
+# backup server is a separate manual step, and advertising a URL that 404s sends a joining
+# client away from Steam and into nothing. See dev/set-mod-delivery.py for the incident.
+"$REPO/dev/check-delivery.sh" "$DEV_CFG" || exit 1
 
 # --- 4. test-harness arming stays explicit (a manual boot must be joinable)
 # Arming is explicit. A manual boot must be a server you can join; only test.sh asks

@@ -109,6 +109,14 @@ if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   python3 "$REPO_DIR/dev/set-reveal.py" "$DEV_CFG_WSL" "$REVEAL" || exit 3
 fi
 
+# Delivery is re-verified at the moment of boot, not only at deploy: the backup mod server is
+# started by hand and can have been stopped, orphaned or out-built since. A config that
+# advertises a URL answering 404 sends a joining client away from Steam into nothing, which is
+# how a healthy server becomes "the mod won't download" for whoever is trying to join it.
+if [[ $LIVE -eq 0 ]]; then
+  "$REPO_DIR/dev/check-delivery.sh" "$DEV_CFG_WSL" || exit 3
+fi
+
 # Interlock: never disturb a server someone is playing on. Each kill of a busy server
 # makes NS2 write a crash dump, which reads to the user as a game bug.
 if [[ $LIVE -eq 0 && "${SKIP_GUARD:-0}" != "1" ]]; then

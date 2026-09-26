@@ -107,6 +107,22 @@ dist_dir_for_win() {      # $1 = version
   echo "$DIST_WIN\\$1"
 }
 
+# The name the backup protocol addresses a mod by: m<hex id>_<workshop version>.zip, where the
+# version is Steam's (0 until published), not our semver — same rule dev/package.sh writes with.
+# ONE authority, because "the first m*_*.zip in dist/" is not this file: on 2026-09-25 it
+# returned the pre-publication placeholder (999000001 -> m3b8b87c1_0.zip), which sorts before
+# ours, and both the server's own fetch check and a delivery probe reported HTTP 200 about it.
+# A passing check against the wrong artifact is worse than a failing one.
+mod_archive_name() {
+  python3 - "$REPO_DIR/mod/mod.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+mid = m.get("publishedFileId") or m["modId"]
+version = 0 if not m.get("publishedFileId") else (m.get("workshopVersion") or 0)
+print(f"m{mid:x}_{version}.zip")
+PY
+}
+
 # --- the player's game install -------------------------------------------------
 # Read-only to us (dev/STANDARDS.md). Defined here so no script hard-codes it when
 # telling a human where LaunchPad lives.
