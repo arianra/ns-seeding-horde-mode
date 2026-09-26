@@ -29,11 +29,14 @@ HORDE_ROOT_WIN='D:\games\horde'
 HORDE_ROOT_WSL='/mnt/d/games/horde'
 
 # --- the project itself ------------------------------------------------------
-# The repo IS the LaunchPad project: mod.settings declares source_dir="source/" and
-# output_dir="output/", both relative to the project folder. There is deliberately no
-# second copy of the mod under D:\games - an earlier layout kept repo/source, a build
-# tree, a project source and a project output: four copies of the same files with no
-# answer to "which one is real".
+# The repo IS the LaunchPad project: mod.settings declares source_dir and output_dir, both
+# relative to the project folder. Note the file says "source"/"output" WITHOUT a trailing
+# slash — LaunchPad rewrote it that way on first open, and a comment here used to claim the
+# opposite. Nothing parses those two keys (paths.sh derives its own paths); they exist for
+# LaunchPad, so LaunchPad's spelling is the one recorded.
+# There is deliberately no second copy of the mod under D:\games - an earlier layout kept
+# repo/source, a build tree, a project source and a project output: four copies of the same
+# files with no answer to "which one is real".
 _REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MOD_NAME=$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$_REPO_DIR/mod.settings")
 LAUNCHPAD_PROJECT_WIN="$(wslpath -w "$_REPO_DIR" 2>/dev/null || echo "$_REPO_DIR")"
