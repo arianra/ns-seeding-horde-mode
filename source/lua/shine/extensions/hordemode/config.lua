@@ -108,6 +108,16 @@ Plugin.DefaultConfig = {
 		AssertRegistryEmpty = true,          -- RD6 gate
 		LogEntityDelta = true,               -- RD6: reported, never asserted
 	},
+	Debug = {
+		-- Dev aid, off by default. A marine cannot see a mouth that is in a room nobody
+		-- visited, which makes "is the placement sane?" unanswerable from the chair. When
+		-- on, each mouth is marked detected, so the ENGINE creates its vanilla SensorBlip
+		-- for it: a through-wall marker on every marine screen and an icon on the minimap
+		-- (SensorBlip.lua:32-49, Marine_Client.lua:42-100 - the occlusion trace there is
+		-- commented out, which is what makes it visible through rock). We create no entity
+		-- and fake nothing, and the blip dies with the mouth (DetectableMixin.lua:117-126).
+		RevealMouths = false,
+	},
 	Maps = {},
 }
 
@@ -188,6 +198,21 @@ function Config.Sanitize(In)
 		end
 	end
 
+	--- Switches are compared with `== true` at every read site, but a JSON string or 1 is
+	--- truthy in Lua: `"RevealMouths": "false"` would turn a dev-only reveal on in a public
+	--- build and read as off in the config file. Normalise to a real boolean here so the
+	--- file, the log and the behaviour cannot disagree.
+	local function Flag(OwnerName, Key)
+		local Owner = In and In[OwnerName]
+
+		if type(Owner) ~= "table" or type(Owner[Key]) == "boolean" then
+			return
+		end
+
+		Owner[Key] = Owner[Key] ~= nil and Owner[Key] ~= false and Owner[Key] ~= "false" and Owner[Key] ~= 0
+		Changed = true
+	end
+
 	Section("Start", "Cooldown", 0, 600, true)
 	Section("Start", "MinPlayers", 0, 16, true)
 	Section("Intermission", "Seconds", 0, 600, true)
@@ -198,6 +223,8 @@ function Config.Sanitize(In)
 	Section("Waves", "BandMax", Config.BandFloor, Config.BandCeiling)
 	Section("Economy", "WaveClearPayout", 0, 10000, true)
 	Section("Economy", "StartingResources", 0, 100000, true)
+
+	Flag("Debug", "RevealMouths")
 
 	local Waves = In and In.Waves
 

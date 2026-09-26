@@ -149,7 +149,7 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg, Not)
 	local Remaining = Plugin.Triggers:CooldownRemaining(Snapshot, Machine, Config, Now)
 
 	return string.format(
-		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s ours=%s takeover=%s players=%s/%s mouths=%s/%s",
+		"state=%s wave=%s cooldown=%s marines=%s aliens=%s bots=%s ours=%s takeover=%s players=%s/%s mouths=%s/%s reveal=%s",
 		Machine:GetState(),
 		Machine:GetWave(),
 		-- Units on the face of the value: a bare 50 could be seconds, percent or waves.
@@ -167,7 +167,12 @@ function Plugin:BuildStatusLine(Snapshot, Machine, Config, Now, Reg, Not)
 		-- MouthsActive was stale by up to a tick and stayed non-zero after teardown,
 		-- which is how "mouths=-/-" lied about a wave that had three real mouths.
 		tostring(Reg and Reg:CountByKind("mouth") or 0),
-		tostring(Machine.MouthsPool or 0))
+		tostring(Machine.MouthsPool or 0),
+		-- `reveal=` is the direct answer to "why can't I see the mouths". on/off is what the
+		-- config says; `-` means the loaded config has no Debug section at all (a file from
+		-- before the flag existed), which is a different fact and must not read as "off".
+		(Config and Config.Debug and Config.Debug.RevealMouths ~= nil)
+			and (Config.Debug.RevealMouths and "on" or "off") or "-")
 end
 
 --- A command callback receives the *client*; the player is reached through
@@ -507,6 +512,13 @@ function Plugin:BeginWave(Config)
 		self:Log("placement: no base anchor on this map, so the band exclusion is off")
 	end
 
+	-- Debug.RevealMouths is resolved once per wave and handed to the spawner, which then
+	-- owns it: the spawn reveals, and the tick re-asserts. Owning it in two places was the
+	-- bug the suite caught - a mouth built unrevealed was revealed anyway a second later by
+	-- the registry-wide refresh, so the per-call argument had no meaning left.
+	local Reveal = (Config.Debug and Config.Debug.RevealMouths) == true
+	self.HordeSpawner.Reveal = Reveal
+
 	local Spawned = 0
 
 	for _, Candidate in ipairs(Chosen) do
@@ -535,8 +547,8 @@ function Plugin:BeginWave(Config)
 		self:Log(string.format("wave 1: %s mouths placed from %s candidates", tostring(Spawned), tostring(RawCount)))
 		-- "placed", not "opened": nothing comes out of a mouth until the bot spawner
 		-- (i5a) exists, and saying opened oversells what the player is about to see.
-		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map). /horde status | /horde stop | /horde restart",
-			Spawned, RawCount)
+		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s /horde status | /horde stop | /horde restart",
+			Spawned, RawCount, Reveal and " - they are revealed on your map" or "")
 	end
 
 	-- The status surface reads these off the machine, and nothing used to write them:
@@ -555,6 +567,12 @@ end
 function Plugin:HordeTick()
 	if self.HordeSpawner then
 		self.HordeSpawner:Pump()
+
+		-- Detection expires on its own 1.5 s after it was last asserted
+		-- (DetectableMixin.lua:98-105), so a reveal set once at spawn blinks off between
+		-- waves; this 1 s tick is what holds it up. A no-op while the spawner's Reveal is
+		-- off, so there is no second flag that can fall out of step with the first.
+		self.HordeSpawner:RefreshReveal()
 	end
 
 	-- One second is the worst case for a vanilla reset slipping the engine's win check
@@ -670,6 +688,14 @@ function Plugin:Teardown(Now)
 
 	Machine.MouthsPool = 0
 	Machine.MouthsActive = 0
+
+	-- The reveal is not "undone" here - it needs no undoing. The mouths are gone and each
+	-- SensorBlip dies with its mouth (DetectableMixin.lua:117-126), so an abandoned flag has
+	-- nothing left to re-assert. Clearing it keeps the flag honest between rounds: after a
+	-- teardown the spawner says off, whatever the next wave's config decides.
+	if self.HordeSpawner then
+		self.HordeSpawner.Reveal = false
+	end
 
 	local Ok, Reason = Machine:CompleteTeardown(Now or Shared.GetTime())
 

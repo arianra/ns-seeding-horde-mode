@@ -24,13 +24,18 @@ local kAlienTeam = kAlienTeamIndex or 2
 -- than queueing it forever.
 local kMaxPendingTicks = 10
 
-function Spawner.New(Registry, Log)
+--- `Reveal` is Debug.RevealMouths, resolved by the owner and stored here - ONE place.
+--- The first version took it per SpawnMouth call while the plugin tick re-asserted every
+--- mouth in the registry from a different field, so a mouth explicitly built unrevealed
+--- was revealed anyway one second later. The suite caught it; the design was wrong.
+function Spawner.New(Registry, Log, Reveal)
 	return setmetatable({
 		Registry = Registry,
 		Log = Log or print,
 		Pending = {},
 		MouthCount = 0,
-		FailedCount = 0
+		FailedCount = 0,
+		Reveal = Reveal == true
 	}, Spawner)
 end
 
@@ -56,6 +61,46 @@ function Spawner:ApplyMouthHealth(Mouth, Multiplier)
 	Mouth:SetHealth(Base * Multiplier)
 
 	return true
+end
+
+--- Reveal a mouth to the enemy team. `DetectableMixin:SetDetected(true)` is the engine's own
+--- "someone can see this" switch, and the only thing it changes for us is that
+--- `UpdateSensorBlip` creates a `SensorBlip` for the entity (DetectableMixin.lua:20-51):
+--- a marine-team-relevant marker (SensorBlip.lua:35) that every marine client draws as a
+--- through-wall screen blip (Marine_Client.lua:42-100 - its occlusion trace is commented
+--- out) and as a minimap icon (SensorBlip.lua:54-64). So we add no entity, no message type
+--- and no client Lua, and the marker is not shootable, not a Structure and not counted by
+--- any team logic. Detection expires after 1.5 s on its own, so this must be re-asserted -
+--- see RefreshReveal.
+function Spawner:RevealMouth(Mouth)
+	if not Mouth or not Mouth.SetDetected then
+		return false
+	end
+
+	Mouth:SetDetected(true)
+
+	return true
+end
+
+--- Re-assert the reveal on every live mouth this spawner owns. The plugin's 1 s tick is
+--- the caller in production, and the interval is the point: detection expires 1.5 s after
+--- it was last asserted (DetectableMixin.lua:98-105), so a reveal set once at spawn would
+--- vanish between waves. Returns the count it re-asserted - a number the suite can assert
+--- on rather than a line in a log.
+function Spawner:RefreshReveal()
+	if not self.Reveal or not self.Registry then
+		return 0
+	end
+
+	local Revealed = 0
+
+	self.Registry:IterateByKind("mouth", function(Ref)
+		if self:RevealMouth(Ref) then
+			Revealed = Revealed + 1
+		end
+	end)
+
+	return Revealed
 end
 
 --- Create an unpaired tunnel entrance at Point. Unpaired is intentional: spike tby
@@ -87,6 +132,12 @@ function Spawner:SpawnMouth(Point, HealthMultiplier)
 
 	self.Pending[#self.Pending + 1] = { ref = Mouth, kind = "mouth", Ticks = 0 }
 	self.MouthCount = self.MouthCount + 1
+
+	-- Revealed at creation, not after registration, so the marker exists for the first frame
+	-- a marine could plausibly look this way; RefreshReveal keeps it alive from then on.
+	if self.Reveal then
+		self:RevealMouth(Mouth)
+	end
 
 	return Mouth
 end

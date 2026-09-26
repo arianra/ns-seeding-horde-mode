@@ -155,6 +155,7 @@ function Plugin:InitialiseScenarios()
 		Copy.Waves.BandMax = 10
 		Copy.Waves.Health = "not a curve"
 		Copy.Difficulty.Accuracy.Bezier = { 5, 0, 0.5, 0 }
+		Copy.Debug.RevealMouths = "false"
 
 		Assert.True( Config.Sanitize(Copy), "dirty config reports that it was corrected" )
 		Assert.Equal( 0, Copy.Start.Cooldown, "negative cooldown clamps to zero" )
@@ -163,6 +164,8 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( "table", type(Copy.Waves.Health), "clobbered curve is replaced by a curve" )
 		Assert.True( Copy.Waves.Health.Enabled == false, "replacement curve is flat" )
 		Assert.True( Copy.Difficulty.Accuracy.Bezier[1] <= 1, "x control point kept inside [0,1] so difficulty stays monotonic" )
+		Assert.Equal( false, Copy.Debug.RevealMouths,
+			'a switch reads as a boolean: "false" in JSON must not become a truthy string' )
 	end )
 
 	self:RegisterScenario( "config_copy_is_deep", false, function()
@@ -1475,6 +1478,341 @@ function Plugin:InitialiseScenarios()
 		Assert.True( horde:RestoreGameEnd("scenario exit"), "release reports that it changed the field" )
 		Assert.True( Gamerules.preventGameEnd == nil, "vanilla win/loss is back exactly where we found it" )
 		Assert.True( not horde:RestoreGameEnd("scenario exit twice"), "releasing an already-released field is a no-op" )
+	end )
+
+	-- (a) "Is there an easier way than putting a player on the aliens?" Yes: preventGameEnd,
+	-- shipped in f369898. This probe supplies the measurement that settles the alternative
+	-- instead of another argument about it.
+	--
+	-- GetHasTeamLost (PlayingTeam.lua:533) ORs four branches: nothing alive that can respawn,
+	-- zero alive command structures, zero players, and concession. A lone commander answers
+	-- the two that count people and none of the ones that count structures - and a hive IS the
+	-- alien structure (Hive.lua:28: class 'Hive' (CommandStructure)). So "just put an alien
+	-- commander on the team" holds only while some alien command structure is standing, which
+	-- is not a condition our mode creates: ResetWorldForHorde destroys live entities before it
+	-- places anything (server.lua:382, NS2Gamerules.lua:496-516).
+	--
+	-- Order is load-bearing for a reason the first run taught: the probe RESTORES BEFORE IT
+	-- ASSERTS. The version that asserted first raised mid-block, left the recorder installed
+	-- and the world in Started, and three later bot scenarios failed with symptoms pointing
+	-- nowhere near here.
+	self:RegisterScenario( "vanilla_ends_the_round_unless_suppressed", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Gamerules = GetGamerules()
+		local Aliens, Marines = Gamerules.team2, Gamerules.team1
+
+		Assert.NotNil( Aliens, "gamerules carries the alien team" )
+		Assert.NotNil( Marines, "gamerules carries the marine team" )
+
+		local Result = {}
+		local Calls = {}
+
+		local SavedState = Gamerules.gameState
+		local SavedEndGame, SavedDraw = Gamerules.EndGame, Gamerules.DrawGame
+		local SavedLatch1, SavedLatch2 = Gamerules.team1Lost, Gamerules.team2Lost
+		local SavedWindow = Gamerules.timeDrawWindowEnds
+
+		local function Restore()
+			Gamerules.EndGame = SavedEndGame
+			Gamerules.DrawGame = SavedDraw
+			Gamerules.team1Lost, Gamerules.team2Lost = SavedLatch1, SavedLatch2
+			Gamerules.timeDrawWindowEnds = SavedWindow
+
+			if Gamerules.gameState ~= SavedState then
+				Gamerules:SetGameState(SavedState)
+			end
+
+			-- Released, not left on. An inactive horde has no business holding win/loss, and
+			-- both directions are idempotent so this cannot double-release.
+			horde:RestoreGameEnd("probe restore")
+		end
+
+		--- Ask the engine's own predicate what it decides for a trio of inputs. Only what the
+		--- question is about is replaced: GetHasConceded and GetHasAbilityToRespawn stay real,
+		--- so the verdict is still the engine's and not one we handed back.
+		local function Verdict(Players, Alive, Structures)
+			local RealPlayers, RealAlive = Aliens.GetNumPlayers, Aliens.GetHasActivePlayers
+			local RealStructures = Aliens.GetNumAliveCommandStructures
+
+			Aliens.GetNumPlayers = function() return Players end
+			Aliens.GetHasActivePlayers = function() return Alive end
+			Aliens.GetNumAliveCommandStructures = function() return Structures end
+
+			local Lost = Aliens:GetHasTeamLost()
+
+			Aliens.GetNumPlayers = RealPlayers
+			Aliens.GetHasActivePlayers = RealAlive
+			Aliens.GetNumAliveCommandStructures = RealStructures
+
+			return Lost
+		end
+
+		local function Measure()
+			if Shared.GetCheatsEnabled() then
+				error( { Detail = "cheats are on: CheckGameEnd returns early for a reason unrelated to us" } )
+			end
+
+			if Aliens:GetHasConceded() then
+				error( { Detail = "the alien team had already conceded - every branch below measures the wrong thing" } )
+			end
+
+			-- Both the predicate and the check require a STARTED game (PlayingTeam.lua:536,
+			-- NS2Gamerules.lua:1788). A horde round gets there through vanilla's own 6 s
+			-- countdown, which this harness cannot wait out, so the state is set by hand and
+			-- put back by Restore().
+			Gamerules:SetGameState(kGameState.Started)
+
+			Result.AlienPlayers = Aliens:GetNumPlayers()
+			Result.AlienAlive = Aliens:GetHasActivePlayers()
+			Result.AlienStructures = Aliens:GetNumAliveCommandStructures()
+			Result.AlienRespawn = Aliens:GetHasAbilityToRespawn()
+			Result.AlienLost = Aliens:GetHasTeamLost()
+			Result.MarineLost = Marines:GetHasTeamLost()
+			Result.MarineStructures = Marines:GetNumAliveCommandStructures()
+			Result.MarinePlayers = Marines:GetNumPlayers()
+
+			-- The commander counterfactual, both worlds: one alive alien player, with and
+			-- without an alien command structure standing.
+			Result.CommanderWithStructure = Verdict(1, true, 1)
+			Result.CommanderNoStructure = Verdict(1, true, 0)
+			Result.NobodyNoStructure = Verdict(0, false, 0)
+
+			-- Both ways an engine ends a round are recorded (NS2Gamerules.lua:1826-1840): zero
+			-- alive command structures on BOTH sides is a draw, and on a headless WarmUp server
+			-- that is a live possibility rather than a hypothetical. The first version of this
+			-- probe assumed the outcome was a marine award and was wrong about this world.
+			Gamerules.EndGame = function(self, WinningTeam)
+				Calls[#Calls + 1] = { Kind = "end", Winner = WinningTeam }
+			end
+
+			Gamerules.DrawGame = function(self)
+				Calls[#Calls + 1] = { Kind = "draw" }
+			end
+
+			-- Unsuppressed: vanilla decides on its own code path. The decision is the engine's;
+			-- only its consequence is withheld, so the world survives to run the next scenario.
+			horde:RestoreGameEnd("probe")
+			Gamerules:CheckGameEnd()
+
+			Result.Latched = Gamerules.team2Lost
+			Result.WindowOpened = Gamerules.timeDrawWindowEnds ~= nil
+			Result.CallsAfterLatch = #Calls
+
+			-- The decision lands one kDrawGameWindow (0.75 s) after the latch. Closing the
+			-- window by hand keeps the whole probe inside one synchronous block, where the
+			-- plugin's own 1 s tick cannot arrive and re-engage suppression mid-measurement.
+			Gamerules.timeDrawWindowEnds = Shared.GetTime() - 1
+			Gamerules:CheckGameEnd()
+
+			Result.Decision = Calls[1] and Calls[1].Kind
+			Result.WinnerIsMarines = Calls[1] ~= nil and Calls[1].Winner == Marines
+			Result.CallsAfterWindow = #Calls
+
+			-- Same world, same standing loss, suppression back on: inert. This is the whole
+			-- difference between a round that ends on frame one and one that runs.
+			Gamerules.team1Lost, Gamerules.team2Lost = nil, nil
+			Gamerules.timeDrawWindowEnds = nil
+			horde:SuppressGameEnd()
+			Gamerules:CheckGameEnd()
+
+			Result.CallsAfterSuppression = #Calls
+			Result.EvaluatedWhileSuppressed = Gamerules.team2Lost
+		end
+
+		local Ok, Err = pcall(Measure)
+
+		Restore()
+
+		if not Ok then
+			error( { Detail = "probe raised before it could restore: " .. tostring(Err) } )
+		end
+
+		print( string.format(
+			"[TEST] aliens as vanilla scores them now: players=%s alive=%s structures=%s canRespawn=%s -> hasLost=%s",
+			tostring(Result.AlienPlayers), tostring(Result.AlienAlive), tostring(Result.AlienStructures),
+			tostring(Result.AlienRespawn), tostring(Result.AlienLost) ) )
+		print( string.format(
+			"[TEST] marines: players=%s structures=%s -> hasLost=%s (a draw needs both sides beaten)",
+			tostring(Result.MarinePlayers), tostring(Result.MarineStructures), tostring(Result.MarineLost) ) )
+		print( string.format(
+			"[TEST] one alien commander decides nothing: with a structure=%s without=%s nobody=%s",
+			tostring(Result.CommanderWithStructure), tostring(Result.CommanderNoStructure),
+			tostring(Result.NobodyNoStructure) ) )
+		print( string.format(
+			"[TEST] unsuppressed: latched=%s calls=%s/%s decision=%s toMarines=%s | suppressed: calls=%s evaluated=%s",
+			tostring(Result.Latched), tostring(Result.CallsAfterLatch), tostring(Result.CallsAfterWindow),
+			tostring(Result.Decision), tostring(Result.WinnerIsMarines),
+			tostring(Result.CallsAfterSuppression), tostring(Result.EvaluatedWhileSuppressed) ) )
+
+		-- The dangerous state is measured, not assumed.
+		Assert.Equal( 0, Result.AlienPlayers, "the measured world really has no alien players" )
+		Assert.True( Result.AlienLost, "and the engine already considers the alien side beaten" )
+
+		-- The answer to the proposal, measured: a living alien clears the loss ONLY while an
+		-- alien command structure is standing. A horde round builds no hive, so the branch that
+		-- stays true is the one presence cannot answer.
+		Assert.False( Result.CommanderWithStructure, "with a structure standing, one alive alien does clear the loss" )
+		Assert.True( Result.CommanderNoStructure, "with none standing the same alien loses anyway: that branch counts structures, not people" )
+		Assert.True( Result.NobodyNoStructure, "and of course so does nobody" )
+
+		Assert.True( Result.Latched == true, "unsuppressed, CheckGameEnd latches the alien loss itself" )
+		Assert.True( Result.WindowOpened, "and opens the draw window" )
+		Assert.Equal( 0, Result.CallsAfterLatch, "inside the window nothing has been called yet" )
+		Assert.Equal( 1, Result.CallsAfterWindow, "once the window closes, vanilla ends this round on its own path" )
+
+		if Result.MarineLost then
+			-- Both sides beaten inside the window is a draw, by the engine's own rule.
+			Assert.Equal( "draw", Result.Decision,
+				string.format("the marines read as beaten too (players=%s structures=%s), so the call is a draw",
+					tostring(Result.MarinePlayers), tostring(Result.MarineStructures)) )
+		else
+			Assert.Equal( "end", Result.Decision, "with the marine side intact the call is an award, not a draw" )
+			Assert.True( Result.WinnerIsMarines, "awarded to the marines" )
+		end
+
+		Assert.Equal( 1, Result.CallsAfterSuppression, "suppressed, nothing further was called" )
+		Assert.Nil( Result.EvaluatedWhileSuppressed, "suppressed, the loss is never even evaluated" )
+
+		Assert.Equal( SavedState, Gamerules.gameState, "the game state was left where it was found" )
+		Assert.True( Gamerules.EndGame == SavedEndGame and Gamerules.DrawGame == SavedDraw,
+			"both recorders were taken off the engine object" )
+		Assert.True( Gamerules.preventGameEnd == nil, "the probe left win/loss with vanilla" )
+	end )
+
+	-- (b) Debug.RevealMouths, the placement aid, tested through the production path.
+	--
+	-- Why a marine sees nothing today: every TunnelEntrance is given a MapBlip of its OWN
+	-- team during OnInitialized (TunnelEntrance.lua:152-158, MapBlipMixin.lua:217+232), and
+	-- that blip's relevancy is team 2 (MapBlip.lua:82-96). The fix therefore does not touch
+	-- that blip. It marks the mouth DETECTED, and the engine then builds its own marine-side
+	-- marker, SensorBlip, whose relevancy is the constant team 1 (SensorBlip.lua:32-49):
+	-- drawn through walls on every marine screen (Marine_Client.lua:42-100 - the occlusion
+	-- trace there is commented out) and as a minimap icon (SensorBlip.lua:54-64). We create
+	-- no entity and fake no gameplay object, and DetectableMixin destroys the marker with the
+	-- entity it tracks (DetectableMixin.lua:117-126), so a stopped horde cannot leak one.
+	--
+	-- Detection expires 1.5 s after it was last asserted (DetectableMixin.lua:98-105), so
+	-- this drives the REAL 1 s plugin tick rather than calling RefreshReveal by hand: a
+	-- marker that only survives one second is not an aid. Two earlier versions of this
+	-- scenario failed honestly - one looked 6 s after a single reveal (nothing left to find),
+	-- and one revealed both mouths because the flag lived in two places at once.
+	self:RegisterScenario( "revealed_mouths_stay_visible_to_marines", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Anchors = {}
+
+		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
+			Anchors[#Anchors + 1] = Ent:GetOrigin()
+
+			if #Anchors >= 2 then
+				break
+			end
+		end
+
+		Assert.True( #Anchors >= 2, "two anchors for the paired comparison" )
+
+		local function Log(Message) print("[TEST] " .. Message) end
+
+		local function MarkerOf(Id)
+			for _, Marker in ientitylist(Shared.GetEntitiesWithClassname("SensorBlip")) do
+				if Marker.entId == Id then
+					return Marker
+				end
+			end
+		end
+
+		-- The control: a spawner of our own that nobody ticks. It never registers with the
+		-- plugin and its Reveal is off, so nothing can reveal its mouth by accident.
+		local Quiet = horde.Registry.New()
+		local SpawnQuiet = horde.Spawner.New(Quiet, Log, false)
+
+		-- The subject: installed as the plugin's own spawner so the production tick pumps
+		-- and re-asserts it. Swapped, saved and handed back by the settle block below, with
+		-- the same discipline wave_slice_end_to_end documents - the tick is global, so
+		-- anything that runs it must own the bookkeeping it writes.
+		local SavedRegistry, SavedSpawner, SavedCount = horde.HordeRegistry, horde.HordeSpawner, horde.HordeRegistry:Count()
+		local Loud = horde.Registry.New()
+		local SpawnLoud = horde.Spawner.New(Loud, Log, true)
+
+		horde.HordeRegistry, horde.HordeSpawner = Loud, SpawnLoud
+
+		local Hidden = SpawnQuiet:SpawnMouth(Anchors[1])
+		local Visible = SpawnLoud:SpawnMouth(Anchors[2])
+
+		Assert.NotNil( Hidden, "the control mouth exists" )
+		Assert.NotNil( Visible, "the revealed mouth exists" )
+		Assert.False( Hidden:GetIsDetected(), "a spawner built without the flag leaves its mouth undetected" )
+		Assert.True( Visible:GetIsDetected(), "a spawner built with it reveals at creation" )
+
+		-- 5 s: five expiries deep, so "still detected" can only be the tick's doing. It also
+		-- lands BEFORE wave_slice_end_to_end's 6 s settle, which restores the real spawner -
+		-- ordering the two settle blocks this way keeps either of them from reading the
+		-- other's bookkeeping as its own.
+		self:Defer( "revealed_mouths_stay_visible_to_marines_settles", 5, false, function()
+			SpawnQuiet:Pump()
+
+			local Problems = {}
+			local HiddenId, VisibleId = Hidden:GetId(), Visible:GetId()
+
+			if Loud:Count() ~= 1 then
+				Problems[#Problems + 1] = string.format("the production tick registered %s of 1 mouth", tostring(Loud:Count()))
+			end
+
+			if Visible:GetIsDetected() ~= true then
+				Problems[#Problems + 1] = "the revealed mouth stopped being detected - HordeTick is not re-asserting it"
+			end
+
+			if Hidden:GetIsDetected() then
+				Problems[#Problems + 1] = "the control mouth became detected anyway"
+			end
+
+			local Marker = MarkerOf(VisibleId)
+
+			if not Marker then
+				Problems[#Problems + 1] = string.format("no SensorBlip for %s - a marine would still see nothing", tostring(VisibleId))
+			elseif bit.band(Marker:GetExcludeRelevancyMask(), kRelevantToTeam1) == 0 then
+				Problems[#Problems + 1] = string.format("the marker's relevancy excludes marines (mask %s)",
+					tostring(Marker:GetExcludeRelevancyMask()))
+			end
+
+			if MarkerOf(HiddenId) then
+				Problems[#Problems + 1] = "a marker exists for the mouth that was never revealed"
+			end
+
+			-- Turning the flag off must stop the re-assertion. Detection itself then lapses on
+			-- the engine's clock, which is the honest contract: we do not revoke, we stop
+			-- insisting - and destroying the mouth takes the marker with it either way.
+			SpawnLoud.Reveal = false
+
+			if SpawnLoud:RefreshReveal() ~= 0 then
+				Problems[#Problems + 1] = "RefreshReveal still revealed mouths after the flag went off"
+			end
+
+			print( string.format(
+				"[TEST] reveal at t+5s: loud=%s quiet=%s marker=%s mask=%s registered=%s/%s",
+				tostring(Visible:GetIsDetected()), tostring(Hidden:GetIsDetected()),
+				tostring(Marker ~= nil), tostring(Marker and Marker:GetExcludeRelevancyMask() or "-"),
+				tostring(Loud:Count()), tostring(Quiet:Count()) ) )
+
+			SpawnLoud:DestroyMouth(VisibleId)
+			SpawnQuiet:DestroyMouth(HiddenId)
+
+			local LeftMarker = MarkerOf(VisibleId)
+
+			horde.HordeRegistry, horde.HordeSpawner = SavedRegistry, SavedSpawner
+
+			if SavedRegistry:Count() ~= SavedCount then
+				Problems[#Problems + 1] = string.format("the plugin's real registry changed under the probe: %s -> %s",
+					tostring(SavedCount), tostring(SavedRegistry:Count()))
+			end
+
+			if LeftMarker then
+				Problems[#Problems + 1] = "destroying the mouth left its marine marker in the world"
+			end
+
+			if #Problems > 0 then
+				error( { Detail = "reveal: " .. table.concat(Problems, "; ") } )
+			end
+		end )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

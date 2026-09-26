@@ -65,7 +65,8 @@ edit source/
 | `deploy.sh` | install the artifact into DEV, configure DEV, repair Workshop pollution | write to Steam or the live config |
 | `modserver.sh` | serve the artifact over NS2's backup protocol | substitute for publication |
 | `server-start.sh` | boot DEV (disarmed → joinable), wait for readiness | touch LIVE without `--live` |
-| `server-stop.sh` | stop **our** PID, escalating politely | kill by process name |
+| `server-stop.sh` | stop **our** PID, after proving that PID still IS our instance | kill by process name, or kill a recycled pid |
+| `set-reveal.py` | write `Debug.RevealMouths` into the DEV config (joinable boot = on, suite boot = off), read it back and fail if it did not take | touch the live config, or overwrite a file it cannot parse |
 | `test.sh` | arm the harness, run the suite, verify managed content untouched | — |
 | `publish.sh` | build, register the repo with LaunchPad, print the human steps, record the id once | change a recorded id, or author anything |
 | `new-extension.sh` | scaffold an extension with the correct vararg shapes | — |

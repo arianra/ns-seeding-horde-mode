@@ -283,6 +283,15 @@ Starter schema (full proposal in levers note §6):
                "HPCurve": {"Start": 4, "End": 1, "Bezier": [0.25,0.1,0.25,1]},
                "KillAllBonus": 30, "RebuildOnIntermission": true },
   "Teardown": { "AssertEntityDiff": true },
+  // Dev-only. A mouth is a team-2 entity, so its own map blip is relevancy-gated to
+  // aliens (MapBlip.lua:82-96) and a marine cannot see where a wave actually landed —
+  // which makes placement undiagnosable from the chair. When on, each mouth is marked
+  // detected so the ENGINE adds its marine-side SensorBlip: a through-wall screen marker
+  // and a minimap icon, no client Lua, no extra entity of ours, and it dies with the
+  // mouth (DetectableMixin:OnDestroy). Detection expires 1.5 s after it is asserted, so
+  // the 1 s plugin tick re-asserts it. Never a gameplay default: it hands the enemy x-ray
+  // information our design does not intend to give them.
+  "Debug": { "RevealMouths": false },
   "Maps": { "ns2_summit": { "Tunnels": { "Overrides": [] } } }
 }
 ```

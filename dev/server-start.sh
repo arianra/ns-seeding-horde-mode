@@ -98,6 +98,17 @@ if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   fi
 fi
 
+# Debug.RevealMouths follows the same rule as RunSuite: authorised per boot, written
+# unconditionally, never against LIVE. A joinable DEV boot is a debugging session, so the
+# mouths get marine-side markers; the suite is not, and must measure what a public server
+# would actually do. Failing here stops the boot: starting a server whose reveal state we
+# could not set means the next person reads an absent marker as "placement is wrong".
+if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
+  REVEAL=false
+  [[ $WITH_SUITE -eq 0 ]] && REVEAL=true
+  python3 "$REPO_DIR/dev/set-reveal.py" "$DEV_CFG_WSL" "$REVEAL" || exit 3
+fi
+
 # Interlock: never disturb a server someone is playing on. Each kill of a busy server
 # makes NS2 write a crash dump, which reads to the user as a game bug.
 if [[ $LIVE -eq 0 && "${SKIP_GUARD:-0}" != "1" ]]; then
