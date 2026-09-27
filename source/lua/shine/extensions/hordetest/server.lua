@@ -24,7 +24,7 @@ local SETTLE_SECONDS = 10
 -- by ActiveExtensions alone.
 Plugin.HasConfig = true
 Plugin.ConfigName = "HordeTest.json"
-Plugin.DefaultConfig = { RunSuite = false }
+Plugin.DefaultConfig = { RunSuite = false, RunHandback = false }
 
 Shine.LoadPluginFile( PluginName, "scenarios.lua", Plugin )
 
@@ -58,6 +58,11 @@ function Plugin:Tick()
 			self:DestroyTimer("HordeTestRunner")
 			return
 		end
+
+		-- Names its own verdict: which run this is, straight off the loaded config. A handback
+		-- filter that silently selected nothing looked exactly like a passing suite once already.
+		print( string.format( "[TEST] authorised: RunSuite=%s RunHandback=%s",
+			tostring(self.Config.RunSuite), tostring(self.Config.RunHandback) ) )
 	end
 
 	if State.Waiting then
@@ -108,10 +113,21 @@ end
 function Plugin:RunScenarios()
 	local State = self.State
 
+	-- Two runs, one runner. `handback_*` scenarios reset the world for real, which every other
+	-- scenario must not do: all bodies share one synchronous pass and their deferred checks land
+	-- afterwards, so a real ResetGame mid-suite takes the ground out from under someone else's
+	-- pending assertion. `--handback` therefore runs ONLY the probe, and the normal run never
+	-- sees it. Measured the hard way: the probe's first version, left in the normal run, broke
+	-- the reveal and wave-slice checks that were still outstanding.
+	local Handback = self.Config and self.Config.RunHandback == true
+
 	for Index = 1, #self.Scenarios do
 		local Scenario = self.Scenarios[Index]
-		local Ok, Err = pcall( Scenario.Func )
-		self:Report( Scenario.Name, not Ok, self:DetailOf( Err ), Scenario.Expected )
+
+		if (Scenario.Name:find("^handback") ~= nil) == Handback then
+			local Ok, Err = pcall( Scenario.Func )
+			self:Report( Scenario.Name, not Ok, self:DetailOf( Err ), Scenario.Expected )
+		end
 	end
 
 	-- A scenario may defer checks (bot behaviour takes frames). Adopt whatever it

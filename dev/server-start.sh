@@ -28,12 +28,14 @@ NS2SRV_WIN="$ENGINE_WIN"
 
 LIVE=0
 WITH_SUITE=0
+HANDBACK=0
 PORT_OVERRIDE=""
 POS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --live) LIVE=1; shift ;;
     --with-suite) WITH_SUITE=1; shift ;;
+    --handback) HANDBACK=1; shift ;;
     --port=*) PORT_OVERRIDE="${1#*=}"; shift ;;
     --port)
       [[ $# -ge 2 && "${2}" =~ ^[0-9]+$ ]] || { echo "[start] --port needs a number" >&2; exit 2; }
@@ -87,13 +89,21 @@ if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   # Written unconditionally, and WITHOUT jq: `jq` resolves in an interactive shell here but
   # not inside a non-interactive script, so a condition built on it silently evaluated to
   # empty and the disarm never ran - the suite then booted a second time while a human was
-  # connected and looked like the mod auto-starting. Always writing the wanted state has no
-  # such failure mode, and the file is two lines.
+  # connected and looked like the mod auto-starting. Always writing the COMPLETE wanted state
+  # has no such failure mode - and complete matters, because this file is replaced, not merged:
+  # a key anyone else wrote is destroyed by the boot. That is how a handback patch test.sh had
+  # applied moments earlier vanished, and the run reported 57 ordinary scenarios - green - instead
+  # of the probe it was asked for.
   if [[ $WITH_SUITE -eq 1 ]]; then
-    printf '{\n    "RunSuite" : true\n}\n' > "$HARDCFG"
-    echo "[start] hordetest ARMED - the suite will run on this boot"
+    if [[ $HANDBACK -eq 1 ]]; then
+      printf '{\n    "RunSuite" : true,\n    "RunHandback" : true\n}\n' > "$HARDCFG"
+      echo "[start] hordetest ARMED in HANDBACK mode - only handback_* scenarios will run"
+    else
+      printf '{\n    "RunSuite" : true,\n    "RunHandback" : false\n}\n' > "$HARDCFG"
+      echo "[start] hordetest ARMED - the suite will run on this boot"
+    fi
   else
-    printf '{\n    "RunSuite" : false\n}\n' > "$HARDCFG"
+    printf '{\n    "RunSuite" : false,\n    "RunHandback" : false\n}\n' > "$HARDCFG"
     echo "[start] hordetest disarmed - this boot is a joinable server (./dev/test.sh runs the suite)"
   fi
 fi

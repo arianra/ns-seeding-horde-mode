@@ -2357,6 +2357,110 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Reason:find("never took the round over") ~= nil, "saying why: " .. tostring(Reason) )
 	end )
 
+	--- The real handback, run alone by `./dev/test.sh --handback`. The faked-order scenario above
+	--- can prove WHICH call happens first; it cannot prove that vanilla, left holding the switch
+	--- again, does not end the round. That needs the live gamerules object, and a live ResetGame
+	--- anywhere in the normal run would invalidate every deferred check still outstanding - so
+	--- this probe is the only scenario in its run.
+	---
+	--- It asserts the three things the playtest said were broken: the round comes back to a state
+	--- where no winner can be declared, the mouths really leave the world, and the server's own
+	--- bot configuration returns.
+	self:RegisterScenario( "handback_returns_the_world_to_vanilla", false, function()
+		local horde = Shine.Plugins.hordemode
+		local gamerules = GetGamerules()
+
+		Assert.NotNil( gamerules, "the world is up" )
+
+		local Controller = gamerules.botTeamController
+
+		Assert.NotNil( Controller, "and it has a bot controller to hand back" )
+
+		--- A server that fills with bots, which is what Arian's does. Left at 0 the restore
+		--- assertion below would pass without proving anything, so the precondition is created
+		--- deliberately rather than read from a config that happens to be empty.
+		local BotCap, BotLock = 4, Controller.updateLock or 0
+
+		Controller.MaxBots = BotCap
+
+		local Ok, Err = horde:ResetWorldForHorde()
+
+		Assert.True( Ok, "the horde took the world over: " .. tostring(Err) )
+		Assert.True( horde.HordeRoundStarted, "and recorded that it owns the round" )
+		Assert.True( horde.HordeTakeover:IsEngaged(), "the takeover is what holds the vanilla fill" )
+		Assert.Equal( 0, Controller.MaxBots, "capped to zero for the duration" )
+
+		horde.Machine:Start(Shared.GetTime())
+
+		local Placed = horde:BeginWave(horde.HordeConfig.Resolve(Shared.GetMapName()))
+
+		Assert.True( Placed >= 1, "a wave placed mouths to tear down" )
+
+		--- The dangerous state, created on purpose. `CheckGameEnd` only exists at Started, and an
+		--- emptied Started round has exactly one end vanilla can reach: the aliens lose, the
+		--- marines are declared winners, the map rotates. This is the frame /horde stop used to
+		--- hand the switch back on.
+		gamerules:SetGameState(kGameState.Started)
+
+		horde:HordeTick()
+
+		local Ids = horde.HordeRegistry:GetEverIds()
+
+		Assert.True( #Ids >= 1, "the registry knows what it made: " .. tostring(#Ids) )
+
+		horde.Machine:Stop("handback probe", Shared.GetTime())
+		horde:Teardown(Shared.GetTime())
+
+		self:Defer( "handback_settles", 4, false, function()
+			local Problems = {}
+			local State = gamerules:GetGameState()
+
+			--- Not "this frame reads nicely" but "four seconds of vanilla running its own update
+			--- loop with the switch back produced no end". A win that fires on the next tick is
+			--- exactly what the playtest saw.
+			if State >= kGameState.Started then
+				Problems[#Problems + 1] = string.format("the round never came back below Started (state %s)",
+					tostring(State))
+			end
+
+			if gamerules.timeGameEnded ~= nil then
+				Problems[#Problems + 1] = "vanilla recorded a game end across the handback"
+			end
+
+			if gamerules.preventGameEnd ~= nil then
+				Problems[#Problems + 1] = "suppression outlived the horde - this server would now never award a win"
+			end
+
+			if not horde.Machine:Is(horde.Phase.Inactive) then
+				Problems[#Problems + 1] = "the machine is still " .. horde.Machine:GetState()
+			end
+
+			for _, Id in ipairs(Ids) do
+				if Shared.GetEntity(Id) ~= nil then
+					Problems[#Problems + 1] = "mouth " .. tostring(Id) .. " survived the handback"
+				end
+			end
+
+			if Controller.MaxBots ~= BotCap then
+				Problems[#Problems + 1] = string.format("bot cap not restored (%s, was %s) - this is why no bot came back",
+					tostring(Controller.MaxBots), tostring(BotCap))
+			end
+
+			if (Controller.updateLock or 0) ~= BotLock then
+				Problems[#Problems + 1] = string.format("update lock not returned to %s (now %s) - someone else's fill is now stuck",
+					tostring(BotLock), tostring(Controller.updateLock))
+			end
+
+			print(string.format("[TEST] handback settled: state=%s maxBots=%s lock=%s ids=%s suppression=%s",
+				tostring(State), tostring(Controller.MaxBots), tostring(Controller.updateLock),
+				tostring(#Ids), tostring(gamerules.preventGameEnd)))
+
+			if #Problems > 0 then
+				error( { Detail = "handback: " .. table.concat(Problems, "; ") } )
+			end
+		end )
+	end )
+
 	self:RegisterScenario( "negative_control", true, function()
 		Assert.True( false, "deliberate failure — proves FAIL detection works" )
 	end )

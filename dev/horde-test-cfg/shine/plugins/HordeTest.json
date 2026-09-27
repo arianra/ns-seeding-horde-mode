@@ -1,3 +1,4 @@
 {
-    "RunSuite" : true
+    "RunSuite" : true,
+    "RunHandback" : false
 }

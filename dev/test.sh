@@ -5,7 +5,7 @@
 # extensions, boots the dedicated server, waits for the hordetest suite to report
 # '[TEST] ALL-DONE', prints the summary, and exits nonzero when anything failed.
 #
-# Usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config]
+# Usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config] [--handback]
 # Unknown options are fatal. A previous version of this parser swallowed any
 # unrecognised token into MAP and any bare number into TIMEOUT, so
 # './dev/test.sh --iters 1' booted a map called '--iters' with a 1-second
@@ -24,16 +24,18 @@ LOG_WSL="$LOG_WSL"
 MAP="ns2_summit"
 TIMEOUT=0
 BAD_CONFIG=0
+HANDBACK=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bad-config) BAD_CONFIG=1; shift ;;
+    --handback) HANDBACK=1; shift ;;
     --map)
       [[ $# -ge 2 ]] || { echo "[test] --map needs a value" >&2; exit 2; }
       MAP="$2"; shift 2 ;;
     -*)
       echo "[test] unknown option: $1" >&2
-      echo "[test] usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config]" >&2
+      echo "[test] usage: ./dev/test.sh [map] [timeout_seconds] [--map M] [--bad-config] [--handback]" >&2
       exit 2 ;;
     *)
       if [[ "$TIMEOUT" == "0" && "$1" =~ ^[0-9]+$ ]]; then
@@ -81,6 +83,7 @@ cp -f "$REPO/dev/horde-test-cfg/shine/BaseConfig.json" "$CFG_WSL/shine/BaseConfi
 mkdir -p "$CFG_WSL/shine/plugins"
 cp -f "$REPO/dev/horde-test-cfg/shine/plugins/HordeTest.json" "$CFG_WSL/shine/plugins/HordeTest.json" || bail "overlay HordeTest"
 
+
 if [[ $BAD_CONFIG -eq 1 ]]; then
   # Real load-path test: Shine reads this file, our Sanitize must repair it, and
   # Shine must warn that the config "required changes to be valid".
@@ -106,8 +109,15 @@ DEPLOY_OUT=$("$REPO/dev/deploy.sh" --for-suite 2>&1); DEPLOY_RC=$?
 sed 's/^/[deploy] /' <<<"$DEPLOY_OUT"
 [[ $DEPLOY_RC -eq 0 ]] || bail "deploy failed (exit $DEPLOY_RC)"
 
+# The boot owns the arming file completely - server-start.sh writes both keys every time - so
+# test.sh only states which mode it wants. Patching the file here is what the first version did,
+# and the boot overwrote it: a run asked for the handback probe reported 57 ordinary scenarios,
+# green, because the file it read said nothing about handback.
+START_ARGS=( --with-suite )
+[[ $HANDBACK -eq 1 ]] && START_ARGS+=( --handback )
+
 echo "[test] 5/8 starting server (map=$MAP cfg=$CFG_WIN)"
-"$REPO/dev/server-start.sh" --with-suite "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
+"$REPO/dev/server-start.sh" "${START_ARGS[@]}" "$CFG_WIN" "$MAP" | sed 's/^/[start] /'
 START_RC=${PIPESTATUS[0]}
 [[ $START_RC -eq 0 ]] || bail "server never reached READY (see log above)"
 
@@ -245,6 +255,16 @@ sed 's/^/[state]   /' <<<"$STATE_OUT"
 CHECK_OUT=$("$REPO/dev/deploy.sh" --check 2>&1); CHECK_RC=$?
 sed 's/^/[deploy]   /' <<<"$CHECK_OUT"
 [[ $CHECK_RC -eq 0 ]] || { echo "[test] FAIL - managed-content check failed (dev/STANDARDS.md)" >&2; exit 1; }
+
+if [[ $HANDBACK -eq 1 ]]; then
+  # A filter that selects nothing still prints ALL-DONE, and "0 failed" over a run that never
+  # executed the probe reads exactly like a probe that passed. So the mode is proven by the
+  # probe's own report line, fenced to this boot like everything else.
+  if ! tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" | grep -aq "handback_returns_the_world_to_vanilla"; then
+    echo "[test] FAIL - handback mode was requested and the probe never reported" >&2
+    exit 1
+  fi
+fi
 
 echo "[test] OK — $PASS passed, 0 failed, ${EXPECTED:-0} expected (negative controls)"
 exit 0
