@@ -15,6 +15,30 @@ local Shine = Shine
 local Plugin = ...
 local Assert = Plugin.Assert
 
+--- Anchors the ENGINE accepts as buildable surface, for scenarios that just need somewhere to
+--- put a mouth. Going through hordemode's own snap keeps these tests on the same gate
+--- production uses: a raw `Location` origin is a volume marker, often in rock or in mid air,
+--- and now that SpawnMouth fails closed on such a point, a test that handed it one raw would
+--- be asserting the refusal instead of the lifecycle it means to cover.
+local function SurfaceAnchors(Count)
+	local horde = Shine.Plugins.hordemode
+	local Out = {}
+
+	for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
+		local Snapped = horde.Placement.SnapToSurface(Ent:GetOrigin())
+
+		if Snapped then
+			Out[#Out + 1] = Snapped
+
+			if #Out >= (Count or 1) then
+				break
+			end
+		end
+	end
+
+	return Out
+end
+
 function Plugin:InitialiseScenarios()
 	self:RegisterScenario( "assert_helpers_fire", false, function()
 		Assert.Equal( 1 + 1, 2, "arithmetic sanity" )
@@ -157,6 +181,16 @@ function Plugin:InitialiseScenarios()
 		Copy.Difficulty.Accuracy.Bezier = { 5, 0, 0.5, 0 }
 		Copy.Debug.RevealMouths = "false"
 
+		-- Keys newer than the config file on disk. A file written before `BandLineFactor`
+		-- existed arrives without it, and the sanitizer filled it from the CLAMP FLOOR (0)
+		-- instead of the shipped default (0.5) - which silently disarmed the base-room floor,
+		-- reported the config as clean, and got written back to disk as if chosen. PoolSize is
+		-- the same trap with a visible number: its floor is 1, its default is 6.
+		local Missing = Config.Copy(horde.DefaultConfig)
+
+		Missing.Waves.BandLineFactor = nil
+		Missing.Waves.PoolSize = nil
+
 		Assert.True( Config.Sanitize(Copy), "dirty config reports that it was corrected" )
 		Assert.Equal( 0, Copy.Start.Cooldown, "negative cooldown clamps to zero" )
 		Assert.Equal( 12, Copy.Waves.PoolSize, "absurd pool size clamps to the ceiling" )
@@ -166,6 +200,10 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Copy.Difficulty.Accuracy.Bezier[1] <= 1, "x control point kept inside [0,1] so difficulty stays monotonic" )
 		Assert.Equal( false, Copy.Debug.RevealMouths,
 			'a switch reads as a boolean: "false" in JSON must not become a truthy string' )
+
+		Assert.True( Config.Sanitize(Missing), "a config missing new keys reports the repair" )
+		Assert.Equal( 0.5, Missing.Waves.BandLineFactor, "a missing key takes the shipped default, not the clamp floor" )
+		Assert.Equal( 6, Missing.Waves.PoolSize, "and that holds for every number, not just the new one" )
 	end )
 
 	self:RegisterScenario( "config_copy_is_deep", false, function()
@@ -1130,14 +1168,22 @@ function Plugin:InitialiseScenarios()
 			local SectorWidth = (math.pi * 2) / PerWave
 
 			for _, Candidate in ipairs(Chosen) do
-				-- Measured with the module's own 2D distance, not the stored field: the ring
-				-- is the rule, and it has to hold against real map geometry, not injected.
-				local Distance = horde.Placement.Distance2D(Candidate.point, Base)
-				Assert.True( Distance >= BandMin,
-					string.format("a chosen mouth sits %sm from base, inside the %sm exclusion ring",
-						tostring(Distance), tostring(BandMin)) )
+				--- Two different claims, conflated by the first version of this loop: the ring
+				--- selects on WALKING metres (the stored field), while the straight line is the
+				--- base-room floor. Checking the line against BandMin is what failed once the
+				--- ring moved to the measure a horde actually travels - a mouth 46.8 m away in a
+				--- straight line and 56 m of walking is the intended outcome, not a regression,
+				--- and the two bounds have to be asserted separately to say so.
+				local Line = horde.Placement.Distance2D(Candidate.point, Base)
 
-				Nearest = Nearest and math.min(Nearest, Distance) or Distance
+				Assert.True( Candidate.distance and Candidate.distance >= BandMin,
+					string.format("a chosen mouth is only %sm of walking, inside the %sm ring",
+						tostring(Candidate.distance), tostring(BandMin)) )
+				Assert.True( Line >= BandMin * 0.5,
+					string.format("a chosen mouth sits %.1fm from the chair in a straight line, inside the base room",
+						Line) )
+
+				Nearest = Nearest and math.min(Nearest, Line) or Line
 
 				local Angle = math.atan2(Candidate.point.z or Candidate.point[3],
 					Candidate.point.x or Candidate.point[1])
@@ -1221,14 +1267,11 @@ function Plugin:InitialiseScenarios()
 		local Reg = horde.Registry.New()
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
-		local Anchor
+		-- Through the surface gate: SpawnMouth refuses a point the engine would not build on,
+		-- so a raw Location origin here would test the refusal rather than the lifecycle.
+		local Anchor = SurfaceAnchors(1)[1]
 
-		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
-			Anchor = Ent:GetOrigin()
-			break
-		end
-
-		Assert.NotNil( Anchor, "the live map has a Location to place a mouth at" )
+		Assert.NotNil( Anchor, "the live map has a buildable surface to place a mouth at" )
 
 		local Mouth, Reason = Spawn:SpawnMouth(Anchor)
 		Assert.NotNil( Mouth, "SpawnMouth returns an entity" )
@@ -1262,17 +1305,9 @@ function Plugin:InitialiseScenarios()
 		local Reg = horde.Registry.New()
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
-		local Anchors = {}
+		local Anchors = SurfaceAnchors(2)
 
-		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
-			Anchors[#Anchors + 1] = Ent:GetOrigin()
-
-			if #Anchors >= 2 then
-				break
-			end
-		end
-
-		Assert.True( #Anchors >= 2, "two anchors available for the created set" )
+		Assert.True( #Anchors >= 2, "two buildable surfaces available for the created set" )
 
 		for _, Anchor in ipairs(Anchors) do
 			Spawn:SpawnMouth(Anchor)
@@ -1698,17 +1733,9 @@ function Plugin:InitialiseScenarios()
 	-- and one revealed both mouths because the flag lived in two places at once.
 	self:RegisterScenario( "revealed_mouths_stay_visible_to_marines", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Anchors = {}
+		local Anchors = SurfaceAnchors(2)
 
-		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("Location")) do
-			Anchors[#Anchors + 1] = Ent:GetOrigin()
-
-			if #Anchors >= 2 then
-				break
-			end
-		end
-
-		Assert.True( #Anchors >= 2, "two anchors for the paired comparison" )
+		Assert.True( #Anchors >= 2, "two buildable surfaces for the paired comparison" )
 
 		local function Log(Message) print("[TEST] " .. Message) end
 
@@ -1813,6 +1840,273 @@ function Plugin:InitialiseScenarios()
 				error( { Detail = "reveal: " .. table.concat(Problems, "; ") } )
 			end
 		end )
+	end )
+
+	-- The engine's build gate, tested by injecting answers. This is the mechanic that was
+	-- missing: a marine walked summit and found three mouths "nowhere near the surface", and
+	-- the cause was that SpawnMouth was handed raw anchor origins - volume markers - with
+	-- nothing ever asking the level whether anything stood there. Each branch below is a way
+	-- the engine can say no, and each has to be reported rather than quietly producing a mouth
+	-- in rock.
+	self:RegisterScenario( "placement_surface_gate_is_pure", false, function()
+		local Placement = Shine.Plugins.hordemode.Placement
+
+		local function At(Y)
+			return { x = 60, y = Y, z = 0 }
+		end
+
+		-- No ground beneath the anchor at all: unbuildable, whatever the anchor looked like.
+		local NoGround = { Ground = function() return nil end, Flags = function() return { walk = true } end, Collide = function() return false end }
+
+		local Point, Reason = Placement.SnapToSurface(At(0), NoGround)
+
+		Assert.Nil( Point, "an anchor with no ground under it is refused" )
+		Assert.Equal( "no ground under anchor", Reason, "and says why" )
+
+		-- Ground exists, but the nav mesh says no-build: the vent case Arian described.
+		local NoBuild = { Ground = function(P) return P end, Flags = function() return { walk = true, nobuild = true } end, Collide = function() return false end }
+
+		Point, Reason = Placement.SnapToSurface(At(0), NoBuild)
+
+		Assert.Nil( Point, "a no-build zone is refused even with floor under it" )
+		Assert.Equal( "no-build zone", Reason, "and says why" )
+
+		-- Floor, no no-build flag, but nothing walkable either: mid-air, or outside the mesh.
+		local OffMesh = { Ground = function(P) return P end, Flags = function() return { walk = false } end, Collide = function() return false end }
+
+		Point, Reason = Placement.SnapToSurface(At(0), OffMesh)
+
+		Assert.Nil( Point, "off the walk mesh is refused" )
+		Assert.Equal( "not on walk mesh", Reason, "and says why" )
+
+		-- Floor, walkable, but the mouth's own capsule overlaps the world: inside the geometry.
+		local Obstructed = { Ground = function(P) return P end, Flags = function() return { walk = true } end, Collide = function() return true end }
+
+		Point, Reason = Placement.SnapToSurface(At(0), Obstructed)
+
+		Assert.Nil( Point, "a spot whose capsule overlaps the world is refused" )
+		Assert.Equal( "overlaps world", Reason, "and says why" )
+
+		-- An engine call that throws is a rejection, not a crash: one odd brush on one level
+		-- must not take wave placement down with it.
+		local Throwing = { Ground = function() error("nav mesh unavailable") end }
+
+		Point, Reason = Placement.SnapToSurface(At(0), Throwing)
+
+		Assert.Nil( Point, "a throwing engine query rejects the point" )
+		Assert.Equal( "no ground under anchor", Reason, "with the reason of the step that failed" )
+
+		-- The accepted case, and the one that matters downstream: the anchor is 40 m up in the
+		-- air, the ground query returns a floor elsewhere, and everything after this (band,
+		-- dedupe, sector) must measure the SNAPPED point, not the anchor.
+		local Landed = {
+			Ground = function() return { x = 60, y = 0, z = 0 } end,
+			Flags = function() return { walk = true } end,
+			Collide = function() return false end
+		}
+
+		Point, Reason = Placement.SnapToSurface(At(40), Landed)
+
+		Assert.NotNil( Point, "a valid surface is accepted" )
+		Assert.Nil( Reason, "and carries no refusal" )
+		Assert.Equal( 0, Placement.Axis(Point, "y", 2), "the usable point is the floor, not the anchor's height" )
+
+		-- Two anchors that snap to the same floor point must become one site. Before the gate
+		-- this was impossible to hit; now it is the common case (a portal and a cyst in one
+		-- room), and two mouths on one point is the corridor bug back again by another road.
+		local Same = {
+			Ground = function() return { x = 60, y = 0, z = 0 } end,
+			Flags = function() return { walk = true } end,
+			Collide = function() return false end
+		}
+
+		local Validated, Stats = Placement.ValidateCandidates({ At(0), At(12), At(24) }, Same)
+
+		Assert.Equal( 3, Stats.raw, "three anchors were offered" )
+		Assert.Equal( 3, Stats.usable, "all three snapped to ground" )
+		Assert.Equal( 1, #Placement.GatherCandidates({ Validated }, 5), "and they collapse to the one place they actually are" )
+
+		-- The tally the log prints. "usable 0 of 48, no ground=48" is an anchor-source bug;
+		-- "in band 0" is a ring that misses this map. From the chair they look identical.
+		local Partly = {
+			Ground = function(P)
+				-- Deliberately an if/else and not `cond and nil or P`: with `and nil`, the
+				-- whole expression falls through to P and the case "passes" by accepting
+				-- everything. The first version of this test did exactly that and reported
+				-- three usable where one was intended.
+				if Placement.Axis(P, "y", 2) > 10 then
+					return nil
+				end
+
+				return P
+			end,
+			Flags = function() return { walk = true } end,
+			Collide = function() return false end
+		}
+
+		local _, Mixed = Placement.ValidateCandidates({ At(0), At(40), At(60) }, Partly)
+		local Summary = Placement.ReasonCounts(Mixed)
+
+		Assert.Equal( 1, Mixed.usable, "one of three anchors is on ground" )
+		Assert.True( Summary:find("no ground under anchor=2") ~= nil, "the tally names the rejected two: " .. Summary )
+	end )
+
+	-- The candidate source, tested on its own. Anchors alone left exactly one buildable point
+	-- inside the ring on the shipped map and zero mouths placed, so the sweep is what carries
+	-- placement - and the property worth asserting is not "it found points" but that it found
+	-- them where the band could use them.
+	self:RegisterScenario( "placement_samples_the_ring_not_the_anchors", false, function()
+		local Placement = Shine.Plugins.hordemode.Placement
+
+		-- A real Vector, because so is every sample the engine hands back: a plain-table base
+		-- next to Vector samples would exercise the fallback path, not the shipped one.
+		local Base = Vector(0, 0, 0)
+
+		-- The mesh agrees with every request, so each sample lands at its own radius and the
+		-- geometry of the sweep can be read straight off the result.
+		local Identity = {
+			Mesh = function(Point) return Point end,
+			Ground = function(Point) return Point end,
+			Flags = function() return { walk = true } end,
+			Collide = function() return false end
+		}
+
+		local Sampled = Placement.SampleRing(Base, 56, 90, Identity)
+
+		Assert.Equal( 96, #Sampled, "6 rings x 16 bearings, none dropped by an agreeing mesh" )
+
+		local Inside, Outside, Distinct, Closest, Furthest = 0, 0, {}, nil, nil
+
+		for _, Point in ipairs(Sampled) do
+			local Distance = Placement.Distance2D(Point, Base)
+
+			Closest = Closest and math.min(Closest, Distance) or Distance
+			Furthest = Furthest and math.max(Furthest, Distance) or Distance
+
+			if Distance < 56 then
+				Inside = Inside + 1
+			end
+
+			if Distance > 90 then
+				Outside = Outside + 1
+			end
+
+			Distinct[string.format("%.1f,%.1f", Placement.Axis(Point, "x", 1), Placement.Axis(Point, "z", 3))] = true
+		end
+
+		-- Deliberate, and the reason the sweep exists at all: the band is measured in WALKING
+		-- metres, so candidates have to be generated nearer than 56 in a straight line and
+		-- further than 90, or a map whose routes bend could never fill the ring.
+		Assert.True( Inside > 0, "samples start inside the ring on purpose, nearer than BandMin" )
+		Assert.True( Outside > 0, "and reach past it, because a route is longer than the line to it" )
+
+		-- 19.5 and 144.5, not 20 and 144: the sweep's own float arithmetic lands 20 m at
+		-- 19.9999998 and 90 x 1.6 at 144.0000002, and an assertion that fails on the last bit
+		-- of a mantissa hides whatever real failure it was standing next to.
+		Assert.True( Closest >= 19.5, string.format("the sweep does not start on top of the base (%.1fm)", Closest) )
+		Assert.True( Furthest > 90 and Furthest <= 144.5,
+			string.format("the sweep reaches past the band without wandering off the map (%.1fm)", Furthest) )
+
+		local Count = 0
+
+		for _ in pairs(Distinct) do
+			Count = Count + 1
+		end
+
+		Assert.Equal( #Sampled, Count, "and no two samples are the same place" )
+
+		-- The failure mode that produced the empty pool: a mesh that answers nothing must yield
+		-- no candidates, rather than quietly falling back to raw anchors behind our back.
+		Assert.Equal( 0, #Placement.SampleRing(Base, 56, 90, { Mesh = function() return nil end }),
+			"a map with no mesh under the ring contributes nothing" )
+
+		-- A throwing engine query is a missing sample, not a failed wave.
+		Assert.Equal( 0, #Placement.SampleRing(Base, 56, 90, { Mesh = function() error("no nav mesh loaded") end }),
+			"a throwing mesh query yields nothing and does not propagate" )
+
+		Assert.Equal( 0, #Placement.SampleRing(nil, 56, 90, Identity), "no base anchor means no ring to sweep")
+
+		-- Whatever the mesh answers with is the point that gets handed on, including its height:
+		-- the surface gate judges that point, so a snap applied before validation would make
+		-- every assertion downstream invisible to the real placement.
+		local Offset = {
+			Mesh = function(Point) return { x = Placement.Axis(Point, "x", 1) + 1, y = 3, z = Placement.Axis(Point, "z", 3) } end,
+			Ground = function(Point) return Point end,
+			Flags = function() return { walk = true } end,
+			Collide = function() return false end
+		}
+
+		local Shifted = Placement.SampleRing(Base, 56, 90, Offset)
+
+		Assert.True( #Shifted > 0, "samples survive a mesh that answers with its own point" )
+		Assert.Equal( 3, Placement.Axis(Shifted[1], "y", 2), "and the mesh's height is the one kept" )
+	end )
+
+	-- The ring on the real map, end to end: measured numbers in the log, and the two bounds a
+	-- placed mouth must satisfy. This is the test whose absence let three mouths into rock.
+	self:RegisterScenario( "placement_ring_survives_validation_on_a_real_map", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Placement = horde.Placement
+		local Config = horde.HordeConfig.Resolve(Shared.GetMapName())
+		local Waves = Config.Waves or {}
+
+		local Chosen, Base, RawCount, BandedCount, Stats = Placement.Collect(Config)
+
+		print(string.format("[TEST] ring placement on %s: %s -> in band=%s chosen=%s base=%s",
+			tostring(Shared.GetMapName()), Placement.ReasonCounts(Stats), tostring(BandedCount),
+			tostring(#Chosen), tostring(Base ~= nil)))
+
+		Assert.True(Stats.sampled > 0, "the sweep generated candidates to judge on this map")
+		Assert.True(Stats.usable > 0, string.format("and the engine accepts at least one as buildable [%s]",
+			Placement.ReasonCounts(Stats)))
+
+		if Base then
+			Assert.True(#Chosen > 0, string.format(
+				"so a wave can place mouths in the %s-%sm ring [%s]",
+				tostring(Waves.BandMin), tostring(Waves.BandMax), Placement.ReasonCounts(Stats)))
+		end
+	end )
+
+	-- The points production actually picks, re-asked of the engine rather than trusted from
+	-- the pipeline above: if a candidate survives filtering, the level still agrees at that
+	-- moment that it is walkable, buildable, clear of geometry, and standing on its own floor.
+	self:RegisterScenario( "every_chosen_mouth_sits_on_buildable_surface", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Placement = horde.Placement
+		local Config = horde.HordeConfig.Resolve(Shared.GetMapName())
+		local Hooks = Placement.DefaultHooks()
+		local Extents = Placement.Extents()
+		local Chosen, Base = Placement.Collect(Config)
+
+		Assert.True( #Chosen > 0, "there is something to check on this map" )
+
+		for Index, Candidate in ipairs(Chosen) do
+			local Point = Candidate.point
+			local Flags = Hooks.Flags(Point, Extents)
+
+			Assert.True( Flags.walk,
+				string.format("mouth %s is on walkable nav mesh at (%.1f, %.1f, %.1f)", tostring(Index),
+					Placement.Axis(Point, "x", 1), Placement.Axis(Point, "y", 2), Placement.Axis(Point, "z", 3)) )
+			Assert.True( not Flags.nobuild, string.format("mouth %s is not in a no-build zone", tostring(Index)) )
+			Assert.False( Hooks.Collide(Point, Extents),
+				string.format("mouth %s overlaps the world - it would be buried in geometry", tostring(Index)) )
+
+			-- Idempotence is the cheap proof the snap landed somewhere real: asking the ground
+			-- again must return the same point, not a further fall.
+			local Again = Hooks.Ground(Point, Extents)
+
+			Assert.NotNil( Again, string.format("mouth %s has ground under it", tostring(Index)) )
+
+			if Again then
+				Assert.True( Placement.Distance2D(Again, Point) < 0.5, string.format(
+					"mouth %s is not already on its surface (%.2fm from the ground query)",
+					tostring(Index), Placement.Distance2D(Again, Point)) )
+			end
+
+			print(string.format("[TEST] mouth %s at (%.1f, %.1f, %.1f) %sm of walking from base",
+				tostring(Index), Placement.Axis(Point, "x", 1), Placement.Axis(Point, "y", 2),
+				Placement.Axis(Point, "z", 3), string.format("%.1f", Candidate.distance or -1)))
+		end
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

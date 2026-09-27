@@ -89,6 +89,12 @@ Plugin.DefaultConfig = {
 		ActivePerWave = 3,
 		BandMin = 56,            -- spike tby: summit's reachable near-base band is 56-80m
 		BandMax = 90,            -- the pre-spike 20m guess selects nothing on vanilla maps
+		--- The band is measured in WALKING metres, so a route could still leave a mouth 5 m
+		--- from the chair behind a wall. This is the straight-line floor as a fraction of
+		--- BandMin: a guard on "not inside the base room", not a difficulty number, so it is
+		--- derived instead of tuned. 0.5 keeps it well clear of any base room while never
+		--- rejecting a point the walking ring would want.
+		BandLineFactor = 0.5,
 		Composition = NewCurve(4, 24),
 		Health = NewCurve(1, 3),
 		Armor = NewCurve(0, 2),
@@ -175,15 +181,34 @@ end
 function Config.Sanitize(In)
 	local Changed = false
 
+	--- A missing or malformed number is replaced by the SHIPPED DEFAULT, read back out of
+	--- DefaultConfig, not by the clamp floor. Those were the same argument until they
+	--- weren't: `BandLineFactor` (clamp 0-1, default 0.5) arrived as 0 the moment it was
+	--- added to a config file written before it existed - which silently disarmed the
+	--- base-room floor, sanitised as "clean", and was then written back to disk by Shine as
+	--- if it had been chosen. `Low` is the smallest LEGAL value, not what we want when nobody
+	--- has expressed an opinion, so the default is derived rather than passed per call.
+	local function ShippedDefault(OwnerName, Key, Fallback)
+		local Owner = Plugin.DefaultConfig and Plugin.DefaultConfig[OwnerName]
+		local Value = Owner and Owner[Key]
+
+		if IsNumber(Value) then
+			return Value
+		end
+
+		return Fallback
+	end
+
 	local function Section(OwnerName, Key, Low, High, AsInteger)
 		local Owner = In and In[OwnerName]
 
-		if type(Owner) ~= "table" or not IsNumber(Owner[Key]) then
-			if type(Owner) == "table" then
-				Owner[Key] = Low
-				Changed = true
-			end
+		if type(Owner) ~= "table" then
 			return
+		end
+
+		if not IsNumber(Owner[Key]) then
+			Owner[Key] = ShippedDefault(OwnerName, Key, Low)
+			Changed = true
 		end
 
 		local Fixed = Clamp(Owner[Key], Low, High)
@@ -225,6 +250,8 @@ function Config.Sanitize(In)
 	Section("Economy", "StartingResources", 0, 100000, true)
 
 	Flag("Debug", "RevealMouths")
+
+	Section("Waves", "BandLineFactor", 0, 1)
 
 	local Waves = In and In.Waves
 

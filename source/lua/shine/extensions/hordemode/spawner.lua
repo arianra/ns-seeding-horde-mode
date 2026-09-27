@@ -104,15 +104,42 @@ function Spawner:RefreshReveal()
 end
 
 --- Create an unpaired tunnel entrance at Point. Unpaired is intentional: spike tby
---- established mouths survive indefinitely without a partner, which is what lets a
---- wave place them one at a time.
+--- established mouths survive indefinitely without a partner, which is what lets a wave
+--- place them one at a time.
+---
+--- The point is snapped HERE as well as in placement.Collect, because SpawnMouth is a public
+--- seam: the wave loop, the scenarios and any per-map override all call it directly, and a
+--- mouth that materialises in solid rock reads to a player as "the mode is broken". The snap is
+--- the engine's own build check (ground capsule, nav-mesh walk flag, obstacle capsule), so
+--- "a gorge could not have built it there" is the standard - which is what a marine judges by.
+--- Fails CLOSED: no placement module means no mouth, not an unvalidated one.
 function Spawner:SpawnMouth(Point, HealthMultiplier)
 	if not Point then
 		return nil, "no point given"
 	end
 
+	local Placement = Plugin.Placement
+
+	if not Placement or not Placement.SnapToSurface then
+		self.FailedCount = self.FailedCount + 1
+		self.Log("[HORDE] mouth NOT placed: placement module is unavailable to validate the surface")
+
+		return nil, "no surface validation available"
+	end
+
+	local Snapped, Reason = Placement.SnapToSurface(Point)
+
+	if not Snapped then
+		self.FailedCount = self.FailedCount + 1
+		self.Log(string.format("[HORDE] mouth NOT placed at (%.1f, %.1f, %.1f): %s",
+			Placement.Axis(Point, "x", 1), Placement.Axis(Point, "y", 2), Placement.Axis(Point, "z", 3),
+			tostring(Reason)))
+
+		return nil, Reason
+	end
+
 	local Ok, Mouth = pcall(function()
-		local Entity = CreateEntity(TunnelEntrance.kMapName, Point, kAlienTeam)
+		local Entity = CreateEntity(TunnelEntrance.kMapName, Snapped, kAlienTeam)
 
 		if Entity and Entity.SetConstructionComplete then
 			Entity:SetConstructionComplete()

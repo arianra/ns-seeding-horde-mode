@@ -506,7 +506,7 @@ end
 --- this is the bead that makes /horde observable in-world.
 function Plugin:BeginWave(Config)
 	local Machine = self.Machine
-	local Chosen, Base, RawCount, BandedCount = Plugin.Placement.Collect(Config)
+	local Chosen, Base, RawCount, BandedCount, Stats = Plugin.Placement.Collect(Config)
 
 	if not Base then
 		self:Log("placement: no base anchor on this map, so the band exclusion is off")
@@ -520,31 +520,49 @@ function Plugin:BeginWave(Config)
 	self.HordeSpawner.Reveal = Reveal
 
 	local Spawned = 0
+	local Refused = {}
 
-	for _, Candidate in ipairs(Chosen) do
+	for Index, Candidate in ipairs(Chosen) do
 		local Mouth, Reason = self.HordeSpawner:SpawnMouth(Candidate.point)
 
 		if Mouth then
 			Spawned = Spawned + 1
+
+			-- Every coordinate we put a structure at, in the log. "3 mouths placed from
+			-- 46 candidates" is what we had when a marine reported all three inside the rock:
+			-- the count was correct and useless, and the only way to find out where they went
+			-- was to walk the map looking for them.
+			self:Log(string.format("mouth %s at (%.1f, %.1f, %.1f) %sm from base id=%s",
+				tostring(Index),
+				Plugin.Placement.Axis(Candidate.point, "x", 1),
+				Plugin.Placement.Axis(Candidate.point, "y", 2),
+				Plugin.Placement.Axis(Candidate.point, "z", 3),
+				string.format("%.1f", Candidate.distance or -1),
+				tostring(Mouth:GetId())))
 		else
-			self:Log("mouth not spawned: " .. tostring(Reason))
+			Refused[#Refused + 1] = tostring(Reason)
 		end
 	end
 
-	-- "Nothing appeared" must never be silent. The three counts separate a map with no
-	-- anchor entities from a band that misses the map from a spawn call that failed.
+	-- "Nothing appeared" must never be silent, and the counts separate the three ways it can
+	-- happen: no anchor entities at all, anchors that the engine refuses as unbuildable, or a
+	-- band that misses this map.
 	if Spawned == 0 then
 		local Waves = (Config and Config.Waves) or {}
 
-		self:Announce("HORDE: the wave could NOT be placed - %s candidates found, %s in the band, %s chosen. Check Waves.BandMin/BandMax for this map.",
-			RawCount, BandedCount, #Chosen)
+		self:Announce("HORDE: the wave could NOT be placed - %s anchors, %s buildable, %s in the band, %s chosen. Check Waves.BandMin/BandMax for this map.",
+			RawCount, Plugin.Placement.ReasonCounts(Stats), BandedCount, #Chosen)
 
 		self:Log(string.format(
-			"wave 1 produced NO mouths: %s raw candidates, %s in band, %s chosen (band %s-%sm, pool %s, per wave %s)",
-			tostring(RawCount), tostring(BandedCount), tostring(#Chosen),
-			tostring(Waves.BandMin), tostring(Waves.BandMax), tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
+			"wave 1 produced NO mouths: anchors %s, buildable [%s], in band %s, chosen %s, refused [%s] (band %s-%sm, pool %s, per wave %s)",
+			tostring(RawCount), Plugin.Placement.ReasonCounts(Stats), tostring(BandedCount), tostring(#Chosen),
+			table.concat(Refused, "; "), tostring(Waves.BandMin), tostring(Waves.BandMax),
+			tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
 	else
-		self:Log(string.format("wave 1: %s mouths placed from %s candidates", tostring(Spawned), tostring(RawCount)))
+		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s",
+			tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
+			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or ""))
+
 		-- "placed", not "opened": nothing comes out of a mouth until the bot spawner
 		-- (i5a) exists, and saying opened oversells what the player is about to see.
 		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s /horde status | /horde stop | /horde restart",

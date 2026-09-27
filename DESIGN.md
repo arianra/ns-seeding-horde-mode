@@ -109,11 +109,16 @@ At `/horde`, the server sculpts the map (all tracked in HordeRegistry):
   decisions/td-tunnel-mouth-system.md):** real destructible spawn portals
   near the base — unpaired vanilla `TunnelEntrance` entities (1000 HP/100
   armor baseline, mouth model, no teleport pairing). Placed procedurally at
-  `/horde`: pool of 5–8 validated points (pathing-sampled around CC in band
-  ~[56m,90m] + cyst points + adjacent-room Location origins; never inside base
-  room; sector-spread; GetPathPoints-validated to CC). Active subset
-  ~3 per wave, **re-drawn every wave**; destroyed mouths rebuilt at
-  intermission. Killing all active mouths mid-wave = marine bonus + early
+  `/horde`: a pool of 5–8 points that pass **the engine's own build validation** — the same
+  three questions a commander's cursor asks (`BuildUtility.GetIsBuildLegal`): snap to ground
+  with `GetGroundAtPointWithCapsule`, require nav-mesh `PolyFlag_Walk` and not
+  `PolyFlag_NoBuild`, then reject if the structure capsule overlaps the world. Anchor sources
+  are infestation portals, cyst points and adjacent-room Location origins, in band
+  ~[56m,90m] from CC, never inside the base room, sector-spread, pathed to CC.
+  **A raw anchor origin is a volume marker, not a floor** — before the gate existed a marine
+  found all three mouths in solid rock and in an unreachable vent, while every geometric
+  check we had passed. Active subset ~3 per wave, **re-drawn every wave**; destroyed mouths
+  rebuilt at intermission. Killing all active mouths mid-wave = marine bonus + early
   wave end; mouth HP rides difficulty curve (wave-1 near-indestructible
   mandate). Bots **stream to base immediately** — no guards, no loitering;
   constant base pressure is the difficulty instrument. Wave-preview HUD
