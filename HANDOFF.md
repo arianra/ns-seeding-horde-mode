@@ -285,5 +285,6 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 
 ---
 
-Last updated: 2026-09-27 at `a412fe4` — `/horde stop` moves humans to spectator, and this document
-exists from that commit onward. Suite 60/0/1, handback 2/0, round trip verified by a human.
+Last updated: 2026-09-27 — `/horde stop` moves humans to spectator, and this document exists from
+that change onward (`git log -1` for HEAD; a doc cannot carry its own commit hash and stay true).
+Suite 60/0/1, handback 2/0, round trip verified end to end by a human.
