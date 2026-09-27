@@ -178,6 +178,13 @@ deferred checks land afterwards, so a world reset invalidates another scenario's
 assertions. That is why the handback probe is its own run, and why `handback_*` scenarios are
 excluded from the normal one.
 
+**The human half lives in `dev/PLAYTEST.md`** (bead `0kd`): a 12-step checklist covering exactly
+what no headless run can see — visibility on the minimap, a mouth standing on real ground, the
+status line after killing one mouth and after killing the last, a stop that declares no winner and
+changes no map, humans landing in spectator with vanilla bots restored, and positions differing
+across three consecutive `/horde` runs. Findings from it become beads. Every serious defect in this
+project arrived through that door, not through the suite.
+
 ## 7. Verification discipline (each of these was paid for)
 
 - **Prove both directions of every guard**: that it can fail, and that it does pass. A guard whose
