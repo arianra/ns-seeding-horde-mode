@@ -285,6 +285,12 @@ Starter schema (full proposal in levers note §6):
   "SupportComm": { "IncomePerWave": {"Start":5,"End":30}, "Patterns": "scripted" },
   "Tunnels": { "Placement": "procedural", "PoolSize": 6, "ActivePerWave": 3,
                "MinDistFromCC": 56, "MaxDistFromCC": 90,   // spike tby: summit's reachable near-base ring is 56-80 m; the pre-spike 20-25 m guess selects nothing on any vanilla map (see MODDING.md §7, §8.7)
+               // Both bounds are WALKING metres from the chair (Pathing.GetPathDistance), because
+               // that is the distance a horde actually travels, and every candidate is first asked
+               // of the engine's own build gate (walk mesh, no-build, ground snap at the tunnel's
+               // extents, capsule overlap) - a Location marker's origin is a volume, not a surface.
+               // The "never in base" rule is therefore a SEPARATE straight-line bound, since a
+               // route can leave the room, loop, and return: BandLineFactor 0.5 x BandMin.
                "HPCurve": {"Start": 4, "End": 1, "Bezier": [0.25,0.1,0.25,1]},
                "KillAllBonus": 30, "RebuildOnIntermission": true },
   "Teardown": { "AssertEntityDiff": true },
