@@ -1225,7 +1225,7 @@ function Plugin:InitialiseScenarios()
 			tostring(#Chosen), tostring(BandedCount), tostring(SectorCount), tostring(PerWave),
 			tostring(Nearest), tostring(BandMin), tostring(Waves.BandMax) ) )
 
-		local Reg = horde.Registry.New()
+		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 		local Queued = 0
 
@@ -1264,7 +1264,7 @@ function Plugin:InitialiseScenarios()
 	-- brittle assertion here would only prove we cannot read the engine.
 	self:RegisterScenario( "mouth_lifecycle", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Reg = horde.Registry.New()
+		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
 		-- Through the surface gate: SpawnMouth refuses a point the engine would not build on,
@@ -1302,7 +1302,7 @@ function Plugin:InitialiseScenarios()
 	-- resolving after DestroyEntity would leak a mouth on every stop.
 	self:RegisterScenario( "teardown_destroys_what_we_made", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Reg = horde.Registry.New()
+		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
 		local Anchors = SurfaceAnchors(2)
@@ -1371,7 +1371,7 @@ function Plugin:InitialiseScenarios()
 
 		local SavedRegistry, SavedSpawner = horde.HordeRegistry, horde.HordeSpawner
 
-		horde.HordeRegistry = horde.Registry.New()
+		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineIsLive)
 		horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function(Message) print("[TEST] " .. Message) end)
 
 		horde.Machine:Start(Shared.GetTime())
@@ -1749,7 +1749,7 @@ function Plugin:InitialiseScenarios()
 
 		-- The control: a spawner of our own that nobody ticks. It never registers with the
 		-- plugin and its Reveal is off, so nothing can reveal its mouth by accident.
-		local Quiet = horde.Registry.New()
+		local Quiet = horde.Registry.New(horde.Registry.EngineIsLive)
 		local SpawnQuiet = horde.Spawner.New(Quiet, Log, false)
 
 		-- The subject: installed as the plugin's own spawner so the production tick pumps
@@ -1757,7 +1757,7 @@ function Plugin:InitialiseScenarios()
 		-- the same discipline wave_slice_end_to_end documents - the tick is global, so
 		-- anything that runs it must own the bookkeeping it writes.
 		local SavedRegistry, SavedSpawner, SavedCount = horde.HordeRegistry, horde.HordeSpawner, horde.HordeRegistry:Count()
-		local Loud = horde.Registry.New()
+		local Loud = horde.Registry.New(horde.Registry.EngineIsLive)
 		local SpawnLoud = horde.Spawner.New(Loud, Log, true)
 
 		horde.HordeRegistry, horde.HordeSpawner = Loud, SpawnLoud
@@ -2107,6 +2107,254 @@ function Plugin:InitialiseScenarios()
 				tostring(Index), Placement.Axis(Point, "x", 1), Placement.Axis(Point, "y", 2),
 				Placement.Axis(Point, "z", 3), string.format("%.1f", Candidate.distance or -1)))
 		end
+	end )
+
+	--- The registry's liveness contract, with the resolver injected. This is the accounting
+	--- behind three field symptoms at once - mouths vanishing from the marine minimap after a
+	--- different mouth was killed, /horde status reporting 3/3 on an empty map, and a teardown
+	--- that called two player-killed corpses a failure - so the contract gets asserted directly
+	--- rather than only through whichever caller happened to notice.
+	self:RegisterScenario( "registry_liveness_is_the_engines_answer", false, function()
+		local R = Shine.Plugins.hordemode.Registry
+		local Dead = {}
+		local Reg = R.New(function(Entry)
+			return Dead[Entry.id] ~= true
+		end)
+
+		local function Double(Id)
+			return {
+				GetId = function() return Id end,
+				--- Killing a live double is allowed and makes it dead. Killing one that is already
+				--- dead is the bug this scenario exists to catch, so the double reports itself
+				--- loudly instead of failing quietly somewhere downstream.
+				Kill = function()
+					if Dead[Id] then
+						error("a destroyed entity was dereferenced")
+					end
+
+					Dead[Id] = true
+				end,
+			}
+		end
+
+		local A = Reg:Register(Double(10), R.Kind.Mouth)
+		local B = Reg:Register(Double(11), R.Kind.Mouth)
+
+		Assert.Equal( 2, Reg:CountByKind(R.Kind.Mouth), "both counted while the world has them" )
+
+		Dead[A] = true
+
+		Assert.Equal( 1, Reg:CountByKind(R.Kind.Mouth), "a killed mouth is not a mouth" )
+
+		local Visited = 0
+
+		Reg:IterateByKind(R.Kind.Mouth, function()
+			Visited = Visited + 1
+		end)
+
+		Assert.Equal( 1, Visited, "iteration never hands a corpse to a caller about to dereference it" )
+		Assert.Equal( 2, #Reg:GetEverIds(), "the id history still remembers both: we did make them" )
+
+		-- Pruning is the tick's job. It drops what the engine already removed and keeps the
+		-- history, so a corpse cannot delete the evidence that we made the thing at all.
+		Assert.Equal( 1, Reg:PruneDead(), "prune drops what the engine already removed" )
+		Assert.Equal( 1, Reg:CountByKind(R.Kind.Mouth), "and the count is the survivor" )
+		Assert.Equal( 2, #Reg:GetEverIds(), "the history survives the prune" )
+
+		Reg:Clear()
+		Assert.Equal( 0, #Reg:GetEverIds(), "a new round starts with a clean history" )
+	end )
+
+	--- The playtest itself, headless: two real mouths, a player's bullet in one of them, and
+	--- everything the tick does afterwards has to survive it. Before the fix the reveal pass
+	--- threw on the corpse (spawner.lua:76), which killed the tick - so the two living mouths
+	--- lost their markers when detection expired 1.5 s later and the prune that would have
+	--- corrected the status never ran.
+	self:RegisterScenario( "killing_a_mouth_keeps_the_tick_and_the_map_healthy", false, function()
+		local horde = Shine.Plugins.hordemode
+		local SavedReg, SavedSpawn = horde.HordeRegistry, horde.HordeSpawner
+		local SavedPool, SavedActive = horde.Machine.MouthsPool, horde.Machine.MouthsActive
+		local Reg, Spawn
+
+		local function Run()
+			Reg = horde.Registry.New(horde.Registry.EngineIsLive)
+			Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end, true)
+
+			horde.HordeRegistry, horde.HordeSpawner = Reg, Spawn
+
+			local Anchors = SurfaceAnchors(2)
+
+			Assert.True( #Anchors >= 2, "two buildable surfaces for the paired test" )
+
+			--- Two mouths, both registered by the pump, and their ids. Reused because the claims
+			--- below need the same starting world twice: once with a corpse on the books (what
+			--- teardown sees) and once after the tick has pruned (what the status line sees).
+			local function MakePair()
+				local A = Spawn:SpawnMouth(Anchors[1])
+				local B = Spawn:SpawnMouth(Anchors[2])
+
+				Assert.NotNil( A, "mouth A created" )
+				Assert.NotNil( B, "mouth B created" )
+
+				Spawn:Pump()
+
+				local Pair = Reg:GetAllIds()
+
+				Assert.Equal( 2, #Pair, "both registered by the pump" )
+
+				return Pair
+			end
+
+			--- Phase A - teardown's accounting with the corpse still on the books. This is the
+			--- line Arian's run logged as "teardown FAILED for 2 entries": a mouth the player
+			--- killed is not a failure to destroy, it is the outcome we asked for.
+			local Ids = MakePair()
+
+			horde.Machine.MouthsPool = 2
+
+			DestroyEntity(Shared.GetEntity(Ids[1]))
+
+			--- The reveal pass, corpse included in the registry. Before the fix this threw at
+			--- spawner.lua:76 and took the whole world tick with it, so the mouth he did NOT shoot
+			--- lost its marker 1.5 s later and the status kept saying 2/2.
+			local OkReveal, Revealed = pcall(function()
+				return Spawn:RefreshReveal()
+			end)
+
+			Assert.True( OkReveal, "re-asserting the reveal must not throw on a mouth that is gone: " ..
+				tostring(Revealed) )
+			Assert.Equal( 1, Revealed, "and the surviving mouth keeps its marker - the minimap claim" )
+
+			local Destroyed, Failed, Total, IdsOut, Gone = horde.DestroyAll(Reg, nil, nil)
+
+			Assert.Equal( 2, Total, "both were on the books to be accounted for" )
+			Assert.Equal( 1, Gone, "the killed one is reported as already gone" )
+			Assert.Equal( 0, #Failed, "not as a failure, on a round that went right" )
+			Assert.Equal( 1, Destroyed.mouth or 0, "the survivor was destroyed by us" )
+			Assert.Nil( Shared.GetEntity(Ids[2]), "and the world agrees it is gone" )
+			Assert.Equal( 2, #IdsOut, "both ids handed to the leak check" )
+			Assert.Equal( 2, #Reg:GetEverIds(), "the history keeps the corpse: we did make it" )
+
+			--- Phase B - the tick, which is what holds the markers up through a live round.
+			local Pair = MakePair()
+
+			horde.Machine.MouthsPool = 2
+
+			DestroyEntity(Shared.GetEntity(Pair[1]))
+
+			local OkTick, TickErr = pcall(function()
+				horde:HordeTick()
+			end)
+
+			Assert.True( OkTick, "the world tick survives it: " .. tostring(TickErr) )
+			Assert.Equal( 1, Reg:CountByKind("mouth"), "the tick pruned the corpse it was told about" )
+			Assert.Equal( 1, horde.Machine.MouthsActive, "and refreshed the count the status reads" )
+
+			local Line = horde:BuildStatusLine(horde.Triggers.TakeSnapshot(nil), horde.Machine,
+				horde.HordeConfig.Resolve(Shared.GetMapName()), Shared.GetTime(), Reg, horde.HordeTakeover)
+
+			Assert.True( Line:find("mouths=1/2") ~= nil, "status says one of two is left, not 2/2: " .. Line )
+
+			horde.DestroyAll(Reg, nil, nil)
+
+			Assert.Equal( 0, Reg:Count(), "and the scenario leaves nothing behind" )
+			Assert.Nil( Shared.GetEntity(Pair[2]), "the second survivor is out of the world too" )
+		end
+
+		-- Restore before anything can fail: a scenario that leaves the plugin pointing at its
+		-- private registry would make every later teardown check someone else's bookkeeping.
+		local Ok, Err = pcall(Run)
+
+		horde.HordeRegistry, horde.HordeSpawner = SavedReg, SavedSpawn
+		horde.Machine.MouthsPool, horde.Machine.MouthsActive = SavedPool, SavedActive
+
+		if not Ok then
+			error(Err)
+		end
+	end )
+
+	--- The order of the handback, which is the whole of the "marines won" bug: releasing the
+	--- win check into a Started round with no aliens leaves vanilla exactly one end to reach.
+	--- Gamerules is faked here - a real ResetGame mid-suite would take the world out from under
+	--- every later scenario, and the claim under test is the ORDER, not the engine's arithmetic.
+	self:RegisterScenario( "teardown_resets_the_world_before_releasing_the_win_check", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Order = {}
+
+		local function FakeRules()
+			return {
+				preventGameEnd = true,
+				gameState = kGameState.Started,
+				ResetGame = function(Self)
+					Order[#Order + 1] = "reset"
+					Self.gameState = kGameState.NotStarted
+				end,
+				SetPreventGameEnd = function(Self, State)
+					Order[#Order + 1] = "switch:" .. tostring(State)
+					Self.preventGameEnd = State
+				end,
+			}
+		end
+
+		--- Every piece of shared state is swapped for a private copy and handed back BEFORE any
+		--- assertion. Teardown reaches into the plugin's registry, spawner and machine, and two
+		--- earlier scenarios still have deferred checks outstanding at this point in the run.
+		--- That is not hypothetical: the first version of this scenario destroyed another
+		--- scenario's live mouth and zeroed its wave counters, and both failures read as bugs in
+		--- the code under test rather than as interference. See restore-before-you-assert.
+		local SavedRules, SavedStarted = GetGamerules, horde.HordeRoundStarted
+		local SavedMachine, SavedReg, SavedSpawn = horde.Machine, horde.HordeRegistry, horde.HordeSpawner
+		local Rules = FakeRules()
+
+		horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
+		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineIsLive)
+		horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function() end, false)
+
+		horde.HordeRoundStarted = true
+		GetGamerules = function() return Rules end
+
+		horde.Machine:Stop("test handback", Shared.GetTime())
+
+		local Machine = horde.Machine
+
+		local Ok, Err = pcall(function()
+			horde:Teardown(Shared.GetTime())
+		end)
+
+		GetGamerules = SavedRules
+		horde.HordeRoundStarted = SavedStarted
+		horde.Machine, horde.HordeRegistry, horde.HordeSpawner = SavedMachine, SavedReg, SavedSpawn
+
+		Assert.True( Ok, "teardown survived the handback: " .. tostring(Err) )
+		Assert.Equal( "reset", Order[1], "the world goes back to vanilla first" )
+		Assert.Equal( "switch:nil", Order[2], "and only then does vanilla get the win check back" )
+		Assert.Equal( kGameState.NotStarted, Rules.gameState, "so the switch comes off on a round that cannot end" )
+		Assert.True( Machine:Is(horde.Phase.Inactive), "and the machine is idle again" )
+
+		--- The gate on the other side: a horde that never took a round over must not reset a game
+		--- it did not start - `/horde stop` in a lobby is not a server-wide reset.
+		local Untouched, UntouchedOrder = FakeRules(), {}
+
+		Untouched.ResetGame = function()
+			UntouchedOrder[#UntouchedOrder + 1] = "reset"
+		end
+
+		Untouched.SetPreventGameEnd = function()
+			UntouchedOrder[#UntouchedOrder + 1] = "switch"
+		end
+
+		horde.HordeRoundStarted = false
+		GetGamerules = function() return Untouched end
+
+		local Handed, Reason = horde:HandBackWorld()
+
+		GetGamerules = SavedRules
+		horde.HordeRoundStarted = SavedStarted
+
+		Assert.False( Handed, "nothing to hand back" )
+		Assert.Equal( 0, #UntouchedOrder, "no ResetGame and no switch on a round we never owned" )
+		Assert.Equal( kGameState.Started, Untouched.gameState, "a live round we never owned is left alone" )
+		Assert.True( Reason:find("never took the round over") ~= nil, "saying why: " .. tostring(Reason) )
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()

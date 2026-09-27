@@ -30,12 +30,58 @@ Registry.__index = Registry
 
 Registry.Kind = { Bot = "bot", Mouth = "mouth", Entity = "entity" }
 
-function Registry.New()
+local function AlwaysAlive(Entry)
+	return Entry ~= nil and Entry.ref ~= nil
+end
+
+--- The engine's answer to "does the world still have this thing?".
+---
+--- Judged by ID and never by the stored handle: touching a destroyed Spark object throws on
+--- the FIRST field access ("Attempt to access an object that no longer exists (was type
+--- TunnelEntrance)"), and a throw inside the 1 s world tick cost more than one entry - it took
+--- the reveal *and* the prune with it. Measured 2026-09-26: a player killed one of three
+--- mouths, the other two vanished from the marine minimap 1.5 s later when their detection
+--- expired with nothing left to re-assert them, and /horde status went on reporting 3/3 on an
+--- empty map. One dead handle, three symptoms.
+---
+--- Wrapped in pcall on purpose. This is the one place an engine surprise is expected, and its
+--- contract is a boolean: an object that throws when asked whether it exists does not get to
+--- be touched again by anything downstream.
+function Registry.EngineIsLive(Entry)
+	if not Entry or not Entry.ref then
+		return false
+	end
+
+	local Ok, Alive = pcall(function()
+		if Entry.kind == Registry.Kind.Bot then
+			-- Bots by their player, not their entity: after Disconnect() the PlayerBot id
+			-- still resolves for a tick (measured 2026-09-21, see Prune's note).
+			local Player = Entry.ref.GetPlayer and Entry.ref:GetPlayer()
+
+			return Player ~= nil and not (Player.GetIsDestroyed and Player:GetIsDestroyed())
+		end
+
+		return Entry.id ~= nil and Shared.GetEntity(Entry.id) ~= nil
+	end)
+
+	return Ok and Alive and true or false
+end
+
+--- `IsLive` is injected because "is it still there" is a question about the engine, and a unit
+--- test has no engine to ask: doubles keep the permissive default, production passes
+--- EngineIsLive. Everything the registry reports - counts, iteration, pruning - goes through
+--- it, so a corpse cannot be handed to a caller that is about to touch it.
+function Registry.New(IsLive)
 	local Self = setmetatable({}, Registry)
 
 	Self.Entries = {}        -- id -> { id, ref, kind }
 	Self.ByKind = {}         -- kind -> { id, ... } in insertion order
 	Self.NextLocalId = -1    -- negative: never collides with an entity id
+	Self.IsLive = IsLive or AlwaysAlive
+	-- Append-only: every id we ever registered this round, including ones the engine has
+	-- already removed. Teardown's leak check must ask about those too, or pruning a corpse
+	-- would quietly erase the evidence that we created it.
+	Self.EverIds = {}
 
 	return Self
 end
@@ -107,6 +153,7 @@ function Registry:Register(ref, Kind)
 	end
 
 	self.Entries[Id] = { id = Id, ref = ref, kind = Kind }
+	self.EverIds[Id] = true
 
 	local List = KindList(self, Kind)
 	List[#List + 1] = Id
@@ -171,7 +218,9 @@ function Registry:IterateByKind(Kind, Callback)
 	for _, Id in ipairs(Ids) do
 		local Entry = self.Entries[Id]
 
-		if Entry then
+		-- Only what the engine still has. Every consumer of this loop dereferences the ref,
+		-- and that is exactly the call that threw on a killed mouth.
+		if Entry and self.IsLive(Entry) then
 			Callback(Entry.ref, Entry.id, Entry.kind)
 			Count = Count + 1
 		end
@@ -180,10 +229,27 @@ function Registry:IterateByKind(Kind, Callback)
 	return Count
 end
 
+--- How many of this kind EXIST, not how many were registered. A mouth the player killed is
+--- not a mouth, and a status line that keeps counting it is the difference between telling the
+--- admin the wave is over and telling him 3/3.
 function Registry:CountByKind(Kind)
 	local List = self.ByKind[Kind]
 
-	return List and #List or 0
+	if not List then
+		return 0
+	end
+
+	local Count = 0
+
+	for Index = 1, #List do
+		local Entry = self.Entries[List[Index]]
+
+		if Entry and self.IsLive(Entry) then
+			Count = Count + 1
+		end
+	end
+
+	return Count
 end
 
 function Registry:Count()
@@ -200,6 +266,20 @@ function Registry:GetAllIds()
 	local Ids = {}
 
 	for Id in pairs(self.Entries) do
+		Ids[#Ids + 1] = Id
+	end
+
+	table.sort(Ids)
+
+	return Ids
+end
+
+--- Every id ever registered, sorted. The leak check uses this rather than the live entries:
+--- an id we created and the engine removed must still be asked about, or the removal hides it.
+function Registry:GetEverIds()
+	local Ids = {}
+
+	for Id in pairs(self.EverIds) do
 		Ids[#Ids + 1] = Id
 	end
 
@@ -238,6 +318,16 @@ function Registry:Prune(IsGone)
 	return Pruned
 end
 
+--- Drop everything the engine has already removed - a mouth a player killed, a bot that
+--- disconnected. The world tick calls this BEFORE it touches any ref, which is the ordering
+--- that was missing: reveal ran first, threw on a corpse, and the prune at the bottom of the
+--- same function never executed at all.
+function Registry:PruneDead()
+	return self:Prune(function(Ref, Id)
+		return not self.IsLive(self.Entries[Id])
+	end)
+end
+
 --- Hands back everything still tracked, so the caller can destroy it in order and
 --- only then empty the registry. Clearing before destroying would lose the evidence.
 function Registry:Drain()
@@ -257,11 +347,15 @@ function Registry:Drain()
 	return Entries
 end
 
+--- Round boundary: forget everything, including the append-only id history. Called when a new
+--- horde starts, so a leak from the previous round cannot be blamed on this one - and so the
+--- history cannot grow across rounds on a server that runs hordes all day.
 function Registry:Clear()
 	local Count = self:Count()
 
 	self.Entries = {}
 	self.ByKind = {}
+	self.EverIds = {}
 
 	return Count
 end

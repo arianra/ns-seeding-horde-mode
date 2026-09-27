@@ -101,10 +101,11 @@ function Plugin:OnWorldReady( gamerules )
 
 	-- Accounting truth for everything we spawn; the engine's bot count cannot tell
 	-- our bots from vanilla seeding ones (DESIGN.md:178,193).
-	self.HordeRegistry = Plugin.Registry.New()
+	self.HordeRegistry = Plugin.Registry.New(Plugin.Registry.EngineIsLive)
 
 	-- Q7q7: /horde IS the horde warmup, so the vanilla fill is held off for the
-	-- duration and handed back intact. Created here, engaged by i6a's wave loop.
+	-- duration and handed back intact. Engaged by ResetWorldForHorde, released by Teardown -
+	-- the pair has to be symmetric or the server's bot configuration stays at our zero.
 	self.HordeTakeover = Plugin.Takeover.New(self.BotController, self.HordeRegistry)
 
 	-- M4: mouths are created through the spawner, which queues them for registration
@@ -398,14 +399,22 @@ function Plugin:ResetWorldForHorde()
 	Plugin.DestroyAll(self.HordeRegistry,
 		self.HordeSpawner and self.HordeSpawner:TakePending() or nil, nil)
 
-	-- Vanilla fill: cap both teams to zero and update, then disconnect whoever is left.
-	-- The config zeros committed in L2 are what stop it refilling on the next map; this
-	-- is what clears THIS round.
-	if gamerules.SetMaxBots then
-		pcall(function() gamerules:SetMaxBots(0, false) end)
-		pcall(function() gamerules:SetMaxBots(0, true) end)
+	-- The vanilla fill is taken over, not overwritten. Engaging snapshots the server's real bot
+	-- configuration, holds the fill loop off, and caps it to zero; releasing at teardown is what
+	-- puts the bots back. The direct SetMaxBots(0) this replaces left the cap at zero for the rest
+	-- of the map's life - measured 2026-09-26, when /horde stop reported a clean teardown and no
+	-- bot ever returned. It also collapsed both commander flags into one value on the way down
+	-- (BotTeamController.lua:185-193), so a restore without a snapshot could not have put them
+	-- back even if it had remembered to try.
+	if self.HordeTakeover then
+		local Engaged, EngageReason = self.HordeTakeover:Engage()
+
+		if not Engaged then
+			self:Log("bot takeover refused: " .. tostring(EngageReason))
+		end
 	end
 
+	-- Whoever is still standing goes now; the cap only stops the NEXT one arriving.
 	if gServerBots then
 		for Index = #gServerBots, 1, -1 do
 			local Bot = gServerBots[Index]
@@ -426,6 +435,11 @@ function Plugin:ResetWorldForHorde()
 	-- (NS2Gamerules.lua:702), so engaging it first would be undone by the very
 	-- call that starts the round.
 	self:SuppressGameEnd()
+
+	-- We own the round now, and only we can give it back. Teardown's world handback is gated on
+	-- this flag: stopping a horde that never took a round over must not reset a game it did not
+	-- start.
+	self.HordeRoundStarted = true
 
 	return true, nil
 end
@@ -583,6 +597,19 @@ end
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
+	local Reg = self.HordeRegistry
+
+	--- Corpses leave the books FIRST, and the order is the whole fix. Reveal used to run above
+	--- the prune, threw on a mouth the player had just killed ("Attempt to access an object that
+	--- no longer exists"), and the throw took the rest of the tick with it: nothing was
+	--- re-asserted, so the two LIVING mouths blinked off the marine minimap when their 1.5 s
+	--- detection lapsed, and nothing was pruned, so /horde status went on reporting 3/3 on an
+	--- empty map. One dead handle, three symptoms, and a green suite because no scenario had ever
+	--- killed a mouth mid-round.
+	if Reg then
+		Reg:PruneDead()
+	end
+
 	if self.HordeSpawner then
 		self.HordeSpawner:Pump()
 
@@ -599,27 +626,10 @@ function Plugin:HordeTick()
 		self:SuppressGameEnd()
 	end
 
-	local Reg = self.HordeRegistry
-
+	-- Measured after the prune and the pump, so the status line reports what the engine has
+	-- rather than what we remember creating.
 	if Reg and self.Machine then
-		-- Prune below can drop dead refs, so the count is refreshed after it; keeping
-		-- the two adjacent is what makes the status line a measurement rather than a
-		-- number someone remembered to update.
 		self.Machine.MouthsActive = Reg:CountByKind("mouth")
-	end
-
-	if Reg then
-		Reg:Prune(function(Ref, Id)
-			-- Bots are judged by their player: after Disconnect() the entity id still
-			-- resolves for a tick (registry.lua:217). Mouths have no such alias.
-			if Reg:GetKind(Id) == "bot" then
-				local Player = Ref.GetPlayer and Ref:GetPlayer()
-
-				return not Player or (Player.GetIsDestroyed and Player:GetIsDestroyed()) or false
-			end
-
-			return Shared.GetEntity(Id) == nil
-		end)
 	end
 end
 
@@ -641,7 +651,7 @@ end
 --- Injectable on purpose: i7b asserts integrity against real entities without
 --- needing a live wave.
 function Plugin.DestroyAll(Reg, Pending, Log)
-	local Destroyed, Failed = {}, {}
+	local Destroyed, Failed, Gone = {}, {}, 0
 
 	local Entries = Reg and Reg:Drain() or {}
 
@@ -651,6 +661,10 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 
 	local Ids = {}
 
+	-- The registry's own resolver, when there is a registry: in the real plugin that is the
+	-- engine-backed one, and this loop has to agree with whatever counted them a tick ago.
+	local IsAlive = (Reg and Reg.IsLive) or Plugin.Registry.EngineIsLive
+
 	for _, Item in ipairs(Entries) do
 		local Ref = Item.ref
 		local Kind = Item.kind or "other"
@@ -659,24 +673,63 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 			Ids[#Ids + 1] = Item.id
 		end
 
-		local Ok, Err = pcall(function()
-			if Kind == "bot" and Ref.Disconnect then
-				Ref:Disconnect()
-			elseif Kind == "mouth" and Ref.Kill then
-				Ref:Kill()
-			end
-
-			DestroyEntity(Ref)
-		end)
-
-		if Ok then
-			Destroyed[Kind] = (Destroyed[Kind] or 0) + 1
+		if not IsAlive(Item) then
+			--- Already gone - the player killed it, or the engine removed it. That is the outcome
+			--- we asked for, not a failure, and counting it as one made a clean round look broken:
+			--- measured "teardown FAILED for 2 entries: ... Attempt to access an object that no
+			--- longer exists" over two mouths the player had shot.
+			Gone = Gone + 1
 		else
-			Failed[#Failed + 1] = string.format("%s: %s", Kind, tostring(Err))
+			local Ok, Err = pcall(function()
+				if Kind == "bot" and Ref.Disconnect then
+					Ref:Disconnect()
+				elseif Kind == "mouth" and Ref.Kill then
+					Ref:Kill()
+				end
+
+				DestroyEntity(Ref)
+			end)
+
+			if Ok then
+				Destroyed[Kind] = (Destroyed[Kind] or 0) + 1
+			else
+				Failed[#Failed + 1] = string.format("%s: %s", Kind, tostring(Err))
+			end
 		end
 	end
 
-	return Destroyed, Failed, #Entries, Ids
+	return Destroyed, Failed, #Entries, Ids, Gone
+end
+
+--- Put the world back the way we found it, and only when we were the ones who changed it.
+---
+--- `GetGameStarted()` is `gameState == kGameState.Started` and nothing else, so a Started round
+--- with no aliens left has exactly one end vanilla can reach: the aliens lose, the marines win,
+--- the map rotates. That is what /horde stop was doing - announcing a winner in a mode that has
+--- none and switching the map out from under the player who asked it to stop. ResetGame returns
+--- the round to NotStarted, vanilla walks it to WarmUp, and a horde can be run again on the same
+--- map. Same primitive the start used, so the two halves are symmetric instead of one of them
+--- improvised.
+function Plugin:HandBackWorld()
+	if not self.HordeRoundStarted then
+		return false, "horde never took the round over"
+	end
+
+	self.HordeRoundStarted = false
+
+	local gamerules = GetGamerules()
+
+	if not gamerules then
+		return false, "no gamerules to hand back"
+	end
+
+	local Ok, Err = pcall(function() gamerules:ResetGame() end)
+
+	if not Ok then
+		return false, string.format("ResetGame failed: %s", tostring(Err))
+	end
+
+	return true, nil
 end
 
 --- i7a: put the world back. RD6 sets the bar - destroy exactly our created set,
@@ -691,7 +744,7 @@ function Plugin:Teardown(Now)
 		return
 	end
 
-	local Destroyed, Failed, Total, Ids = Plugin.DestroyAll(self.HordeRegistry,
+	local Destroyed, Failed, Total, Ids, Gone = Plugin.DestroyAll(self.HordeRegistry,
 		self.HordeSpawner and self.HordeSpawner:TakePending() or nil, nil)
 
 	-- v0 restore is the bot controller only. Team resources and any other engine state
@@ -701,7 +754,15 @@ function Plugin:Teardown(Now)
 	if self.HordeTakeover then
 		Took = self.HordeTakeover:IsEngaged()
 
-		self.HordeTakeover:Release()
+		--- Releasing is what puts the server's bot configuration back, including the cap that
+		--- decides whether vanilla bots ever return after a horde. A takeover that was never
+		--- engaged used to read as "controller released=false" and nothing more, which is how
+		--- "the bot never returned" arrived here with no trace of why.
+		local Released, ReleaseReason = self.HordeTakeover:Release()
+
+		if Took and not Released then
+			self:Log("bot controller NOT handed back: " .. tostring(ReleaseReason))
+		end
 	end
 
 	Machine.MouthsPool = 0
@@ -727,22 +788,45 @@ function Plugin:Teardown(Now)
 
 	-- Poll our own ids, not the global entity count. Measured: destroying 2 mouths
 	-- while the count moved 245 -> 249, because unrelated engine churn dominates it.
-	-- Only "does this id still resolve" can actually catch a leak.
+	-- Only "does this id still resolve" can catch a leak - and it has to be every id we ever
+	-- registered, not just the ones still on the books: a corpse pruned mid-round must still be
+	-- asked about, or pruning would erase the evidence that we made the thing at all.
 	local Leaked = {}
+	local Seen = {}
 
 	for _, Id in ipairs(Ids) do
+		Seen[Id] = true
+	end
+
+	if self.HordeRegistry then
+		for _, Id in ipairs(self.HordeRegistry:GetEverIds()) do
+			Seen[Id] = true
+		end
+	end
+
+	for Id in pairs(Seen) do
 		if Shared.GetEntity(Id) ~= nil then
 			Leaked[#Leaked + 1] = Id
 		end
 	end
 
+	--- The world goes back BEFORE suppression comes off. Releasing into a Started round with no
+	--- aliens is precisely the win /horde stop was announcing: CheckGameEnd needs
+	--- GetGameStarted(), and an emptied world has one end available - the aliens lose, the map
+	--- rotates. After ResetGame the round is NotStarted, so there is nothing for vanilla to
+	--- decide, and handing it the switch at that point is the honest reading of "as if it never
+	--- existed" (Q7).
+	local Handed, HandBackReason = self:HandBackWorld()
+
 	self:RestoreGameEnd("teardown")
 
-	self:Log(string.format("teardown %s: %s of %s destroyed (%s), controller released=%s, %s id(s) still live",
-		#Leaked == 0 and "PASS" or "FAIL",
-		tostring(Total - #Failed), tostring(Total),
+	self:Log(string.format("teardown %s: %s destroyed, %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, %s id(s) still live",
+		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",
+		tostring(Total - Gone - #Failed), tostring(Gone), tostring(#Failed), tostring(Total),
 		#Parts > 0 and table.concat(Parts, " ") or "nothing to destroy",
-		tostring(Took), tostring(#Leaked)))
+		tostring(Took),
+		Handed and "reset to NotStarted" or ("left as-is: " .. tostring(HandBackReason)),
+		tostring(#Leaked)))
 
 	if #Failed > 0 then
 		self:Log(string.format("teardown FAILED for %s entries: %s", tostring(#Failed), table.concat(Failed, "; ")))

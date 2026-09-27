@@ -73,13 +73,27 @@ end
 --- any team logic. Detection expires after 1.5 s on its own, so this must be re-asserted -
 --- see RefreshReveal.
 function Spawner:RevealMouth(Mouth)
-	if not Mouth or not Mouth.SetDetected then
+	if not Mouth then
 		return false
 	end
 
-	Mouth:SetDetected(true)
+	--- pcall rather than a bare field test, because `Mouth.SetDetected` IS the access that
+	--- throws on a destroyed entity - the exact line (spawner.lua:76) that took the world tick
+	--- down on 2026-09-26 and cost two living mouths their minimap markers. The registry now
+	--- refuses to hand a corpse to this loop, so what is left is the engine destroying one
+	--- between that check and this call, and the price of that must be one marker, not the
+	--- timer that holds every marker up.
+	local Ok, Revealed = pcall(function()
+		if not Mouth.SetDetected then
+			return false
+		end
 
-	return true
+		Mouth:SetDetected(true)
+
+		return true
+	end)
+
+	return Ok and Revealed and true or false
 end
 
 --- Re-assert the reveal on every live mouth this spawner owns. The plugin's 1 s tick is
@@ -94,6 +108,8 @@ function Spawner:RefreshReveal()
 
 	local Revealed = 0
 
+	-- IterateByKind only visits what the engine still has, so a mouth the player killed stops
+	-- being re-asserted the moment it stops existing - and no longer takes the tick with it.
 	self.Registry:IterateByKind("mouth", function(Ref)
 		if self:RevealMouth(Ref) then
 			Revealed = Revealed + 1
