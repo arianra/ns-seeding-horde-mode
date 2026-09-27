@@ -753,6 +753,83 @@ function Plugin:HandBackWorld()
 	return true, nil
 end
 
+--- Put the people somewhere neutral: every human goes to the spectator team, because after a stop
+--- nobody should be standing in a round that no longer exists, and the next `/horde` should begin
+--- from a join rather than from a marine that survived a reset.
+
+--- Bots are left to vanilla on purpose. The takeover release puts the server's own bot
+--- configuration back and `BotTeamController:UpdateBots` fills to the cap from the CURRENT team
+--- counts - move a bot to spectator and it stops counting toward its team, so the controller adds
+--- a replacement and the one we moved sits in spectator indefinitely. Humans carry no such
+--- bookkeeping. Note that a bot's virtual client owns a real Player entity, so "has a client" does
+--- not tell them apart; the `gServerBots` roster is the discriminator.
+---
+--- Players and the roster are injectable for the reason `DestroyAll`'s arguments are: the claim is
+--- about WHO gets moved, and a headless server has no humans to move.
+function Plugin:MovePlayersToSpectator(Rules, Players, Bots)
+	local gamerules = Rules or GetGamerules()
+
+	if not gamerules or not gamerules.JoinTeam then
+		return 0, 0, "no gamerules"
+	end
+
+	local BotPlayers = {}
+
+	for _, Bot in ipairs(Bots or gServerBots or {}) do
+		local Ok, Player = pcall(function()
+			return Bot.GetPlayer and Bot:GetPlayer()
+		end)
+
+		if Ok and Player then
+			BotPlayers[Player:GetId()] = true
+		end
+	end
+
+	local List = Players
+
+	if not List then
+		List = {}
+
+		for _, Player in ientitylist(Shared.GetEntitiesWithClassname("Player")) do
+			List[#List + 1] = Player
+		end
+	end
+
+	local Moved, Refused = 0, 0
+
+	for _, Player in ipairs(List) do
+		--- Three outcomes, named rather than inferred from a boolean: "skipped" is a rule working
+		--- and must not be reported as a failure, while a JoinTeam that returns false - or throws,
+		--- which is what a player mid-reset looks like - is a real refusal worth the log line.
+		local Ok, Outcome = pcall(function()
+			if BotPlayers[Player:GetId()] then
+				return "skipped"
+			end
+
+			if Player:GetTeamNumber() == kSpectatorIndex then
+				return "skipped"
+			end
+
+			-- force: the round is over whether or not the team logic would have let them choose.
+			if gamerules:JoinTeam(Player, kSpectatorIndex, true) then
+				return "moved"
+			end
+
+			return "refused"
+		end)
+
+		Outcome = Ok and Outcome or "refused"
+
+		if Outcome == "moved" then
+			Moved = Moved + 1
+		elseif Outcome == "refused" then
+			Refused = Refused + 1
+		end
+	end
+
+	return Moved, Refused, nil
+end
+
 --- i7a: put the world back. RD6 sets the bar - destroy exactly our created set,
 --- restore what we took over, and log a diff so a leak cannot pass silently.
 --- Runs while the machine is in Teardown and finishes with CompleteTeardown, so the
@@ -839,15 +916,23 @@ function Plugin:Teardown(Now)
 	--- existed" (Q7).
 	local Handed, HandBackReason = self:HandBackWorld()
 
+	--- Then the people, and before the switch comes back off: a spectator team cannot win or lose,
+	--- and releasing the win check while humans still stood on both sides of a round we had just
+	--- emptied is exactly the mistake this file already documents once.
+	local Moved, Refused, MoveReason = self:MovePlayersToSpectator()
+
 	self:RestoreGameEnd("teardown")
 
-	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, %s id(s) still live",
+	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, players=%s to spectator%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",
 		tostring(Total - Gone - #Failed), tostring(Husks), tostring(Gone), tostring(#Failed),
 		tostring(Total),
 		#Parts > 0 and table.concat(Parts, " ") or "nothing to destroy",
 		tostring(Took),
 		Handed and "reset to NotStarted" or ("left as-is: " .. tostring(HandBackReason)),
+		tostring(Moved),
+		(Refused > 0 or MoveReason) and string.format(" (%s refused%s)", tostring(Refused),
+			MoveReason and (", " .. MoveReason) or "") or "",
 		tostring(#Leaked)))
 
 	if #Failed > 0 then

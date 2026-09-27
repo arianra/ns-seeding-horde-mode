@@ -69,6 +69,19 @@ this document is the workflow that standard implies.
 | 28 | Anonymous game servers can pull **public** items (confirmed in our own `logs/workshop_log.txt`, 2-12 s). Server auto-download of Private/FriendsOnly items: **UNVERIFIED** | Valve `DownloadItem`; observed logs |
 | 29 | Iteration latency is real: UWE's bundled `WorkshopBackup` README reports Steam content failures ~1-in-4 normally, ~9-in-10 during sales, and servers lagging a just-uploaded version | `utils/WorkshopBackup/README.md` |
 
+### Game state, entity lifecycle and config persistence (measured 2026-09-26/27, build 14.13.x)
+
+| # | Fact | Source |
+|---|---|---|
+| 30 | `kGameState = {NotStarted, WarmUp, PreGame, Countdown, Started, Team1Won, Team2Won, Draw}` and **`GetGameStarted()` is `gameState == kGameState.Started` and nothing else** — so WarmUp/NotStarted can never end a round, while a Started round with an empty alien side has exactly one reachable end (marines win → map rotates) | `Globals.lua:265`, `NS2Gamerules.lua` `GetGameStarted`/`CheckGameEnd:1788` |
+| 31 | `ResetGame()` sets `NotStarted`, destroys unprotected entities, resets players, and **nils `preventGameEnd` itself**. It is therefore the handback primitive, and the win switch must be released *after* it | `NS2Gamerules.lua:496`, `:~702` |
+| 32 | A destroyed Spark entity **throws on the first field access** — `if not x or not x.Foo` *is* the dereference. A throw inside a Shine timer kills that timer, so one corpse in a periodic loop costs every entry that loop serves | measured: `Timer error: spawner.lua:76: Attempt to access an object that no longer exists (was type TunnelEntrance)` |
+| 33 | A **killed structure is present but not alive**: it stays in the entity list through its death sequence and reports `GetIsAlive() == false`. Counting existence instead of aliveness is why `/horde status` said 1/3 on an empty map | `Team.lua:502-510` (vanilla's own distinction) |
+| 34 | `botTeamController` is created in `NS2Gamerules:OnCreate()` — **per map, survives `ResetGame`** — so a snapshot taken at horde start is restorable at teardown. `SetMaxBots(n, com)` writes `com` to BOTH commander flags and removes bots immediately at 0; `updateLock` is a counter whose `EnableUpdate` asserts `>= 0`; `GetUpdateEnabled()` is `MaxBots > 0 and updateLock == 0` | `NS2Gamerules.lua:185`, `bots/BotTeamController.lua:140-193` |
+| 35 | **Shine writes the plugin config back from the table it loaded**: a key absent from `Plugin.DefaultConfig` is deleted from the JSON on the next boot, and a value a sanitizer computed wrongly is persisted as if it had been chosen. It also does **not** deep-merge defaults under the file — the file's table replaces ours wholesale | measured twice: `BandLineFactor` persisted as 0; `RunHandback` silently dropped |
+| 36 | A bot's virtual client owns a real `Player` entity, so "has a client" does not distinguish humans from bots; the `gServerBots` roster does. Bots also count as players in `Team:CountPlayers` | `Team.lua:126-134`, observed in teardown |
+| 37 | `Pathing.GetPathPoints`/`GetPathPointFrom` **always include the start point**, so a `CommandStructure` origin (inside its own footprint, mesh carved out) cannot be a path start — snap to the mesh first. Such queries are annotated `"Expensive !!!"` | `Pathing.lua:171-177`, `BotUtils.lua:357` |
+
 ---
 
 ## 2. The architecture

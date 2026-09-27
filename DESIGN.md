@@ -197,6 +197,19 @@ returns untouched) — the "as if it never existed" invariant extended to
 bot-management state. Teardown trigger distinguishes OUR bots
 (HordeRegistry) from any other virtual client. Bead 7q7 CLOSED.
 
+**Teardown order (DECIDED 2026-09-27, amends Q7's "players stay on chosen team"):** the handback
+is an ordered sequence, because two of its steps can end the game if they happen in the wrong
+order —
+`destroy our created set` → `release the bot takeover` → `reset the world (ResetGame → NotStarted)`
+→ `move every human to spectator` → `release the win switch (preventGameEnd)`.
+Releasing the switch into a `Started` round with no aliens is precisely a marine win plus a map
+rotation (fact: `GetGameStarted()` is `kGameState.Started` and nothing else), which is what
+`/horde stop` did in the first playtest. Humans go to spectator rather than back to their teams:
+after a reset nobody should be standing in a round that no longer exists, and the next `/horde`
+starts from a join. **Bots are left to vanilla** — the released controller fills to the restored
+cap from current team counts, so moving a bot to spectator makes it stop counting and gets it
+replaced, leaving the moved one spectating forever.
+
 ## 5. Economy
 
 **Team resources** (chair spending, intermission only):

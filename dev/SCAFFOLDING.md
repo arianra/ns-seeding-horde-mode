@@ -197,7 +197,24 @@ auto-downloads to a connecting client" is the pipeline's remaining unproven assu
 - Never assert against **injected** state when the claim is about real state.
 - Never read state a **previous run** could have written; the engine log rotates at boot.
 - A new check must be **demonstrated to fail** before it is allowed to pass.
-- A scenario that mutates shared plugin state must restore it — teardown is global by design.
+- A scenario that mutates shared plugin state must restore it — teardown is global by design, and
+  two scenarios here first "failed" because one of them destroyed another's live mouth or zeroed
+  its wave counters while a deferred check was still outstanding.
+- **A run mode must be proven by output only that mode can produce.** `--handback` reported a green
+  57-scenario suite twice because the boot script replaced the config key that selected it: a filter
+  that selects nothing still prints `ALL-DONE`, and "0 failed" over a run that never executed the
+  probe is indistinguishable from a probe that passed.
+- **Assert properties across runs, not just within one.** Five placement assertions pinned a single
+  draw and all passed while every boot produced the same three rooms. Variety, reproducibility and
+  seed-spread are only visible when a test compares two draws.
+- **A test double must model the transition, not the error.** A double whose `Kill` always threw
+  made the *live* entity "fail" too, and the assertion caught the test instead of the code. Same for
+  liveness: give doubles a state, not a boolean.
+- Never let a test's premise depend on **same-tick entity creation**. A `PlayerBot` made in a
+  scenario body is not guaranteed enumerable in that body; stub the collaborator whose call order
+  you are testing, and prove its behaviour in a separate scenario with injected arguments.
+- Anything that computes a value can also **store** it: after changing a sanitizer or a config
+  writer, check what the tool has already written to disk, not only what it will write next.
 
 ## 9. Never
 
@@ -207,3 +224,8 @@ auto-downloads to a connecting client" is the pipeline's remaining unproven assu
 - Kill processes by name, or restart the server while someone is connected.
 - Press Build in LaunchPad (see §3).
 - Point a dev tool at the live config, or default to it.
+- Let two scripts own the same file. Whoever writes last wins and the other's change is invisible:
+  `server-start.sh` replaces `HordeTest.json` wholesale, so a mode patched into it by `test.sh`
+  silently vanished. One writer, complete state, every time.
+- Ship a "random" generator without checking its first output. Un-warmed MINSTD put 200 consecutive
+  seeds into one decile, because a linear generator's first value is a function of its seed.

@@ -6,9 +6,13 @@ Written 2026-09-21 after an agent broke Arian's ability to play the game.
 ## The rule
 
 **Never write inside content another tool owns.** Dev tooling may write to exactly three
-places: the repo, the dev server's own config tree (`D:\games\ns2hordetest\cfg`), and NS2's
-per-user mod storage (`%APPDATA%\Natural Selection 2\...`), which the dedicated server
-populates for itself.
+places: the repo, the dev server's own config/mod tree, and NS2's per-user mod storage
+(`%APPDATA%\Natural Selection 2\...`), which the dedicated server populates for itself.
+
+The dev tree is **defined in one place — `dev/paths.sh`** (currently
+`D:\games\horde\server\{cfg,mods}`, port 27025/27026). Scripts take it from there; do not
+hard-code a dev path in prose or in a script, because this document carried a stale one
+(`D:\games\ns2hordetest\cfg`) long after that tree stopped being used.
 
 Everything below is **read-only to us**, no matter how it makes a local test pass:
 
