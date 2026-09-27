@@ -291,6 +291,13 @@ Starter schema (full proposal in levers note §6):
                // extents, capsule overlap) - a Location marker's origin is a volume, not a surface.
                // The "never in base" rule is therefore a SEPARATE straight-line bound, since a
                // route can leave the room, loop, and return: BandLineFactor 0.5 x BandMin.
+               // "Procedural" means per-wave, not per-map: the sweep is rotated and its rings
+               // jittered from a seed (Placement.SeedFor = wall clock + uptime + wave, logged as
+               // seed= so a reported wave can be replayed), and the sector fill takes the leftover
+               // FURTHEST from what is already chosen. Bearing sectors alone were satisfied by two
+               // mouths 11 m apart in one corridor, and an unseeded grid gave every boot the same
+               // three rooms - both reported from the chair, both invisible to assertions that
+               // looked at one draw at a time.
                "HPCurve": {"Start": 4, "End": 1, "Bezier": [0.25,0.1,0.25,1]},
                "KillAllBonus": 30, "RebuildOnIntermission": true },
   "Teardown": { "AssertEntityDiff": true },

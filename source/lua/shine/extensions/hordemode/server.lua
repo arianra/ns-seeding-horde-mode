@@ -101,7 +101,7 @@ function Plugin:OnWorldReady( gamerules )
 
 	-- Accounting truth for everything we spawn; the engine's bot count cannot tell
 	-- our bots from vanilla seeding ones (DESIGN.md:178,193).
-	self.HordeRegistry = Plugin.Registry.New(Plugin.Registry.EngineIsLive)
+	self.HordeRegistry = Plugin.Registry.New(Plugin.Registry.EngineStateOf)
 
 	-- Q7q7: /horde IS the horde warmup, so the vanilla fill is held off for the
 	-- duration and handed back intact. Engaged by ResetWorldForHorde, released by Teardown -
@@ -520,7 +520,17 @@ end
 --- this is the bead that makes /horde observable in-world.
 function Plugin:BeginWave(Config)
 	local Machine = self.Machine
-	local Chosen, Base, RawCount, BandedCount, Stats = Plugin.Placement.Collect(Config)
+
+	--- A fresh draw per wave, seeded and logged. The first version swept a fixed grid and then took
+	--- the nearest candidate per sector, so every wave on every boot landed in the same rooms -
+	--- reported from the chair as "surprisingly in the exact same positions". The seed goes in the
+	--- log because a placement someone reports has to be reproducible: the coordinates say where a
+	--- mouth ended up, only the seed says why that one.
+	local Seed = Plugin.Placement.SeedFor(Machine and Machine:GetWave() or 1,
+		Shared.GetSystemTime(), Shared.GetTime())
+	local Random = Plugin.Placement.NewRandom(Seed)
+
+	local Chosen, Base, RawCount, BandedCount, Stats = Plugin.Placement.Collect(Config, nil, nil, Random)
 
 	if not Base then
 		self:Log("placement: no base anchor on this map, so the band exclusion is off")
@@ -573,9 +583,9 @@ function Plugin:BeginWave(Config)
 			table.concat(Refused, "; "), tostring(Waves.BandMin), tostring(Waves.BandMax),
 			tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
 	else
-		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s",
+		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s seed=%s",
 			tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
-			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or ""))
+			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed)))
 
 		-- "placed", not "opened": nothing comes out of a mouth until the bot spawner
 		-- (i5a) exists, and saying opened oversells what the player is about to see.
@@ -651,7 +661,7 @@ end
 --- Injectable on purpose: i7b asserts integrity against real entities without
 --- needing a live wave.
 function Plugin.DestroyAll(Reg, Pending, Log)
-	local Destroyed, Failed, Gone = {}, {}, 0
+	local Destroyed, Failed, Husks, Gone = {}, {}, 0, 0
 
 	local Entries = Reg and Reg:Drain() or {}
 
@@ -663,32 +673,43 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 
 	-- The registry's own resolver, when there is a registry: in the real plugin that is the
 	-- engine-backed one, and this loop has to agree with whatever counted them a tick ago.
-	local IsAlive = (Reg and Reg.IsLive) or Plugin.Registry.EngineIsLive
+	local StateOf = (Reg and Reg.StateOf) or Plugin.Registry.EngineStateOf
+	local Standing, Vanished = Plugin.Registry.Alive, Plugin.Registry.Gone
 
 	for _, Item in ipairs(Entries) do
 		local Ref = Item.ref
 		local Kind = Item.kind or "other"
+		local State = StateOf(Item)
 
 		if Item.id then
 			Ids[#Ids + 1] = Item.id
 		end
 
-		if not IsAlive(Item) then
-			--- Already gone - the player killed it, or the engine removed it. That is the outcome
-			--- we asked for, not a failure, and counting it as one made a clean round look broken:
-			--- measured "teardown FAILED for 2 entries: ... Attempt to access an object that no
-			--- longer exists" over two mouths the player had shot.
+		if State == Vanished then
+			--- Fully gone - the engine finished it. That is the outcome we asked for, not a
+			--- failure, and counting it as one made a clean round look broken: measured
+			--- "teardown FAILED for 2 entries: ... Attempt to access an object that no longer
+			--- exists" over two mouths the player had shot.
 			Gone = Gone + 1
 		else
-			local Ok, Err = pcall(function()
-				if Kind == "bot" and Ref.Disconnect then
-					Ref:Disconnect()
-				elseif Kind == "mouth" and Ref.Kill then
-					Ref:Kill()
-				end
+			--- Two paths, one obligation. A husk (killed, still in the entity list through its
+			--- death sequence) is not killed again - it is only removed, because "as if it never
+			--- existed" is ours to deliver and the engine would otherwise leave it standing there
+			--- behind a teardown that logged PASS. The kill and the removal are separate pcalls so
+			--- that a refusal to die cannot skip the removal.
+			if State == Standing then
+				pcall(function()
+					if Kind == "bot" and Ref.Disconnect then
+						Ref:Disconnect()
+					elseif Ref.Kill then
+						Ref:Kill()
+					end
+				end)
+			else
+				Husks = Husks + 1
+			end
 
-				DestroyEntity(Ref)
-			end)
+			local Ok, Err = pcall(DestroyEntity, Ref)
 
 			if Ok then
 				Destroyed[Kind] = (Destroyed[Kind] or 0) + 1
@@ -698,7 +719,7 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 		end
 	end
 
-	return Destroyed, Failed, #Entries, Ids, Gone
+	return Destroyed, Failed, #Entries, Ids, Gone, Husks
 end
 
 --- Put the world back the way we found it, and only when we were the ones who changed it.
@@ -744,7 +765,7 @@ function Plugin:Teardown(Now)
 		return
 	end
 
-	local Destroyed, Failed, Total, Ids, Gone = Plugin.DestroyAll(self.HordeRegistry,
+	local Destroyed, Failed, Total, Ids, Gone, Husks = Plugin.DestroyAll(self.HordeRegistry,
 		self.HordeSpawner and self.HordeSpawner:TakePending() or nil, nil)
 
 	-- v0 restore is the bot controller only. Team resources and any other engine state
@@ -820,9 +841,10 @@ function Plugin:Teardown(Now)
 
 	self:RestoreGameEnd("teardown")
 
-	self:Log(string.format("teardown %s: %s destroyed, %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, %s id(s) still live",
+	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",
-		tostring(Total - Gone - #Failed), tostring(Gone), tostring(#Failed), tostring(Total),
+		tostring(Total - Gone - #Failed), tostring(Husks), tostring(Gone), tostring(#Failed),
+		tostring(Total),
 		#Parts > 0 and table.concat(Parts, " ") or "nothing to destroy",
 		tostring(Took),
 		Handed and "reset to NotStarted" or ("left as-is: " .. tostring(HandBackReason)),

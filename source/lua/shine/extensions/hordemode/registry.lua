@@ -30,54 +30,102 @@ Registry.__index = Registry
 
 Registry.Kind = { Bot = "bot", Mouth = "mouth", Entity = "entity" }
 
-local function AlwaysAlive(Entry)
-	return Entry ~= nil and Entry.ref ~= nil
-end
+--- Three states, because two are not enough. A killed structure is NOT gone: it stays in the
+--- entity list through its death sequence and reports `GetIsAlive() == false` (that is exactly
+--- what vanilla uses to tell the two apart - `Team:GetNumAliveCommandStructures`,
+--- Team.lua:502-510). Measured 2026-09-27: `/horde status` went on saying `mouths=1/3` after the
+--- last mouth had been shot, and teardown logged `1 destroyed ... of 1 tracked` for a husk.
+--- Counting a husk as live lies to the player; counting it as *nothing* would leave it standing
+--- in the world after a teardown that claimed PASS. So the difference is carried, not collapsed.
+Registry.Alive = "alive"
+Registry.Dead = "dead"
+Registry.Gone = "gone"
 
---- The engine's answer to "does the world still have this thing?".
----
---- Judged by ID and never by the stored handle: touching a destroyed Spark object throws on
---- the FIRST field access ("Attempt to access an object that no longer exists (was type
---- TunnelEntrance)"), and a throw inside the 1 s world tick cost more than one entry - it took
---- the reveal *and* the prune with it. Measured 2026-09-26: a player killed one of three
---- mouths, the other two vanished from the marine minimap 1.5 s later when their detection
---- expired with nothing left to re-assert them, and /horde status went on reporting 3/3 on an
---- empty map. One dead handle, three symptoms.
----
---- Wrapped in pcall on purpose. This is the one place an engine surprise is expected, and its
---- contract is a boolean: an object that throws when asked whether it exists does not get to
---- be touched again by anything downstream.
-function Registry.EngineIsLive(Entry)
+local function AlwaysThere(Entry)
 	if not Entry or not Entry.ref then
-		return false
+		return Registry.Gone
 	end
 
-	local Ok, Alive = pcall(function()
-		if Entry.kind == Registry.Kind.Bot then
-			-- Bots by their player, not their entity: after Disconnect() the PlayerBot id
-			-- still resolves for a tick (measured 2026-09-21, see Prune's note).
-			local Player = Entry.ref.GetPlayer and Entry.ref:GetPlayer()
-
-			return Player ~= nil and not (Player.GetIsDestroyed and Player:GetIsDestroyed())
-		end
-
-		return Entry.id ~= nil and Shared.GetEntity(Entry.id) ~= nil
-	end)
-
-	return Ok and Alive and true or false
+	return Registry.Alive
 end
 
---- `IsLive` is injected because "is it still there" is a question about the engine, and a unit
---- test has no engine to ask: doubles keep the permissive default, production passes
---- EngineIsLive. Everything the registry reports - counts, iteration, pruning - goes through
---- it, so a corpse cannot be handed to a caller that is about to touch it.
-function Registry.New(IsLive)
+--- The engine's answer to "what is this thing to me now?".
+---
+--- Judged by ID and never by the stored handle: touching a destroyed Spark object throws on the
+--- FIRST field access ("Attempt to access an object that no longer exists (was type
+--- TunnelEntrance)"), and a throw inside the 1 s world tick cost more than one entry - it took
+--- the reveal *and* the prune with it. Measured 2026-09-26: a player killed one of three mouths,
+--- the other two lost their minimap markers 1.5 s later when their detection expired with nothing
+--- left to re-assert them, and status reported 3/3 on an empty map.
+---
+--- Wrapped in pcall: this is the one place an engine surprise is expected, and an object that
+--- throws when asked whether it exists does not get to be touched by anything downstream.
+function Registry.EngineStateOf(Entry)
+	if not Entry or not Entry.ref then
+		return Registry.Gone
+	end
+
+	local Ok, State = pcall(function()
+		if Entry.kind == Registry.Kind.Bot then
+			-- Bots by their player, not their entity: after Disconnect() the PlayerBot id still
+			-- resolves for a tick (measured 2026-09-21, see Prune's note). A disconnected bot has
+			-- no husk to clean up, so Gone covers it.
+			local Player = Entry.ref.GetPlayer and Entry.ref:GetPlayer()
+
+			if not Player or (Player.GetIsDestroyed and Player:GetIsDestroyed()) then
+				return Registry.Gone
+			end
+
+			if Player.GetIsAlive and not Player:GetIsAlive() then
+				return Registry.Dead
+			end
+
+			return Registry.Alive
+		end
+
+		if not Entry.id then
+			return Registry.Gone
+		end
+
+		local Entity = Shared.GetEntity(Entry.id)
+
+		if not Entity then
+			return Registry.Gone
+		end
+
+		-- Structures only. Players and bots have no GetIsAlive; asking an entity that lacks it
+		-- would be a field access on something we have not checked the class of.
+		if Entity.GetIsAlive and not Entity:GetIsAlive() then
+			return Registry.Dead
+		end
+
+		return Registry.Alive
+	end)
+
+	if not Ok then
+		return Registry.Gone
+	end
+
+	return State
+end
+
+--- Boolean view, for callers that only ever ask "should I touch this".
+function Registry.EngineIsLive(Entry)
+	return Registry.EngineStateOf(Entry) == Registry.Alive
+end
+
+--- `StateOf` is injected because "what is this thing to me now" is a question about the engine,
+--- and a unit test has no engine to ask: doubles keep the permissive default, production passes
+--- EngineStateOf. Everything the registry reports - counts, iteration, pruning - and everything
+--- teardown decides - destroy, clean a husk, or report it already gone - goes through it, so a
+--- corpse cannot be handed to a caller about to dereference it.
+function Registry.New(StateOf)
 	local Self = setmetatable({}, Registry)
 
 	Self.Entries = {}        -- id -> { id, ref, kind }
 	Self.ByKind = {}         -- kind -> { id, ... } in insertion order
 	Self.NextLocalId = -1    -- negative: never collides with an entity id
-	Self.IsLive = IsLive or AlwaysAlive
+	Self.StateOf = StateOf or AlwaysThere
 	-- Append-only: every id we ever registered this round, including ones the engine has
 	-- already removed. Teardown's leak check must ask about those too, or pruning a corpse
 	-- would quietly erase the evidence that we created it.
@@ -218,9 +266,10 @@ function Registry:IterateByKind(Kind, Callback)
 	for _, Id in ipairs(Ids) do
 		local Entry = self.Entries[Id]
 
-		-- Only what the engine still has. Every consumer of this loop dereferences the ref,
-		-- and that is exactly the call that threw on a killed mouth.
-		if Entry and self.IsLive(Entry) then
+		--- Only what the engine still has AND still counts as standing. Every consumer of this
+		--- loop dereferences the ref - that is the call that threw on a killed mouth - and a
+		--- revealed husk is a minimap marker for a mouth that no longer exists.
+		if Entry and self.StateOf(Entry) == Registry.Alive then
 			Callback(Entry.ref, Entry.id, Entry.kind)
 			Count = Count + 1
 		end
@@ -229,9 +278,10 @@ function Registry:IterateByKind(Kind, Callback)
 	return Count
 end
 
---- How many of this kind EXIST, not how many were registered. A mouth the player killed is
---- not a mouth, and a status line that keeps counting it is the difference between telling the
---- admin the wave is over and telling him 3/3.
+--- How many of this kind are still STANDING, not how many were registered. A mouth the player
+--- killed is not a mouth even while its husk is still in the entity list, and a status line that
+--- counts it anyway is the difference between telling the admin the wave is over and telling him
+--- 1/3 with nothing left to shoot.
 function Registry:CountByKind(Kind)
 	local List = self.ByKind[Kind]
 
@@ -244,7 +294,7 @@ function Registry:CountByKind(Kind)
 	for Index = 1, #List do
 		local Entry = self.Entries[List[Index]]
 
-		if Entry and self.IsLive(Entry) then
+		if Entry and self.StateOf(Entry) == Registry.Alive then
 			Count = Count + 1
 		end
 	end
@@ -318,13 +368,17 @@ function Registry:Prune(IsGone)
 	return Pruned
 end
 
---- Drop everything the engine has already removed - a mouth a player killed, a bot that
---- disconnected. The world tick calls this BEFORE it touches any ref, which is the ordering
---- that was missing: reveal ran first, threw on a corpse, and the prune at the bottom of the
---- same function never executed at all.
+--- Drop everything the engine has fully REMOVED - a husk whose death sequence ended, a bot whose
+--- disconnect finished. The world tick calls this BEFORE it touches any ref, which is the
+--- ordering that was missing: reveal ran first, threw on a corpse, and the prune at the bottom of
+--- the same function never executed at all.
+---
+--- Dead-but-present entries are deliberately KEPT. The registry is the only record that the thing
+--- was ours; forget a husk here and teardown has nothing left to clean up and the leak check has
+--- no id to ask about - the PASS would be printed over a mouth still standing in the map.
 function Registry:PruneDead()
 	return self:Prune(function(Ref, Id)
-		return not self.IsLive(self.Entries[Id])
+		return self.StateOf(self.Entries[Id]) == Registry.Gone
 	end)
 end
 

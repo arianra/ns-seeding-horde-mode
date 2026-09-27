@@ -1133,6 +1133,82 @@ function Plugin:InitialiseScenarios()
 		-- in one sector are two places, not three mouths.
 		Assert.Equal( 2, #Placement.SelectSectorSpread({ Ring[1], Ring[2] }, Base, 3),
 			"one populated sector yields the candidates it has, no more" )
+
+		--- The same rule drawn at random. Two claims, and the second is the one that matters:
+		--- the sector must still yield exactly one candidate, AND the draw must be able to
+		--- disagree with nearest-first. Without that, "randomised" could describe a seed that
+		--- changes nothing - which is what the fixed grid effectively was: legal, deterministic,
+		--- and the same three rooms every single wave.
+		local Reached, Picks = {}, 0
+
+		for Seed = 1, 40 do
+			local Chosen = Placement.SelectSectorSpread(Ring, Base, 3, Placement.NewRandom(Seed))
+			local Seen = {}
+
+			Assert.Equal( 3, #Chosen, string.format("seed %s still fills three sectors", tostring(Seed)) )
+
+			for _, Candidate in ipairs(Chosen) do
+				if Seen[Candidate] then
+					error( { Detail = "one candidate was chosen twice by the same draw" } )
+				end
+
+				Seen[Candidate] = true
+				Reached[Candidate] = true
+			end
+		end
+
+		for _ in pairs(Reached) do
+			Picks = Picks + 1
+		end
+
+		Assert.True( Picks > 1, "across 40 seeds the sectors do not always yield the same candidates" )
+		Assert.True( Reached[Ring[2]] ~= nil,
+			"and the farther candidate in a sector is reachable by the draw - distance still ranks, it no longer dictates" )
+
+		--- The leftover fill, which is where "one mouth per sector" stops covering what Arian
+		--- actually saw: two mouths 11 m apart in the same corridor. A sector is a BEARING from the
+		--- chair, so on a ring populated on one side the sectors under-fill and the fallback decides
+		--- the rest - and a fallback that sorts by nearness picks the leftover nearest to a mouth it
+		--- has already placed. Spread is the whole point of the rule, so the fill has to serve it.
+		local Cluster = { AtDeg(10, 60), AtDeg(12, 61), AtDeg(20, 500) }
+		local Filled = Placement.SelectSectorSpread(Cluster, Base, 2)
+
+		Assert.Equal( 2, #Filled, "an empty sector is filled from what is left" )
+		Assert.True( Filled[1] == Cluster[1], "the populated sector takes its own candidate" )
+		Assert.True( Filled[2] == Cluster[3],
+			string.format("and the fill reaches the distant leftover, not the one 1m from a mouth already placed (took %sm)",
+				tostring(Filled[2] and Filled[2].distance or -1)) )
+
+		--- The seed derivation, which is where "randomised" almost silently meant "the same every
+		--- time". The first version seeded from `Shared.GetTime()` alone - seconds since BOOT - and
+		--- two runs of this suite then produced `seed=1056` and identical coordinates, because the
+		--- server reaches wave 1 at the same elapsed second on every boot. Measured before this
+		--- assertion existed, in the fix rather than in the playtest.
+		local Wave1 = Placement.SeedFor(1, 1700000000, 10.56)
+
+		Assert.Equal( Wave1, Placement.SeedFor(1, 1700000000, 10.56), "a seed is reproducible" )
+		Assert.True( Wave1 ~= Placement.SeedFor(1, 1700000001, 10.56),
+			"and two boots a second apart do not draw the same wave - the bug this pins" )
+		Assert.True( Placement.SeedFor(2, 1700000000, 10.56) ~= Wave1, "each wave draws differently" )
+
+		--- And the generator's first output must not be a function of the seed. Un-warmed MINSTD
+		--- gave 200 consecutive seeds that ALL drew into one decile (0.898-0.900) - technically
+		--- deterministic, practically the same rotation every time. This is the assertion that
+		--- catches a "random" stream that isn't.
+		local Deciles, Values = {}, 0
+
+		for Offset = 1, 200 do
+			local Value = Placement.NewRandom(Placement.SeedFor(1, 1700000000 + Offset, 10.56))()
+
+			Assert.True( Value >= 0 and Value < 1, "draws stay inside [0,1)" )
+			Deciles[math.floor(Value * 10)] = true
+		end
+
+		for _ in pairs(Deciles) do
+			Values = Values + 1
+		end
+
+		Assert.Equal( 10, Values, "seeds a second apart spread across the whole range, not clustered by their own value" )
 	end )
 
 	-- i4c: the engine-facing half, on the real map. What the pure scenario cannot say is
@@ -1225,7 +1301,7 @@ function Plugin:InitialiseScenarios()
 			tostring(#Chosen), tostring(BandedCount), tostring(SectorCount), tostring(PerWave),
 			tostring(Nearest), tostring(BandMin), tostring(Waves.BandMax) ) )
 
-		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
+		local Reg = horde.Registry.New(horde.Registry.EngineStateOf)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 		local Queued = 0
 
@@ -1264,7 +1340,7 @@ function Plugin:InitialiseScenarios()
 	-- brittle assertion here would only prove we cannot read the engine.
 	self:RegisterScenario( "mouth_lifecycle", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
+		local Reg = horde.Registry.New(horde.Registry.EngineStateOf)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
 		-- Through the surface gate: SpawnMouth refuses a point the engine would not build on,
@@ -1302,7 +1378,7 @@ function Plugin:InitialiseScenarios()
 	-- resolving after DestroyEntity would leak a mouth on every stop.
 	self:RegisterScenario( "teardown_destroys_what_we_made", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Reg = horde.Registry.New(horde.Registry.EngineIsLive)
+		local Reg = horde.Registry.New(horde.Registry.EngineStateOf)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
 		local Anchors = SurfaceAnchors(2)
@@ -1371,7 +1447,7 @@ function Plugin:InitialiseScenarios()
 
 		local SavedRegistry, SavedSpawner = horde.HordeRegistry, horde.HordeSpawner
 
-		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineIsLive)
+		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineStateOf)
 		horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function(Message) print("[TEST] " .. Message) end)
 
 		horde.Machine:Start(Shared.GetTime())
@@ -1749,7 +1825,7 @@ function Plugin:InitialiseScenarios()
 
 		-- The control: a spawner of our own that nobody ticks. It never registers with the
 		-- plugin and its Reveal is off, so nothing can reveal its mouth by accident.
-		local Quiet = horde.Registry.New(horde.Registry.EngineIsLive)
+		local Quiet = horde.Registry.New(horde.Registry.EngineStateOf)
 		local SpawnQuiet = horde.Spawner.New(Quiet, Log, false)
 
 		-- The subject: installed as the plugin's own spawner so the production tick pumps
@@ -1757,7 +1833,7 @@ function Plugin:InitialiseScenarios()
 		-- the same discipline wave_slice_end_to_end documents - the tick is global, so
 		-- anything that runs it must own the bookkeeping it writes.
 		local SavedRegistry, SavedSpawner, SavedCount = horde.HordeRegistry, horde.HordeSpawner, horde.HordeRegistry:Count()
-		local Loud = horde.Registry.New(horde.Registry.EngineIsLive)
+		local Loud = horde.Registry.New(horde.Registry.EngineStateOf)
 		local SpawnLoud = horde.Spawner.New(Loud, Log, true)
 
 		horde.HordeRegistry, horde.HordeSpawner = Loud, SpawnLoud
@@ -1973,7 +2049,43 @@ function Plugin:InitialiseScenarios()
 
 		local Sampled = Placement.SampleRing(Base, 56, 90, Identity)
 
-		Assert.Equal( 96, #Sampled, "6 rings x 16 bearings, none dropped by an agreeing mesh" )
+		Assert.Equal( 192, #Sampled, "8 rings x 24 bearings, none dropped by an agreeing mesh" )
+
+		--- The same sweep, seeded. Both halves matter: the grid has to actually move - a fixed
+		--- 6x16 grid handed every wave the same handful of sites, which is what looked from the
+		--- chair like "surprisingly in the exact same positions" - and the envelope it moves
+		--- inside must not. The jitter is bounded, so no draw can probe past the reach the band
+		--- was measured against or inside the sweep's own near floor.
+		local DrawA = Placement.SampleRing(Base, 56, 90, Identity, Placement.NewRandom(11))
+		local DrawB = Placement.SampleRing(Base, 56, 90, Identity, Placement.NewRandom(12))
+		local Replay = Placement.SampleRing(Base, 56, 90, Identity, Placement.NewRandom(11))
+
+		Assert.Equal( #Sampled, #DrawA, "a seeded sweep probes just as many points" )
+		Assert.True( Placement.Distance2D(DrawA[1], DrawB[1]) > 1, "and different seeds probe different places" )
+
+		local Reproduced = true
+
+		for Index = 1, #DrawA do
+			if Placement.Distance2D(DrawA[Index], Replay[Index]) > 0 then
+				Reproduced = false
+			end
+		end
+
+		Assert.True( Reproduced, "the same seed replays the sweep exactly - a logged seed is a reproducible wave" )
+
+		local JitterNear, JitterFar
+
+		for _, Point in ipairs(DrawA) do
+			local Distance = Placement.Distance2D(Point, Base)
+
+			JitterNear = JitterNear and math.min(JitterNear, Distance) or Distance
+			JitterFar = JitterFar and math.max(JitterFar, Distance) or Distance
+		end
+
+		Assert.True( JitterNear >= 16.5,
+			string.format("the jitter cannot pull the sweep onto the base (%.1fm; 20m x 0.85)", JitterNear) )
+		Assert.True( JitterFar <= 166,
+			string.format("nor push it past the swept envelope (%.1fm; 144m x 1.15)", JitterFar) )
 
 		local Inside, Outside, Distinct, Closest, Furthest = 0, 0, {}, nil, nil
 
@@ -2109,42 +2221,49 @@ function Plugin:InitialiseScenarios()
 		end
 	end )
 
-	--- The registry's liveness contract, with the resolver injected. This is the accounting
-	--- behind three field symptoms at once - mouths vanishing from the marine minimap after a
-	--- different mouth was killed, /horde status reporting 3/3 on an empty map, and a teardown
-	--- that called two player-killed corpses a failure - so the contract gets asserted directly
-	--- rather than only through whichever caller happened to notice.
+	--- The registry's three-state contract, with the resolver injected. Every one of the field
+	--- symptoms came from collapsing these states into a single question: mouths vanishing from
+	--- the minimap after a different mouth was killed, status reporting 3/3 and then 1/3 on an
+	--- empty map, and teardown calling two player-killed corpses a failure. The engine draws the
+	--- distinction itself - `Team:GetNumAliveCommandStructures` (Team.lua:502-510) asks
+	--- `GetIsAlive()`, not "does the id still resolve" - so a two-valued answer was always going
+	--- to be wrong about one of them.
 	self:RegisterScenario( "registry_liveness_is_the_engines_answer", false, function()
-		local R = Shine.Plugins.hordemode.Registry
-		local Dead = {}
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local States = {}
 		local Reg = R.New(function(Entry)
-			return Dead[Entry.id] ~= true
+			return States[Entry.id] or R.Alive
 		end)
 
 		local function Double(Id)
 			return {
 				GetId = function() return Id end,
-				--- Killing a live double is allowed and makes it dead. Killing one that is already
-				--- dead is the bug this scenario exists to catch, so the double reports itself
-				--- loudly instead of failing quietly somewhere downstream.
+				--- Kill is legal exactly once. Re-killing a husk is the dereference that used to
+				--- throw inside the tick, so the double reports it loudly instead of failing
+				--- somewhere downstream as someone else's assertion.
 				Kill = function()
-					if Dead[Id] then
-						error("a destroyed entity was dereferenced")
+					if States[Id] == R.Dead then
+						error("a dead structure was killed again")
 					end
 
-					Dead[Id] = true
+					States[Id] = R.Dead
 				end,
 			}
 		end
 
-		local A = Reg:Register(Double(10), R.Kind.Mouth)
+		Reg:Register(Double(10), R.Kind.Mouth)
+
 		local B = Reg:Register(Double(11), R.Kind.Mouth)
+		local C = Reg:Register(Double(12), R.Kind.Mouth)
 
-		Assert.Equal( 2, Reg:CountByKind(R.Kind.Mouth), "both counted while the world has them" )
+		Assert.Equal( 3, Reg:CountByKind(R.Kind.Mouth), "three standing mouths are three mouths" )
 
-		Dead[A] = true
+		States[B] = R.Dead      -- shot; still in the world as a husk
+		States[C] = R.Gone      -- the engine has finished with it
 
-		Assert.Equal( 1, Reg:CountByKind(R.Kind.Mouth), "a killed mouth is not a mouth" )
+		Assert.Equal( 1, Reg:CountByKind(R.Kind.Mouth),
+			"a husk is not a mouth - this is the number /horde status kept printing as 1/3" )
 
 		local Visited = 0
 
@@ -2152,17 +2271,90 @@ function Plugin:InitialiseScenarios()
 			Visited = Visited + 1
 		end)
 
-		Assert.Equal( 1, Visited, "iteration never hands a corpse to a caller about to dereference it" )
-		Assert.Equal( 2, #Reg:GetEverIds(), "the id history still remembers both: we did make them" )
+		Assert.Equal( 1, Visited,
+			"iteration hands out only what is standing; a husk dereferenced is the throw that killed the tick" )
 
-		-- Pruning is the tick's job. It drops what the engine already removed and keeps the
-		-- history, so a corpse cannot delete the evidence that we made the thing at all.
-		Assert.Equal( 1, Reg:PruneDead(), "prune drops what the engine already removed" )
-		Assert.Equal( 1, Reg:CountByKind(R.Kind.Mouth), "and the count is the survivor" )
-		Assert.Equal( 2, #Reg:GetEverIds(), "the history survives the prune" )
+		--- Prune removes only what the engine has fully removed. A husk stays on the books because
+		--- the registry is the only record that the thing was OURS: forget it here and teardown
+		--- leaves it standing in the map behind a logged PASS.
+		Assert.Equal( 1, Reg:PruneDead(), "prune drops the gone one" )
+		Assert.Equal( 2, Reg:Count(), "and keeps the husk, which is still ours to clean up" )
+		Assert.Equal( 3, #Reg:GetEverIds(), "the history survives both" )
 
 		Reg:Clear()
 		Assert.Equal( 0, #Reg:GetEverIds(), "a new round starts with a clean history" )
+	end )
+
+	--- The other half of the same playtest, on the real engine: he shot the last mouth and status
+	--- still said 1/3, and teardown logged "1 destroyed ... of 1 tracked" for a mouth that was
+	--- already dead. A killed structure is NOT gone - it stays in the entity list through its death
+	--- sequence, reporting `GetIsAlive() == false`. Doubles cannot say that; only the level can.
+	self:RegisterScenario( "a_killed_mouth_is_a_husk_not_a_mouth", false, function()
+		local horde = Shine.Plugins.hordemode
+		local SavedReg, SavedSpawn = horde.HordeRegistry, horde.HordeSpawner
+		local SavedPool = horde.Machine.MouthsPool
+		local Reg, Id
+
+		local function Run()
+			Reg = horde.Registry.New(horde.Registry.EngineStateOf)
+			horde.HordeRegistry = Reg
+			horde.HordeSpawner = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end, false)
+
+			local Anchor = SurfaceAnchors(1)[1]
+
+			Assert.NotNil( Anchor, "a buildable surface to place a mouth on" )
+
+			local Mouth = horde.HordeSpawner:SpawnMouth(Anchor)
+
+			Assert.NotNil( Mouth, "the mouth was created" )
+
+			horde.HordeSpawner:Pump()
+
+			local Registered = Reg:GetAllIds()
+
+			Assert.Equal( 1, #Registered, "and registered" )
+
+			Id = Registered[1]
+			horde.Machine.MouthsPool = 1
+
+			Mouth:Kill()
+
+			local State = horde.Registry.EngineStateOf({ id = Id, ref = Shared.GetEntity(Id), kind = "mouth" })
+
+			--- Printed, not asserted: the claim is "not alive", and whether the husk still occupies
+			--- an id at this instant is the engine's timing, not our invariant. Both branches are
+			--- covered by the deferred teardown check below, which must classify whichever it was.
+			print(string.format("[TEST] killed mouth state: %s", tostring(State)))
+
+			Assert.True( State ~= horde.Registry.Alive,
+				string.format("a killed mouth stops being alive to the engine (state %s)", tostring(State)) )
+			Assert.Equal( 0, Reg:CountByKind("mouth"),
+				"and the status count follows the engine rather than the ledger" )
+
+			-- Teardown's obligation is the other direction: whatever the state, nothing of ours may
+			-- survive it, and a husk must be classified rather than reported as a failure.
+			self:Defer( "husk_cleaned_by_teardown", 2, false, function()
+				local Destroyed, Failed, Total, Ids, Gone, Husks = horde.DestroyAll(Reg, nil, nil)
+
+				Assert.Equal( 1, Total, "the husk was still on the books to be accounted for" )
+				Assert.Equal( 0, #Failed, "and its teardown reported no failure" )
+				Assert.Equal( 1, Gone + Husks, "classified as gone or husk, never skipped" )
+				Assert.Equal( 1, #Ids, "its id went to the leak check" )
+				Assert.Nil( Shared.GetEntity(Id), "nothing of ours is left standing in the world" )
+
+				print(string.format("[TEST] husk teardown: destroyed=%s gone=%s husks=%s",
+					tostring(Destroyed.mouth or 0), tostring(Gone), tostring(Husks)))
+			end )
+		end
+
+		local Ok, Err = pcall(Run)
+
+		horde.HordeRegistry, horde.HordeSpawner = SavedReg, SavedSpawn
+		horde.Machine.MouthsPool = SavedPool
+
+		if not Ok then
+			error(Err)
+		end
 	end )
 
 	--- The playtest itself, headless: two real mouths, a player's bullet in one of them, and
@@ -2177,7 +2369,7 @@ function Plugin:InitialiseScenarios()
 		local Reg, Spawn
 
 		local function Run()
-			Reg = horde.Registry.New(horde.Registry.EngineIsLive)
+			Reg = horde.Registry.New(horde.Registry.EngineStateOf)
 			Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end, true)
 
 			horde.HordeRegistry, horde.HordeSpawner = Reg, Spawn
@@ -2307,7 +2499,7 @@ function Plugin:InitialiseScenarios()
 		local Rules = FakeRules()
 
 		horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
-		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineIsLive)
+		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineStateOf)
 		horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function() end, false)
 
 		horde.HordeRoundStarted = true

@@ -513,14 +513,36 @@ function Placement.Reachable(From, To, PathingFn)
 	return Ok and Result == true
 end
 
---- One mouth per sector, nearest first, so a wave cannot arrive down a single corridor. With no
---- base anchor the sector idea is meaningless, so fall back to the first Count candidates rather
---- than rejecting the wave.
-function Placement.SelectSectorSpread(Candidates, Base, Count)
+--- One mouth per sector, so a wave cannot arrive down a single corridor. With no base anchor the
+--- sector idea is meaningless, so fall back to the first Count candidates rather than rejecting
+--- the wave.
+---
+--- `Random` moves WHICH candidate a sector yields, not whether the rules hold: every candidate
+--- gets one jittered score (distance x 0.85..1.15) and the sector takes the best score. Strict
+--- nearest-first was the second source of the repetition Arian reported on his second playtest -
+--- "surprisingly in the exact same positions" - because with a fixed probe grid it guaranteed the
+--- same three rooms every wave. The band, the base-room floor and one-per-sector are untouched;
+--- only the preference between equally legal candidates moves.
+function Placement.SelectSectorSpread(Candidates, Base, Count, Random)
 	Count = Count or 3
 	Candidates = Candidates or {}
 
 	local Out = {}
+
+	--- One score per candidate, decided when it is first seen. Recomputing inside the comparison
+	--- would make the outcome depend on how many times a pair got compared, and a draw that
+	--- cannot be replayed from its seed is not worth having.
+	local Scores = {}
+
+	if Random then
+		for _, Candidate in ipairs(Candidates) do
+			Scores[Candidate] = (Candidate.distance or 0) * (0.85 + 0.3 * Random())
+		end
+	end
+
+	local function ScoreOf(Candidate)
+		return Scores[Candidate] or Candidate.distance or 0
+	end
 
 	if not Base or #Candidates == 0 then
 		for Index = 1, math.min(Count, #Candidates) do
@@ -534,12 +556,14 @@ function Placement.SelectSectorSpread(Candidates, Base, Count)
 	local Taken = {}
 
 	for Sector = 0, Count - 1 do
-		local Best, BestDistance
+		local Best, BestScore
 
 		for _, Candidate in ipairs(Candidates) do
 			if not Taken[Candidate] and math.floor(AngleFrom(Candidate.point, Base) / SectorWidth) == Sector then
-				if not Best or Candidate.distance < BestDistance then
-					Best, BestDistance = Candidate, Candidate.distance
+				local Score = ScoreOf(Candidate)
+
+				if not Best or Score < BestScore then
+					Best, BestScore = Candidate, Score
 				end
 			end
 		end
@@ -559,14 +583,34 @@ function Placement.SelectSectorSpread(Candidates, Base, Count)
 			end
 		end
 
-		table.sort(Leftovers, function(A, B) return A.distance < B.distance end)
+		--- Fill what the sectors could not by SPREAD, not by nearness. Sorting leftovers by
+		--- distance is what put two mouths 11 m apart in the same corridor on the run after this
+		--- one: a sector is a bearing from the chair, so on a map whose ring is populated on one
+		--- side the sector rule under-fills, and the leftover nearest the chair is also the
+		--- leftover nearest to a mouth already chosen. Take whichever leftover is furthest from
+		--- everything chosen so far; the jittered score only breaks ties, so the draw still has a
+		--- say when spread cannot decide.
+		while #Out < Count and #Leftovers > 0 do
+			local BestIndex, BestGap, BestScore
 
-		for _, Candidate in ipairs(Leftovers) do
-			if #Out >= Count then
-				break
+			for Index, Candidate in ipairs(Leftovers) do
+				local Gap = math.huge
+
+				for _, Chosen in ipairs(Out) do
+					Gap = math.min(Gap, Placement.Distance2D(Candidate.point, Chosen.point))
+				end
+
+				local Score = ScoreOf(Candidate)
+
+				if not BestIndex or Gap > BestGap or (Gap == BestGap and Score < BestScore) then
+					BestIndex, BestGap, BestScore = Index, Gap, Score
+				end
 			end
 
-			Out[#Out + 1] = Candidate
+			local Chosen = table.remove(Leftovers, BestIndex)
+
+			Taken[Chosen] = true
+			Out[#Out + 1] = Chosen
 		end
 	end
 
@@ -580,11 +624,16 @@ end
 --- check while the survivors left exactly one point inside the ring - so a wave placed nothing
 --- and every geometric assertion we had stayed green.
 ---
---- So sweep the neighbourhood the way a commander sweeps a cursor: rings at fixed bearings, each
---- point pulled onto the nav mesh by Pathing.GetClosestPoint before anything asks whether it is
+--- So sweep the neighbourhood the way a commander sweeps a cursor: rings at bearings, each point
+--- pulled onto the nav mesh by Pathing.GetClosestPoint before anything asks whether it is
 --- buildable. Whether it IS buildable remains the engine's answer; this only decides where to ask.
-local kSampleRadii = 6
-local kSampleDirections = 16
+---
+--- Denser and, when a `Random` is supplied, rotated and jittered. The first version's 6 fixed
+--- rings x 16 fixed bearings produced the same handful of sites on every boot, which is exactly
+--- what Arian reported on his second playtest: "surprisingly in the exact same positions ...
+--- there should be far more rooms".
+local kSampleRadii = 8
+local kSampleDirections = 24
 
 --- Near edge of the sweep, deliberately inside the band. The band is measured in WALKING metres,
 --- and a point 30 m away in a straight line can easily be 60 m of walking, so a sweep starting at
@@ -596,7 +645,54 @@ local kSampleNearFloor = 20
 --- is BandMax of walking away.
 local kSampleReachFactor = 1.6
 
-function Placement.SampleRing(Base, BandMin, BandMax, Hooks)
+--- Fractional jitter on each ring's radius: small enough that a probe still sits inside the
+--- envelope the band was designed for, large enough - with the mesh snap - to land in a different
+--- part of the room.
+local kSampleRadiusJitter = 0.15
+
+--- A deterministic generator. We need per-wave variation, not entropy, and a seed that can go in
+--- the log so a placement someone reports can be replayed exactly. `math.random` would also work
+--- but it mutates process-wide state that other mods own, and no log line reproduces its stream.
+--- Parkin-Roberts MINSTD (16807 * s mod 2^31-1): exact in Lua 5.1 doubles, no tables, no globals.
+function Placement.NewRandom(Seed)
+	local State = math.floor(tonumber(Seed) or 1) % 2147483647
+
+	if State <= 0 then
+		State = State + 2147483646
+	end
+
+	--- Warm the stream before handing it out. MINSTD's FIRST output is 16807 * seed mod 2^31-1,
+	--- which for small seeds is itself small and proportional to the seed - so an un-warmed
+	--- generator made whatever was drawn first systematically cheap, and the draw stopped being a
+	--- draw. Caught by this file's own test: across seeds 1..40 the farther candidate in a sector
+	--- was never reached. Eight discarded iterations break that coupling.
+	for _ = 1, 8 do
+		State = (State * 16807) % 2147483647
+	end
+
+	return function()
+		State = (State * 16807) % 2147483647
+
+		return State / 2147483647
+	end
+end
+
+--- A wave's seed, as a function so it can be tested. The first version used `Shared.GetTime()`
+--- alone - seconds since BOOT - and a server that reaches wave 1 at the same elapsed second every
+--- boot therefore drew the same wave every boot: two runs in a row produced `seed=1056` and the
+--- same three coordinates, which is the repetition this change exists to remove, rediscovered in
+--- the fix. The wall clock is what vanilla seeds its own randomizer with (NS2Gamerules.lua:183);
+--- uptime stays in the mix so two hordes started in the same second differ, and the wave number so
+--- successive waves in one round never repeat.
+function Placement.SeedFor(Wave, SystemTime, Uptime)
+	local Seconds = math.floor(SystemTime or 0)
+	local Ticks = math.floor((Uptime or 0) * 100)
+	local Round = math.floor(Wave or 1) * 7919
+
+	return (Seconds + Ticks + Round) % 2147483647
+end
+
+function Placement.SampleRing(Base, BandMin, BandMax, Hooks, Random)
 	local Out = {}
 
 	if not Base then
@@ -614,11 +710,20 @@ function Placement.SampleRing(Base, BandMin, BandMax, Hooks)
 	local Steps = math.max(kSampleRadii - 1, 1)
 	local BaseX, BaseY, BaseZ = Axis(Base, "x", 1), Axis(Base, "y", 2), Axis(Base, "z", 3)
 
+	--- One phase for the whole sweep, so the bearings are not the same 24 corridors every wave,
+	--- and one jitter per ring. Both come from the same generator, so a wave's placement is a
+	--- function of its seed and nothing else.
+	local Phase = Random and (Random() * kTwoPi) or 0
+
 	for Ring = 0, Steps do
 		local Radius = First + ((Last - First) * Ring / Steps)
 
+		if Random then
+			Radius = Radius * (1 + ((Random() * 2) - 1) * kSampleRadiusJitter)
+		end
+
 		for Step = 0, kSampleDirections - 1 do
-			local Angle = (kTwoPi * Step) / kSampleDirections
+			local Angle = Phase + ((kTwoPi * Step) / kSampleDirections)
 
 			local Ok, OnMesh = pcall(Hooks.Mesh,
 				At(BaseX + math.cos(Angle) * Radius, BaseY, BaseZ + math.sin(Angle) * Radius))
@@ -637,7 +742,9 @@ end
 ---
 --- Returns chosen (each {point, distance}), the base anchor, the total points offered, the
 --- post-band count, and the tallies.
-function Placement.Collect(Config, PathingFn, Hooks)
+--- `Random` (see NewRandom) makes the sweep and the draw vary per wave; nil keeps the old
+--- deterministic behaviour, which is what the pure tests run with so their assertions hold.
+function Placement.Collect(Config, PathingFn, Hooks, Random)
 	local Waves = (Config and Config.Waves) or {}
 	local BandMin = Waves.BandMin or 56
 	local BandMax = Waves.BandMax or 90
@@ -680,8 +787,14 @@ function Placement.Collect(Config, PathingFn, Hooks)
 
 	--- Sweep the mesh first, take anchors only if it was not enough. A floor the nav mesh admits
 	--- beats a cyst's origin every time, and the common case should not pay for the fallback.
-	local Want = PoolSize * 4
-	local MeshPoints = Placement.SampleRing(Base, BandMin, BandMax, Hooks)
+	---
+	--- The pool is deliberately much larger than the wave. `PoolSize * 4` stopped the sweep after
+	--- 24 buildable points, which after the 5 m dedupe left 15-24 sites for the whole round - the
+	--- other half of "there should be far more rooms": a draw cannot visit a room it never asked
+	--- about. Cost is bounded and paid once per wave (one path query per candidate that survives
+	--- the band), and ValidateCandidates still stops the moment it has what it asked for.
+	local Want = math.max(PoolSize * 8, 48)
+	local MeshPoints = Placement.SampleRing(Base, BandMin, BandMax, Hooks, Random)
 	local Validated, Stats = Placement.ValidateCandidates(MeshPoints, Hooks, Want)
 
 	Stats.sampled = #MeshPoints
@@ -797,7 +910,7 @@ function Placement.Collect(Config, PathingFn, Hooks)
 		or Candidates
 
 	-- Both sources counted, because the caller's log line names the total it was offered.
-	return Placement.SelectSectorSpread(Banded, Base, PerWave), Base, #MeshPoints + #Raw, #Banded, Stats
+	return Placement.SelectSectorSpread(Banded, Base, PerWave, Random), Base, #MeshPoints + #Raw, #Banded, Stats
 end
 
 Plugin.Placement = Placement
