@@ -187,6 +187,17 @@ difficulty tuning; objective-forcing (GiveOrder / horde-brain override for
 Q16 hunt-players vs siege-CC) is implementation work. Full findings:
 vault `research/td-vanilla-warmup-and-bot-framework.md` §7.
 
+**Build-344 correction (2026-09-28, i5a / `bot_factory_settles`):** the recipe above lands bots on
+team 2 only while vanilla's balance gate permits the join. With `force_even_teams_on_join` set in
+`ServerConfig.json` — it is set on the dev tree — `NS2Gamerules:GetCanJoinTeamNumber`
+(`:1385-1423`) refuses any join that would unbalance the teams, `Bot:UpdateTeam` retries forever,
+and the surplus aliens sit at team 0 *reporting alive* (a virtual client controls a spectator, and
+spectators answer `GetIsAlive() == true`; "alive" never implied "joined"). The horde is deliberately
+unbalanced — that is what the 7q7 takeover means — so the factory forces its own join:
+`JoinTeam(player, 2, true)`. A forced join replaces the player with `AlienTeam.respawnEntity =
+Skulk` (`AlienTeam.lua:48`) in the same tick — the lifeform class is real immediately, no evolve
+race. Full fact: HANDOFF §5.16.
+
 **Vanilla WarmUp interaction (DECIDED 2026-09-18):** build 344 has a WarmUp
 game state — below 12 humans, `BotTeamController` fills both teams with
 filler bots (config `filler_bots`). **`/horde` IS the horde warmup — full

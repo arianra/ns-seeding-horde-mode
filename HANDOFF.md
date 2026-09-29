@@ -86,7 +86,7 @@ loading path that exists).
 | `config.lua` | `DefaultConfig`, `Resolve(map)`, `Sanitize`, curves, `DeepMerge` | Every number that reaches gameplay is clamped **and** defaulted from `DefaultConfig` — a clamp floor is not a default (see §5) |
 | `registry.lua` | the created set: `Register/Unregister/Drain/Clear`, `PruneDead`, `GetEverIds`, BTC state | Accounting truth. Liveness is a **three-state** answer injected as `StateOf`; nothing may dereference a stored handle |
 | `placement.lua` | candidate generation + selection, all pure except the hooks | Only points the *engine* accepts as buildable; band in **walking** metres; base-room floor in **straight-line** metres; one per sector; spread by distance; seeded per wave |
-| `spawner.lua` | creates `TunnelEntrance` mouths, pending→registered across a tick, the reveal | A fresh entity has no usable id in its creation tick; a reveal must be re-asserted every second or it lapses |
+| `spawner.lua` | creates `TunnelEntrance` mouths and bot players, pending→registered across a tick, the bot join→place stage, the reveal | A fresh entity has no usable id in its creation tick, and a fresh bot has no *joined* player for several more; a reveal must be re-asserted every second or it lapses |
 | `statemachine.lua` | Inactive → Wave → Intermission → Teardown, cooldown | Legal transitions only; `Stop` while inactive is refused, not ignored |
 | `triggers.lua` | the gate (seeding state, marine caller, MinPlayers, cooldown) + snapshots | `/horde` must be answerable from one status line |
 | `takeover.lua` | hold/release of `botTeamController` | Snapshot → lock → cap 0 on the way in; restore on the way out. Release only what you took (the engine asserts on a negative lock counter) |
@@ -124,7 +124,10 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
 7. `Pathing.GetPathPoints`/`GetPathPointFrom` (`:171-177`) **always include the start point**, so a
    `CommandStructure` origin (inside its own footprint, mesh carved out) cannot be a path start —
    snap to the mesh first. `BotUtils.lua:357` marks such queries `"Expensive !!!"`.
-8. `Pathing.GetPathDistance` is walking length; `Vector:GetRangeTo` is the line. On `ns2_summit`
+8. `Pathing.GetPathDistance` is walking length; the straight line is `Vector:GetDistanceTo`
+   (3D, `Vector.lua:40`) or `GetLengthXZ` / `Placement.Distance2D` (horizontal). Build 344's shipped
+   `Vector.lua` has **no `GetRangeTo`** — an earlier version of this fact named one, from an older
+   build; a scenario that called it threw at runtime (measured 2026-09-28). On `ns2_summit`
    the line is ~0.7–0.8 of the walk. They are different quantities and both matter.
 9. `botTeamController` is created in `NS2Gamerules:OnCreate()` (`:185`) — **per map, survives
    `ResetGame`**, so a snapshot taken at horde start is still valid at teardown.
@@ -149,6 +152,17 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
 15. Shine does **not** deep-merge a loaded plugin config under `DefaultConfig` — the file's table
     replaces ours wholesale, so a key missing from the file is missing at runtime, and the
     sanitizer is the only place a new key can get a default.
+16. A bot's virtual client controls a **team-0 player that reports `GetIsAlive() == true`**:
+    "has a player and is alive" does **not** imply "joined the team" — the alive-at-t+6/t+8 asserts in
+    `takeover_live_cycle` and `registry_takeover_integration` were true of spectators.
+    `NS2Gamerules:GetCanJoinTeamNumber` (`:1385-1423`) refuses any join that would unbalance the teams
+    when `force_even_teams_on_join` is set in `ServerConfig.json` (it is set on the dev tree), so on a
+    headless boot with one marine bot and several alien bots the surplus aliens sit at team 0 forever —
+    vanilla's `Bot:UpdateTeam` retries a refused gate every tick and never passes it. The horde is
+    deliberately unbalanced (that is what the bot takeover, 7q7, means), so `Spawner:PlaceBots` forces
+    its own joins: `JoinTeam(player, 2, true)`. A forced join replaces the player with
+    `AlienTeam.respawnEntity = Skulk` (`AlienTeam.lua:48`) **in the same tick** — the lifeform class is
+    real immediately, no evolve race. Measured 2026-09-28 through `bot_factory_settles`.
 
 ## 6. The dev loop
 
@@ -208,20 +222,23 @@ project arrived through that door, not through the suite.
 ## 8. Current state
 
 - **Milestones**: M0 harness + static gate · M1 config + curves · M2 commands/gate · M3 registry +
-  takeover + live integration · M4 placement (surface-gated, seeded) · M7 teardown + handback.
-  **M0–M4 + M7 implemented.** M5 (bots), M6 (wave loop), M8 (loss triggers) are not.
+  takeover + live integration · M4 placement (surface-gated, seeded) · M7 teardown + handback ·
+  **M5 partly: i5a bot factory landed 2026-09-28** (`Spawner:SpawnBot` + the join/place stage,
+  proven by `bot_factory_settles`; i5b stream-to-base is the open half). M6 (wave loop) and M8
+  (loss triggers) are not.
 - **Gates**: G1 (`-game` mounts) and G1d (dev owns `-modstorage`) passed; the loop now needs **no
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 60 scenarios, 0 failed, 1 expected (the negative control), plus `--handback` 2/0.
+- **Suite**: 62 pass / 0 fail / 1 expected (the negative control) — 63 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
   hands the bot controller back, resets the world to NotStarted, moves humans to spectator, and
   does **not** declare a winner or change the map.
-- **Still not true**: no aliens come out of a mouth (i5a), no wave 2 (i6a), and a horde that "ends"
-  cannot end (i8a). Vanilla win/loss stays suppressed for the round by one engine field, which is
-  precisely why i8a has to exist.
+- **Still not true**: no wave loop calls the factory yet, so in a real `/horde` nothing comes out of a
+  mouth (that wiring is i6a; the factory itself is built and tested); no wave 2 (i6a), and a horde
+  that "ends" cannot end (i8a). Vanilla win/loss stays suppressed for the round by one engine field,
+  which is precisely why i8a has to exist.
 - Tracker: 42 closed / 23 open beads.
 
 ## 9. Known gaps and risks
@@ -239,21 +256,25 @@ project arrived through that door, not through the suite.
    team resources or any other engine state we later touch is logged rather than guessed at.
 6. Stopping a busy server writes a minidump (mitigated: `upload-dumps=false`, idle stops are
    clean). No graceful exit exists on this engine.
-7. GitNexus has no Lua grammar — it is blind to this repo. Use `grep`/`read` on the shipped Lua.
+7. GitNexus has no Lua grammar — it is blind to this repo (re-verified 2026-09-28: a fresh index put
+   262 nodes in the graph, and every one of them is a Python dev script; all game logic is invisible
+   to it). Use `grep`/`read` on the shipped Lua.
 
 ## 10. Next actions, in order
 
-1. **i5a bot factory** (bead `eav`): spawn `PlayerBot` at a mouth, register it on the registry as
-   `bot`, retry until `GetPlayer()` exists (a bot's player is not available in the creation tick —
-   the spike proved `LoginPlayer` works in WarmUp). Its ≤5 s window fits the harness ceiling, so it
-   is headless-able. Acceptance: a bot exists, is on the alien team, and teardown's created-set
-   destroys it and reports zero leaks.
-2. **i8a loss triggers** (`cwo`, `7r3`, `qji`): all marines dead simultaneously, or the chair
+1. **i8a loss triggers** (`cwo`, `7r3`, `qji`): all marines dead simultaneously, or the chair
    destroyed. Must answer the measured draw behaviour and decide the surrender-vote question.
-3. **i6a wave loop** (`1fv`, `685`): needs RD3 numbers from Arian and the sector/placement decision
-   (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge on summit — decide eligible
-   sources, per-map `ActivePerWave`, band, fallback).
-4. Fix or route around the **harness ceiling** before committing to i5b/i6c as written.
+2. **i6a wave loop** (`1fv`, `685`): pulls the trigger the factory already provides
+   (`Spawner:SpawnBot(mouthPoint, techId)` per composition entry). Needs RD3 numbers from Arian and
+   the sector/placement decision (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge
+   on summit — decide eligible sources, per-map `ActivePerWave`, band, fallback).
+3. Fix or route around the **harness ceiling** before committing to i5b/i6c as written — i5b
+   (`t28`, stream-to-base, 15–20 s windows) is now unblocked by i5a but blocked by `0k3`, not by
+   the factory.
+4. **New i5a fallout to decide**: the alien join only lands because the factory forces it past
+   `force_even_teams_on_join` (fact 16). A seeding host whose ServerConfig sets that flag is now a
+   behavioural dependency, not just a preference — keep the force (it is what 7q7 means), and note
+   it for the M8 playtest checklist.
 5. Human-facing polish: intermission timer + skip, HUD/banner (i9a), retro + tag v0.1-slice (i10a).
 
 Before any of that: `./dev/lint.sh && ./dev/test.sh && ./dev/test.sh --handback` must be green on
@@ -292,6 +313,8 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 
 ---
 
-Last updated: 2026-09-27 — `/horde stop` moves humans to spectator, and this document exists from
-that change onward (`git log -1` for HEAD; a doc cannot carry its own commit hash and stay true).
-Suite 60/0/1, handback 2/0, round trip verified end to end by a human.
+Last updated: 2026-09-28 — i5a bot factory (`eav` closed): `SpawnBot` queues a `PlayerBot`, the pump
+registers it once its id is real, and the place stage forces the team-2 join vanilla's balance gate
+refuses and teleports the live Skulk to its mouth. Two earlier engine facts corrected by measurement
+(fact 8's `Vector:GetRangeTo` does not exist on build 344; fact 16 — "alive" bots were spectators all
+along). Suite 62/0/1, handback 2/0.

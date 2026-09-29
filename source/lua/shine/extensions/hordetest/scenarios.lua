@@ -1071,6 +1071,185 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	-- i5a: the bot factory. The PlayerBot recipe (spike e8o) and the mouth-emergence
+	-- teleport (spike tby) run through the PRODUCTION seams: SpawnBot queues, Pump
+	-- registers once ids exist, PlaceBots positions each bot at its mouth when the
+	-- engine has produced a live alien player. Everything is asserted in ONE deferred
+	-- callback at t+8: the runner cannot observe a later check (REVIEW-CHECKLIST,
+	-- "Test honesty"), and nothing about a spawned bot is true in the tick after
+	-- CreateEntity. Materialisation by t+8 is the same measurement takeover_live_cycle
+	-- already depends on (spike i0f: player live at t+6..t+8).
+	self:RegisterScenario( "bot_factory_at_mouth", false, function()
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local Reg = R.New(R.EngineStateOf)
+		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
+
+		local Anchor = SurfaceAnchors(1)[1]
+		Assert.NotNil( Anchor, "the live map has a buildable surface to emerge from" )
+
+		local Mouth, MouthReason = Spawn:SpawnMouth(Anchor)
+		Assert.NotNil( Mouth, "a real mouth to spawn behind: " .. tostring(MouthReason) )
+
+		-- Both directions of the guard first: a point-less spawn must be REFUSED and say
+		-- why. A guard whose refusal is never exercised is decoration
+		-- (Shared/lessons/silent-enforcement-is-not-enforcement).
+		local Refused, RefuseReason = Spawn:SpawnBot(nil)
+		Assert.Nil( Refused, "SpawnBot refuses a nil point" )
+		Assert.NotNil( RefuseReason, "the refusal names the reason" )
+
+		local Bots = {}
+
+		for _ = 1, 4 do
+			local Bot, BotErr = Spawn:SpawnBot(Anchor, kTechId.Skulk)
+
+			if not Bot then
+				error( { Detail = "SpawnBot refused a validated mouth point: " .. tostring(BotErr) } )
+			end
+
+			Bots[#Bots + 1] = Bot
+		end
+
+		self:Defer( "bot_factory_settles", 8, false, function()
+			local Problems = {}
+
+			-- One pass of the production seam: registers all five entities (ids arrived a
+			-- tick after the body), then places every bot whose player has materialised.
+			Spawn:Pump()
+
+			-- Player ids BEFORE anything is destroyed: they become the same-tick
+			-- diagnostic below, and a destroyed handle may never be dereferenced to ask.
+			local PlayerIds = {}
+
+			for Index, Bot in ipairs(Bots) do
+				local Ok, Id = pcall(function()
+					local Player = Bot:GetPlayer()
+
+					return Player and Player:GetId() or nil
+				end)
+
+				if Ok and Id then
+					PlayerIds[#PlayerIds + 1] = Id
+				end
+			end
+
+			if Spawn.PlacedCount < 4 then
+				Problems[#Problems + 1] = string.format("only %s of 4 bots were placed at their mouth (%s still in the placing queue)",
+					tostring(Spawn.PlacedCount), tostring(#Spawn.Placing))
+			end
+
+			for Index, Bot in ipairs(Bots) do
+				local Ok, Problem = pcall(function()
+					local Player = Bot:GetPlayer()
+
+					if not Player then
+						return string.format("bot %s had no player at t+8", tostring(Index))
+					end
+
+					local Alive = Player:GetIsAlive() == true
+					local Team = Player:GetTeamNumber()
+					local IsSkulk = Player:isa("Skulk")
+					-- horde.Placement.Distance2D, NOT Vector:GetRangeTo: build 344's shipped
+					-- Vector.lua defines GetDistanceTo/GetLengthXZ and no GetRangeTo at all.
+					-- The first version of this line threw, and the throw printed NOTHING -
+					-- it hid the alive/team answers this very failure needed. An engine fact
+					-- is only true for the build it was measured on.
+					local Range = horde.Placement.Distance2D(Player:GetOrigin(), Anchor)
+
+					print(string.format("[TEST-DIAG] bot %s id=%s alive=%s team=%s skulk=%s range=%.1fm placing=%s",
+						tostring(Index), tostring(Bot:GetId()), tostring(Alive), tostring(Team),
+						tostring(IsSkulk), Range, tostring(#Spawn.Placing)))
+
+					if not (Alive and Team == kTeam2Index and IsSkulk) then
+						return string.format("bot %s is not a live team-2 Skulk (alive=%s team=%s skulk=%s)",
+							tostring(Index), tostring(Alive), tostring(Team), tostring(IsSkulk))
+					end
+
+					-- The teleport landed inside this very callback, so the bot has had no
+					-- client tick to walk away: "near the mouth" is tight ON PURPOSE. The
+					-- loose end - do they then STREAM to base - is bead t28, not this one.
+					if Range > 4 then
+						return string.format("bot %s emerged %.1fm from its mouth", tostring(Index), Range)
+					end
+
+					return nil
+				end)
+
+				if not Ok then
+					Problems[#Problems + 1] = string.format("bot %s threw on read: %s", tostring(Index), tostring(Problem))
+				elseif Problem then
+					Problems[#Problems + 1] = Problem
+				end
+			end
+
+			Assert.Equal( 4, Reg:GetBotCount(), "four registered bots stand on the books" )
+
+			-- The teardown path the PRODUCT uses: kind "bot" disconnects through the same
+			-- Plugin.DestroyAll as a real stop. Nothing about a bot is assertable in the
+			-- tick it is destroyed (REVIEW-CHECKLIST: Disconnect leaves both handles
+			-- resolvable same-tick), so the hard assertions here are the deterministic
+			-- ones - who was destroyed, whether it reported, and what the books say
+			-- afterwards. The id-poll that catches a real leak runs in production's
+			-- Teardown, on LATER ticks, exactly as designed.
+			local Ids = Reg:GetAllIds()
+			local MouthId
+
+			for _, Id in ipairs(Ids) do
+				if Reg:GetKind(Id) == R.Kind.Mouth then
+					MouthId = Id
+				end
+			end
+
+			local Destroyed, Failed, Total = horde.DestroyAll(Reg, Spawn:TakePending(), nil)
+
+			if #Failed > 0 then
+				Problems[#Problems + 1] = "teardown failures: " .. table.concat(Failed, "; ")
+			end
+
+			if (Destroyed.bot or 0) ~= 4 then
+				Problems[#Problems + 1] = string.format("destroyed %s bots of 4 tracked", tostring(Destroyed.bot or 0))
+			end
+
+			if Total ~= #Ids then
+				Problems[#Problems + 1] = string.format("drained %s of the %s registered entries", tostring(Total), tostring(#Ids))
+			end
+
+			if Reg:Count() ~= 0 then
+				Problems[#Problems + 1] = "registry holds entries after teardown"
+			end
+
+			-- The leak check's memory: an id ever registered stays askable after the
+			-- entry is gone, or pruning would erase the evidence we made the thing.
+			if #Reg:GetEverIds() < #Ids then
+				Problems[#Problems + 1] = "ever-id history lost entries"
+			end
+
+			local StillResolvable = 0
+
+			for _, Pid in ipairs(PlayerIds) do
+				if Shared.GetEntity(Pid) ~= nil then
+					StillResolvable = StillResolvable + 1
+				end
+			end
+
+			print(string.format("[TEST-DIAG] after DestroyAll: %s of %s bot player ids still resolve same-tick (later polling is production Teardown's job), mouth gone=%s",
+				tostring(StillResolvable), tostring(#PlayerIds),
+				tostring(MouthId ~= nil and Shared.GetEntity(MouthId) == nil)))
+
+			-- A mouth, by contrast, IS assertably gone in the calling tick - measured and
+			-- pinned by teardown_destroys_what_we_made. Same teardown, two lifecycles.
+			if MouthId == nil then
+				Problems[#Problems + 1] = "the mouth never registered, so the bots had nothing to emerge from"
+			elseif Shared.GetEntity(MouthId) ~= nil then
+				Problems[#Problems + 1] = "the mouth survived the same teardown that handled the bots"
+			end
+
+			if #Problems > 0 then
+				error( { Detail = "bot factory: " .. table.concat(Problems, "; ") } )
+			end
+		end )
+	end )
+
 	-- i4a: the band, the dedupe and the sector rules ARE the design decisions (Q28,
 	-- spike tby), so they are asserted as pure geometry over injected tables. No map,
 	-- no entities, no engine - which is the only reason these are cheap to keep honest.

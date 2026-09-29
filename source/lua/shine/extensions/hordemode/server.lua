@@ -515,9 +515,10 @@ function Plugin:BeginCountdown(Seconds)
 	return Length
 end
 
---- Place and create this wave's mouths. Nothing walks out of them yet - that is i5a
---- (bot spawner) and i6a (wave loop) - but a horde with no mouths is invisible, and
---- this is the bead that makes /horde observable in-world.
+--- Place and create this wave's mouths. Nothing walks out of them yet: i5a built the
+--- bot factory (Spawner:SpawnBot), and wiring it into the wave is i6a (wave loop) -
+--- a horde with no mouths is invisible, and this is the bead that made /horde
+--- observable in-world.
 function Plugin:BeginWave(Config)
 	local Machine = self.Machine
 
@@ -587,8 +588,9 @@ function Plugin:BeginWave(Config)
 			tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
 			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed)))
 
-		-- "placed", not "opened": nothing comes out of a mouth until the bot spawner
-		-- (i5a) exists, and saying opened oversells what the player is about to see.
+		-- "placed", not "opened": the wave loop does not call the bot factory (i5a)
+		-- until i6a wires it, and saying opened oversells what the player is about
+		-- to see.
 		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s /horde status | /horde stop | /horde restart",
 			Spawned, RawCount, Reveal and " - they are revealed on your map" or "")
 	end

@@ -1,6 +1,6 @@
---[[ Horde Mode — Spawner (i4b).
+--[[ Horde Mode — Spawner (i4b + i5a).
 
- Mouth creation and destruction. Attaches as Plugin.Spawner and is owned by the
+ Mouth and bot creation and destruction. Attaches as Plugin.Spawner and is owned by the
  plugin instance, so the registry it writes to is the same one teardown walks.
 
  The one non-obvious rule: a freshly created entity has no usable id until the next
@@ -9,6 +9,12 @@
  fed back to Shared.GetEntity returns nil, which previously produced a false
  "destroyed" finding in this project. So SpawnMouth queues, and Pump() - called from
  the plugin's tick - registers once the id is real.
+
+ i5a applies that rule TWICE over: a PlayerBot queues exactly like a mouth, and its
+ PLAYER is a second delay on top of the id - the engine joins the team and spawns the
+ player over ~6 s (spike i0f). So Pump() registers whatever has an id, and PlaceBots()
+ - run by the same pump - teleports a registered bot to its mouth only once the player
+ is live AND already on the alien team.
 
  Replaces the i0a stub. ]]
 local Plugin = ...
@@ -24,6 +30,11 @@ local kAlienTeam = kAlienTeamIndex or 2
 -- than queueing it forever.
 local kMaxPendingTicks = 10
 
+-- The emergence jitter, in metres. Spike tby teleported a PlayerBot to a mouth point
+-- with ±1 m of jitter and the bot stood AT the mouth, so this number is measured, not
+-- tuned. It is mechanics, not balance: no RD3 owed number lives here.
+local kBotJitter = 1
+
 --- `Reveal` is Debug.RevealMouths, resolved by the owner and stored here - ONE place.
 --- The first version took it per SpawnMouth call while the plugin tick re-asserted every
 --- mouth in the registry from a different field, so a mouth explicitly built unrevealed
@@ -33,7 +44,10 @@ function Spawner.New(Registry, Log, Reveal)
 		Registry = Registry,
 		Log = Log or print,
 		Pending = {},
+		Placing = {},
 		MouthCount = 0,
+		BotCount = 0,
+		PlacedCount = 0,
 		FailedCount = 0,
 		Reveal = Reveal == true
 	}, Spawner)
@@ -185,7 +199,163 @@ function Spawner:SpawnMouth(Point, HealthMultiplier)
 	return Mouth
 end
 
---- Register everything created on a previous tick. Returns how many were registered.
+--- An emergence point: the mouth's own (already surface-validated) point plus up to
+--- kBotJitter metres of jitter on each horizontal axis. y is quartered because the
+--- anchor is a snapped surface and gravity settles the rest.
+local function EmergencePoint(Point)
+	local function Off(Scale)
+		return (math.random() * 2 - 1) * Scale
+	end
+
+	return Vector(Point.x + Off(kBotJitter), Point.y + Off(kBotJitter * 0.25), Point.z + Off(kBotJitter))
+end
+
+--- Create an alien bot that will emerge at Point (i5a). The recipe is spike e8o's,
+--- re-verified against the shipped Lua before anything was written down here:
+---   * `Server.CreateEntity(PlayerBot.kMapName)` - the no-origin overload; the
+---     positional 3-arg global CreateEntity is for entities that have one, and a
+---     fresh Bot has no place in the world yet.
+---   * `Initialize(kAlienTeam, true)` - active, because a passive bot never thinks.
+---   * `lifeformEvolution` set AFTER Initialize: Initialize nils the field for an
+---     alien team (Bot_Server.lua:70-72), and the brain overwrites it only while it
+---     is nil (CommonAlienActions.lua:659), so a value set here survives and forces
+---     the type.
+---
+--- Like a mouth, a fresh PlayerBot has no usable id in its creation tick, so it
+--- queues and Pump() registers it. The Point rides along because placement needs it
+--- one delay LATER again: GetPlayer() answers only after the engine's own UpdateTeam
+--- has joined and spawned the bot. This returns before the bot is in the world on
+--- purpose - the pump is what finishes the job.
+function Spawner:SpawnBot(Point, TechId)
+	if not Point then
+		self.FailedCount = self.FailedCount + 1
+
+		return nil, "no point given"
+	end
+
+	local Ok, Bot = pcall(function()
+		local Entity = Server.CreateEntity(PlayerBot.kMapName)
+
+		if not Entity then
+			error("Server.CreateEntity returned no PlayerBot")
+		end
+
+		Entity:Initialize(kAlienTeam, true)
+		Entity.lifeformEvolution = TechId or kTechId.Skulk
+
+		return Entity
+	end)
+
+	if not Ok or not Bot then
+		self.FailedCount = self.FailedCount + 1
+		self.Log(string.format("[HORDE] bot spawn failed: %s", tostring(Bot)))
+
+		return nil, "bot spawn failed"
+	end
+
+	self.Pending[#self.Pending + 1] = { ref = Bot, kind = "bot", point = Point, Ticks = 0 }
+	self.BotCount = self.BotCount + 1
+
+	return Bot
+end
+
+--- Teleport every registered-but-unpositioned bot to its mouth. The gate is FOUR
+--- conditions, not one: GetPlayer() may answer nil at all (the player materialises on
+--- a later frame), a team-0 player means vanilla's join gate has not landed the bot -
+--- which we force here, because the horde is unbalanced by design (see the measured
+--- note below), a player that exists but has not finished spawning is not alive, and
+--- a bot that never reached team 2 must not be placed as a spectator ghost. Moving
+--- only a LIVE TEAM-2 alien also keeps the engine's own spawn move from undoing the
+--- teleport afterwards. Every handle read is inside pcall: the bot can die between the
+--- registry saying "alive" and this asking it, and one throw in the tick would take
+--- the reveal and the prune down with it - that exact incident is
+--- Shared/lessons/never-dereference-a-stored-handle.
+---
+--- Returns the number placed this pass. Entries that never materialise are reported
+--- and dropped after kMaxPendingTicks pumps - never retried forever, never silently.
+function Spawner:PlaceBots()
+	local Still = {}
+	local Placed = 0
+
+	for _, Item in ipairs(self.Placing) do
+		local Ok, Landed = pcall(function()
+			local Player = Item.ref.GetPlayer and Item.ref:GetPlayer()
+
+			if not Player then
+				return false
+			end
+
+			-- Measured 2026-09-28, and the reason this block is four gates, not one: with
+			-- `force_even_teams_on_join` on (it is, in this server's own ServerConfig.json),
+			-- NS2Gamerules:GetCanJoinTeamNumber (:1385-1423) REFUSES any join that would
+			-- unbalance the teams - so on a headless boot with one marine bot and four alien
+			-- bots, vanilla's own Bot:UpdateTeam retries forever and the surplus aliens sit
+			-- at team=0, alive=true, FOREVER ("alive" includes the spectator a virtual
+			-- client controls; it has never implied "joined"). The horde is deliberately
+			-- unbalanced - that is what the bot takeover means - so the factory joins the
+			-- way the takeover already implies: forcing past the balance gate. Spike v4 had
+			-- already shown an explicit gamerules:JoinTeam lands a bot on team 2.
+			if Player.GetTeamNumber and Player:GetTeamNumber() == 0 then
+				local Rules = GetGamerules()
+
+				if Rules and Rules.JoinTeam then
+					Rules:JoinTeam(Player, kAlienTeam, true)
+
+					-- force-join REPLACES the player entity (ReplaceRespawnPlayer ->
+					-- player:Replace, and for aliens respawnEntity = Skulk,
+					-- AlienTeam.lua:48 - the lifeform class is real in the same tick, no
+					-- evolve race), so the old handle is not what controls the client now.
+					Player = Item.ref:GetPlayer()
+				end
+			end
+
+			if not Player or (Player.GetIsAlive and not Player:GetIsAlive()) then
+				return false
+			end
+
+			-- A refused join (slots full, gamerules mid-reset) leaves the bot spectator:
+			-- placing a team-0 player at a mouth would be a marine-visible ghost. Wait.
+			if Player.GetTeamNumber and Player:GetTeamNumber() ~= kAlienTeam then
+				return false
+			end
+
+			Player:SetOrigin(EmergencePoint(Item.point))
+
+			return true
+		end)
+
+		if Ok and Landed then
+			Placed = Placed + 1
+			self.PlacedCount = self.PlacedCount + 1
+
+			-- Coordinates in the log, like every mouth: "bots appeared" was never
+			-- enough to answer "WHERE did they appear" from the chair.
+			self.Log(string.format("[HORDE] bot emerged at (%.1f, %.1f, %.1f) id=%s",
+				Plugin.Placement.Axis(Item.point, "x", 1), Plugin.Placement.Axis(Item.point, "y", 2),
+				Plugin.Placement.Axis(Item.point, "z", 3), tostring(Item.id)))
+		elseif not Ok then
+			self.FailedCount = self.FailedCount + 1
+			self.Log(string.format("[HORDE] a bot went away before it could emerge: %s", tostring(Landed)))
+		else
+			Item.Ticks = Item.Ticks + 1
+
+			if Item.Ticks >= kMaxPendingTicks then
+				self.FailedCount = self.FailedCount + 1
+				self.Log(string.format("[HORDE] gave up placing bot id=%s: no live alien player after %s pumps",
+					tostring(Item.id), tostring(kMaxPendingTicks)))
+			else
+				Still[#Still + 1] = Item
+			end
+		end
+	end
+
+	self.Placing = Still
+
+	return Placed
+end
+
+--- Register everything created on a previous tick, then position the bots that got
+--- registered. Returns how many were registered.
 function Spawner:Pump()
 	local Registered = 0
 	local Still = {}
@@ -199,6 +369,14 @@ function Spawner:Pump()
 
 		if Id then
 			Registered = Registered + 1
+
+			-- A registered bot may still have no player: it moves to the placement
+			-- queue, which every later pump walks until the engine has a live alien
+			-- for it. Mouths are positioned by their own creation; only bots need
+			-- this second stage.
+			if Item.kind == "bot" then
+				self.Placing[#self.Placing + 1] = { id = Id, ref = Item.ref, point = Item.point, Ticks = 0 }
+			end
 		else
 			Item.Ticks = Item.Ticks + 1
 
@@ -213,6 +391,8 @@ function Spawner:Pump()
 	end
 
 	self.Pending = Still
+
+	self:PlaceBots()
 
 	return Registered
 end
@@ -241,10 +421,17 @@ end
 
 --- Queued-but-unregistered refs are still ours: they exist in the world and no book
 --- keeps them. Teardown must destroy them or the slice leaks a mouth per stop.
+---
+--- Placing (registered, not yet positioned) bots are deliberately NOT returned here:
+--- they hold genuine ids the registry already tracks, so teardown drains them from
+--- there - returning them too would make DestroyAll disconnect the same bot twice.
+--- The queue is dropped so a later tick cannot try to teleport a bot that teardown
+--- has already destroyed.
 function Spawner:TakePending()
 	local Out = self.Pending
 
 	self.Pending = {}
+	self.Placing = {}
 
 	return Out
 end
