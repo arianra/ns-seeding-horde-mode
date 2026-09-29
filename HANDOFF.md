@@ -239,7 +239,7 @@ project arrived through that door, not through the suite.
   mouth (that wiring is i6a; the factory itself is built and tested); no wave 2 (i6a), and a horde
   that "ends" cannot end (i8a). Vanilla win/loss stays suppressed for the round by one engine field,
   which is precisely why i8a has to exist.
-- Tracker: 42 closed / 23 open beads.
+- Tracker: 43 closed / 22 open beads.
 
 ## 9. Known gaps and risks
 
@@ -296,6 +296,8 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 `_index.md`, rolling state `_frontier.md`, chronology `_journey.md`. Under
 `Projects/ns2-tower-defense/`:
 
+- `reference/td-ns2-bot-spawn-and-team-join` — the bot pipeline's three delays, the
+  `force_even_teams_on_join` gate, "alive is not joined", and why the factory forces its own joins
 - `reference/td-ns2-structure-placement-rules` — the build gate, and the four traps
 - `reference/td-ns2-round-lifecycle-and-handback` — who may end a round, `ResetGame` semantics, the
   bot controller's lifetime
