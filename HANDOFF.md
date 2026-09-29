@@ -90,7 +90,7 @@ loading path that exists).
 | `statemachine.lua` | Inactive → Wave → Intermission → Teardown, cooldown | Legal transitions only; `Stop` while inactive is refused, not ignored |
 | `triggers.lua` | the gate (seeding state, marine caller, MinPlayers, cooldown) + snapshots | `/horde` must be answerable from one status line |
 | `takeover.lua` | hold/release of `botTeamController` | Snapshot → lock → cap 0 on the way in; restore on the way out. Release only what you took (the engine asserts on a negative lock counter) |
-| `server.lua` | commands, the 1 s tick, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `MovePlayersToSpectator`, game-end suppression | The order of the handback: destroy → release takeover → reset world → move humans to spectator → release the win switch |
+| `server.lua` | commands, the 1 s tick, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch |
 | `economy.lua`, `hud.lua`, `waves.lua` | stubs (i6a/i9a territory) | Not yet load-bearing |
 
 `hordetest` — the headless harness: `server.lua` is the runner (boot settle, scenario pass,
@@ -152,9 +152,11 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
 15. Shine does **not** deep-merge a loaded plugin config under `DefaultConfig` — the file's table
     replaces ours wholesale, so a key missing from the file is missing at runtime, and the
     sanitizer is the only place a new key can get a default.
-16. A bot's virtual client controls a **team-0 player that reports `GetIsAlive() == true`**:
-    "has a player and is alive" does **not** imply "joined the team" — the alive-at-t+6/t+8 asserts in
-    `takeover_live_cycle` and `registry_takeover_integration` were true of spectators.
+16. A bot's virtual client controls a **team-0 player that reports `GetIsAlive() == true`**
+    (team 0 is the ready-room lobby, `kTeamReadyRoom`, `Globals.lua:119` — not the spectator team,
+    which is 3): "has a player and is alive" does **not** imply "joined the team" — the
+    alive-at-t+6/t+8 asserts in `takeover_live_cycle` and `registry_takeover_integration` were
+    true of pre-join lobby players.
     `NS2Gamerules:GetCanJoinTeamNumber` (`:1385-1423`) refuses any join that would unbalance the teams
     when `force_even_teams_on_join` is set in `ServerConfig.json` (it is set on the dev tree), so on a
     headless boot with one marine bot and several alien bots the surplus aliens sit at team 0 forever —
@@ -195,9 +197,9 @@ excluded from the normal one.
 **The human half lives in `dev/PLAYTEST.md`** (bead `0kd`): a 12-step checklist covering exactly
 what no headless run can see — visibility on the minimap, a mouth standing on real ground, the
 status line after killing one mouth and after killing the last, a stop that declares no winner and
-changes no map, humans landing in spectator with vanilla bots restored, and positions differing
-across three consecutive `/horde` runs. Findings from it become beads. Every serious defect in this
-project arrived through that door, not through the suite.
+changes no map, humans landing back in warmup **on the teams they chose** with vanilla bots
+restored, and positions differing across three consecutive `/horde` runs. Findings from it become
+beads. Every serious defect in this project arrived through that door, not through the suite.
 
 ## 7. Verification discipline (each of these was paid for)
 
@@ -230,11 +232,12 @@ project arrived through that door, not through the suite.
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 62 pass / 0 fail / 1 expected (the negative control) — 63 scenarios, plus `--handback` 2/0.
+- **Suite**: 63 pass / 0 fail / 1 expected (the negative control) — 64 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
-  hands the bot controller back, resets the world to NotStarted, moves humans to spectator, and
-  does **not** declare a winner or change the map.
+  hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
+  they chose** (amended 2026-09-28; it used to move them to spectator), and does **not** declare a
+  winner or change the map.
 - **Still not true**: no wave loop calls the factory yet, so in a real `/horde` nothing comes out of a
   mouth (that wiring is i6a; the factory itself is built and tested); no wave 2 (i6a), and a horde
   that "ends" cannot end (i8a). Vanilla win/loss stays suppressed for the round by one engine field,
@@ -315,8 +318,15 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 
 ---
 
-Last updated: 2026-09-28 — i5a bot factory (`eav` closed): `SpawnBot` queues a `PlayerBot`, the pump
-registers it once its id is real, and the place stage forces the team-2 join vanilla's balance gate
-refuses and teleports the live Skulk to its mouth. Two earlier engine facts corrected by measurement
-(fact 8's `Vector:GetRangeTo` does not exist on build 344; fact 16 — "alive" bots were spectators all
-along). Suite 62/0/1, handback 2/0.
+Last updated: 2026-09-28, twice over. From the suite: the i5a bot factory (`eav` closed) —
+`SpawnBot` queues a `PlayerBot`, the pump registers it once its id is real, and the place stage
+forces the team-2 join vanilla's balance gate refuses and teleports the live Skulk to its mouth;
+two earlier engine facts corrected by measurement (fact 8's `Vector:GetRangeTo` does not exist on
+build 344; fact 16 — "alive" bots were pre-join lobby players all along). And from Arian's LIVE
+playtest the same day: stop and restart **no longer move humans at all** — the team a player chose
+is theirs, and `ResetGame` touches no team numbers, so everyone lands back in warmup as they were
+(the 2026-09-27 spectator step is reverted; ready room, never spectator, is the sanctioned
+fallback); `/horde restart` clears the post-teardown cooldown its own teardown started; the
+cooldown default went 60 → 5 — and because Shine keeps the config it loads (fact 15), the fix
+also had to touch the persisted `shine/plugins/HordeMode.json` on the dev AND live servers, which
+a default change alone would never reach. Suite 63/0/1, handback 2/0.

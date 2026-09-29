@@ -29,11 +29,11 @@ Start with a fresh `/horde` and work down. Every line is something the suite can
 | 5 | Kill **one** mouth, wait 3 s | The **other** mouths stay visible; status drops by exactly one | the three-state registry — [[never-dereference-a-stored-handle]] |
 | 6 | Kill the **last** mouth | status reads `mouths=0/M`, not `1/M` | the husk state (`GetIsAlive()`), fact 33 in `MODDING.md` |
 | 7 | `/horde stop` | No victory/defeat screen. **Same map.** No errors in chat | handback order — [[td-ns2-round-lifecycle-and-handback]] |
-| 8 | Look around after the stop | You are in **spectator**; vanilla filler bots are back on both teams | `MovePlayersToSpectator` / the takeover release |
+| 8 | Look around after the stop | You are **still on your team**, back in warmup; vanilla filler bots are back on both teams | the handback order — [[td-ns2-round-lifecycle-and-handback]]; moving you was the bug (2026-09-28) |
 | 9 | `/horde` again, twice more | Mouth positions **differ** between runs; the log prints a different `seed=` each time | the seeded draw — [[assert-the-guarantee-not-the-hope]] |
-| 10 | `/horde restart`, then `/horde status` | Restart works from a live round; status reflects the new one | state machine transitions |
+| 10 | `/horde restart` right after a stop, then `/horde status` | Restart starts **immediately** — no cooldown wait, no move to spectator; you stay on your team; status reflects the new wave | restart clears the pending wait — `restart_clears_the_pending_cooldown` |
 | 11 | `/horde stop` twice in a row | Second is **rejected** (`inactive -> teardown is not a legal transition`), not ignored silently | `statemachine.lua` |
-| 12 | Idle 2 min, then rejoin | Cooldown enforced and counted down in status; nothing leaks from the last round | teardown completeness (RD6) |
+| 12 | `/horde stop`, then bare `/horde` within 5 s | Refused with a counting-down `cooldown remaining`; a later `/horde` starts clean and nothing leaks from the last round | the 5 s brake is a spam guard only (2026-09-28) — teardown completeness (RD6) |
 
 ## 2. Capture findings
 

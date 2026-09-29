@@ -283,6 +283,13 @@ function Plugin:OnHordeCommand(Client, Args)
 			self:Teardown(Now)
 		end
 
+		-- A restart is asked for; a cooldown is a brake on spam. Applying the second to the
+		-- first is what made `/horde restart` feel broken from the chair (2026-09-28): the
+		-- teardown the restart itself ran started the clock, and the start the restart then
+		-- asked for was refused by it. The wait still disciplines a bare `/horde` after a
+		-- stop; it can never gate a command whose entire meaning is "start again".
+		self.Machine:ClearCooldown()
+
 		self:StartWave(Client, Now)
 		return
 	end
@@ -755,24 +762,33 @@ function Plugin:HandBackWorld()
 	return true, nil
 end
 
---- Put the people somewhere neutral: every human goes to the spectator team, because after a stop
---- nobody should be standing in a round that no longer exists, and the next `/horde` should begin
---- from a join rather than from a marine that survived a reset.
-
---- Bots are left to vanilla on purpose. The takeover release puts the server's own bot
---- configuration back and `BotTeamController:UpdateBots` fills to the cap from the CURRENT team
---- counts - move a bot to spectator and it stops counting toward its team, so the controller adds
---- a replacement and the one we moved sits in spectator indefinitely. Humans carry no such
---- bookkeeping. Note that a bot's virtual client owns a real Player entity, so "has a client" does
---- not tell them apart; the `gServerBots` roster is the discriminator.
+--- The people stay where they are, and this step only COUNTS them (2026-09-28, Arian from
+--- the live chair, reverting the 2026-09-27 decision): the team a player chose is theirs, and
+--- a stop must not take it. The engine agrees - `ResetGame` calls `:Reset()` on every player
+--- that has a client (`NS2Gamerules.lua:530`) and resets no team numbers
+--- (`PlayingTeam:Reset` rebuilds the tech tree and brain, not rosters), so after the handback
+--- every human is still on their team, landing in warm-up exactly as the server was before
+--- `/horde`. If the chair finds that landing broken, the fallback is the ready room
+--- (`kTeamReadyRoom`, team 0) - NOT spectator - and this function is the one place that
+--- decision would live.
 ---
---- Players and the roster are injectable for the reason `DestroyAll`'s arguments are: the claim is
---- about WHO gets moved, and a headless server has no humans to move.
-function Plugin:MovePlayersToSpectator(Rules, Players, Bots)
-	local gamerules = Rules or GetGamerules()
+--- Bots are excluded from the census: vanilla owns them, and the takeover release has already
+--- handed them back. The discriminator is the `gServerBots` roster, because a bot's virtual
+--- client controls a real Player and "has a client" does not tell them apart (fact 11).
+--- Every read is pcall'd per player: a player mid-reset can throw - measured, the move step
+--- used to report exactly those - and a census that dies at one husk tells the admin nothing.
+---
+--- Players and the roster are injectable for the reason `DestroyAll`'s arguments are: the
+--- claim is about WHO is counted and WHO is not touched, and a headless server has no humans.
+function Plugin.ReportHumansKept(Players, Bots)
+	local List = Players
 
-	if not gamerules or not gamerules.JoinTeam then
-		return 0, 0, "no gamerules"
+	if not List then
+		List = {}
+
+		for _, Player in ientitylist(Shared.GetEntitiesWithClassname("Player")) do
+			List[#List + 1] = Player
+		end
 	end
 
 	local BotPlayers = {}
@@ -787,49 +803,27 @@ function Plugin:MovePlayersToSpectator(Rules, Players, Bots)
 		end
 	end
 
-	local List = Players
-
-	if not List then
-		List = {}
-
-		for _, Player in ientitylist(Shared.GetEntitiesWithClassname("Player")) do
-			List[#List + 1] = Player
-		end
-	end
-
-	local Moved, Refused = 0, 0
+	local Marines, Aliens, Problems = 0, 0, {}
 
 	for _, Player in ipairs(List) do
-		--- Three outcomes, named rather than inferred from a boolean: "skipped" is a rule working
-		--- and must not be reported as a failure, while a JoinTeam that returns false - or throws,
-		--- which is what a player mid-reset looks like - is a real refusal worth the log line.
-		local Ok, Outcome = pcall(function()
+		local Ok, Team = pcall(function()
 			if BotPlayers[Player:GetId()] then
-				return "skipped"
+				return nil
 			end
 
-			if Player:GetTeamNumber() == kSpectatorIndex then
-				return "skipped"
-			end
-
-			-- force: the round is over whether or not the team logic would have let them choose.
-			if gamerules:JoinTeam(Player, kSpectatorIndex, true) then
-				return "moved"
-			end
-
-			return "refused"
+			return Player:GetTeamNumber()
 		end)
 
-		Outcome = Ok and Outcome or "refused"
-
-		if Outcome == "moved" then
-			Moved = Moved + 1
-		elseif Outcome == "refused" then
-			Refused = Refused + 1
+		if not Ok then
+			Problems[#Problems + 1] = tostring(Team)
+		elseif Team == kTeam1Index then
+			Marines = Marines + 1
+		elseif Team == kTeam2Index then
+			Aliens = Aliens + 1
 		end
 	end
 
-	return Moved, Refused, nil
+	return Marines, Aliens, Problems
 end
 
 --- i7a: put the world back. RD6 sets the bar - destroy exactly our created set,
@@ -918,23 +912,24 @@ function Plugin:Teardown(Now)
 	--- existed" (Q7).
 	local Handed, HandBackReason = self:HandBackWorld()
 
-	--- Then the people, and before the switch comes back off: a spectator team cannot win or lose,
-	--- and releasing the win check while humans still stood on both sides of a round we had just
-	--- emptied is exactly the mistake this file already documents once.
-	local Moved, Refused, MoveReason = self:MovePlayersToSpectator()
+	--- The people are counted, not moved, and after the reset for the same reason the leak
+	--- poll waits: the log line must describe the world we are handing back, not the round we
+	--- tore down. No player is touched at any point in the handback - that is the contract
+	--- `stop_leaves_humans_on_their_teams` pins.
+	local KeptMarines, KeptAliens, CensusProblems = Plugin.ReportHumansKept()
 
 	self:RestoreGameEnd("teardown")
 
-	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, players=%s to spectator%s, %s id(s) still live",
+	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",
 		tostring(Total - Gone - #Failed), tostring(Husks), tostring(Gone), tostring(#Failed),
 		tostring(Total),
 		#Parts > 0 and table.concat(Parts, " ") or "nothing to destroy",
 		tostring(Took),
 		Handed and "reset to NotStarted" or ("left as-is: " .. tostring(HandBackReason)),
-		tostring(Moved),
-		(Refused > 0 or MoveReason) and string.format(" (%s refused%s)", tostring(Refused),
-			MoveReason and (", " .. MoveReason) or "") or "",
+		tostring(KeptMarines),
+		tostring(KeptAliens),
+		#CensusProblems > 0 and string.format(" (read failures: %s)", table.concat(CensusProblems, "; ")) or "",
 		tostring(#Leaked)))
 
 	if #Failed > 0 then

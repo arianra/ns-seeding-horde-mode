@@ -44,8 +44,9 @@ dev/                             the loop: test, deploy, publish, guard, state, 
    to implement (all marines dead simultaneously, or the chair destroyed).
 3. Complete teardown: "as if it never existed" — our created set is destroyed and accounted for,
    the bot controller is handed back, **the world is reset before the engine's win switch is
-   released, and every human is moved to spectator** (amended 2026-09-27; the original wording was
-   "players stay on chosen team").
+   released, and no player is touched: humans keep the team they chose and land back in warmup**
+   (restored 2026-09-28 after one day of the spectator-move amendment; the sanctioned fallback is
+   the ready room, never spectator).
 4. Hybrid hordes: cheap bulk grunts + recycled virtual-client elites, spawning from tunnel mouths
    placed by the engine's own build rules (`Pathing.GetFlags` → ground snap at the tunnel's
    extents → `CollideCapsule`), selected from a seeded per-wave draw.

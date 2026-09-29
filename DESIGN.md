@@ -61,7 +61,7 @@ alien, hold as long as you can.
 1. Seeding state: no alien players, seed max not reached.
 2. Caller is on marine team (any marine; min players = **1** — solo-playable
    while waiting for others).
-3. Not already running; not in post-teardown cooldown (config, default ~60s).
+3. Not already running; not in post-teardown cooldown (config, default **5 s** since 2026-09-28 — a spam brake only; `/horde restart` clears the wait outright, it being the command whose meaning is "start again").
 
 **No intermission before wave 1** — waves are the warm-up; action starts
 immediately (Q20). First intermission follows wave 1 clear.
@@ -191,8 +191,9 @@ vault `research/td-vanilla-warmup-and-bot-framework.md` §7.
 team 2 only while vanilla's balance gate permits the join. With `force_even_teams_on_join` set in
 `ServerConfig.json` — it is set on the dev tree — `NS2Gamerules:GetCanJoinTeamNumber`
 (`:1385-1423`) refuses any join that would unbalance the teams, `Bot:UpdateTeam` retries forever,
-and the surplus aliens sit at team 0 *reporting alive* (a virtual client controls a spectator, and
-spectators answer `GetIsAlive() == true`; "alive" never implied "joined"). The horde is deliberately
+and the surplus aliens sit at team 0 *reporting alive* (the bot's pre-join player waits in the
+ready room — team 0 is `kTeamReadyRoom`, `Globals.lua:119` — and it answers `GetIsAlive() == true`;
+"alive" never implied "joined"). The horde is deliberately
 unbalanced — that is what the 7q7 takeover means — so the factory forces its own join:
 `JoinTeam(player, 2, true)`. A forced join replaces the player with `AlienTeam.respawnEntity =
 Skulk` (`AlienTeam.lua:48`) in the same tick — the lifeform class is real immediately, no evolve
@@ -208,18 +209,21 @@ returns untouched) — the "as if it never existed" invariant extended to
 bot-management state. Teardown trigger distinguishes OUR bots
 (HordeRegistry) from any other virtual client. Bead 7q7 CLOSED.
 
-**Teardown order (DECIDED 2026-09-27, amends Q7's "players stay on chosen team"):** the handback
-is an ordered sequence, because two of its steps can end the game if they happen in the wrong
-order —
+**Teardown order (DECIDED 2026-09-27; AMENDED 2026-09-28 from Arian's live playtest, restoring
+Q7's "players stay on chosen team"):** the handback is an ordered sequence, because two of its
+steps can end the game if they happen in the wrong order —
 `destroy our created set` → `release the bot takeover` → `reset the world (ResetGame → NotStarted)`
-→ `move every human to spectator` → `release the win switch (preventGameEnd)`.
+→ **touch no player** → `release the win switch (preventGameEnd)`.
 Releasing the switch into a `Started` round with no aliens is precisely a marine win plus a map
 rotation (fact: `GetGameStarted()` is `kGameState.Started` and nothing else), which is what
-`/horde stop` did in the first playtest. Humans go to spectator rather than back to their teams:
-after a reset nobody should be standing in a round that no longer exists, and the next `/horde`
-starts from a join. **Bots are left to vanilla** — the released controller fills to the restored
-cap from current team counts, so moving a bot to spectator makes it stop counting and gets it
-replaced, leaving the moved one spectating forever.
+`/horde stop` did in the first playtest. Humans stay where they are: `ResetGame` resets players
+that have clients **in place** (`NS2Gamerules.lua:530`) and touches no team number, so after a
+stop everyone is back in warmup on the team they chose — the phase the server was in before
+`/horde`. The 2026-09-27 step that moved humans to spectator was wrong (the team a player chose
+is theirs); if warmup landing ever proves broken the sanctioned fallback is the ready room
+(`kTeamReadyRoom`), never spectator. **Bots are left to vanilla** — the released controller
+fills to the restored cap from current team counts, so moving a bot makes it stop counting,
+gets it replaced, and strands the moved one.
 
 ## 5. Economy
 
@@ -290,7 +294,7 @@ Starter schema (full proposal in levers note §6):
 ```jsonc
 {
   "__Version": "1.0",
-  "Start": { "CooldownSeconds": 60, "MinPlayers": 1 },
+  "Start": { "Cooldown": 5, "MinPlayers": 1 },   // key is Start.Cooldown (the schema draft's "CooldownSeconds" never shipped); 5 s since 2026-09-28, was a 60 draft / 0 interim
   "Intermission": { "Seconds": 60, "SkipBonusPerSecond": 0.5 },
   "Difficulty": {
     "Segments": {

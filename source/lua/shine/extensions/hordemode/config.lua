@@ -72,12 +72,15 @@ end
 
 Plugin.DefaultConfig = {
 	Start = {
-		-- 0, not 60: the only way a horde can end today is an explicit /horde stop, and a
-		-- minute of lockout after doing exactly what the mode tells you to do is not a
-		-- cooldown, it is friction nobody asked for. The knob stays (validated below) and
-		-- gets a real default when loss triggers exist (i8a) - that is the case Q12's
-		-- cooldown was written for: preventing instant re-start after a run ended badly.
-		Cooldown = 0,
+		-- 5, per Arian 2026-09-28 (live playtest): "the cooldown is useless during testing".
+		-- It amends the 09-21 zero and the pre-bake 60. What actually bit the chair was the
+		-- 60 PERSISTED in the server's own `shine/plugins/HordeMode.json` - Shine keeps the
+		-- table it loaded (fact 15), so lowering the default alone never reaches a server
+		-- that has booted once; the live and dev files were set to 5 alongside this change.
+		-- A short value disciplines repeated bare `/horde` spam only: `/horde restart`
+		-- clears the wait outright (server.lua's restart branch, `ClearCooldown`).
+		-- i8a's loss triggers are the case Q12's cooldown was written for - revisit then.
+		Cooldown = 5,
 		MinPlayers = 1,          -- real humans only; bot clients never count (verified, i0f)
 	},
 	Intermission = {

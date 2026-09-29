@@ -223,6 +223,14 @@ function StateMachine:TimeSinceEnd(Now)
 	return (Now or 0) - self.EndedAt
 end
 
+--- Forget any post-teardown wait. `/horde restart` uses this: the teardown ITSELF started
+--- the clock, and a cooldown that blocks the very restart that caused it is friction with no
+--- purpose (2026-09-28, live chair). A bare `/horde` after a stop still waits - this erases
+--- the wait, it does not disable the mechanism.
+function StateMachine:ClearCooldown()
+	self.EndedAt = nil
+end
+
 Plugin.StateMachine = StateMachine
 
 return StateMachine

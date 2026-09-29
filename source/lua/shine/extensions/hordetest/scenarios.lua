@@ -437,6 +437,41 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Triggers.Check(Snapshot(), Machine, Config, 200), "cooldown expires" )
 	end )
 
+	--- The cooldown's shape after 2026-09-28 (Arian: "the cooldown is useless during
+	--- testing"; and `/horde restart` was gating on the wait its OWN teardown had started):
+	--- a stop still starts a short cooldown that a bare `/horde` must wait out, but a
+	--- restart - a command whose entire meaning is "start again" - clears the pending wait.
+	--- Asserted in both directions, then re-armed: ClearCooldown forgets one wait, it does
+	--- not disable the mechanism (silent-enforcement-is-not-enforcement).
+	self:RegisterScenario( "restart_clears_the_pending_cooldown", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Machine = horde.StateMachine.New(0, function() end)
+		local Config = { Start = { Cooldown = 60, MinPlayers = 1 } }
+		local Snap = {
+			GameState = kGameState.WarmUp, RealMarineCount = 1, RealAlienCount = 0,
+			PlayerCount = 1, MaxPlayers = 16, BotCount = 0,
+		}
+
+		Machine:Start(10)
+		Machine:Stop("test", 20)
+		Machine:CompleteTeardown(20)
+
+		local _, Gate = horde.Triggers.Check(Snap, Machine, Config, 25)
+		Assert.Equal( "CooldownOk", Gate, "a plain /horde inside the wait is refused" )
+
+		Machine:ClearCooldown()
+
+		Assert.True( horde.Triggers.Check(Snap, Machine, Config, 25), "the restart is not" )
+		Assert.Nil( Machine:TimeSinceEnd(25), "the wait is forgotten, not masked" )
+
+		Machine:Start(30)
+		Machine:Stop("second", 40)
+		Machine:CompleteTeardown(40)
+
+		local _, SecondGate = horde.Triggers.Check(Snap, Machine, Config, 41)
+		Assert.Equal( "CooldownOk", SecondGate, "and the NEXT stop still starts a real cooldown" )
+	end )
+
 	self:RegisterScenario( "horde_command_is_bound", false, function()
 		local horde = Shine.Plugins.hordemode
 		Assert.NotNil( horde.Commands, "plugin registered commands at world-ready" )
@@ -558,7 +593,13 @@ function Plugin:InitialiseScenarios()
 		-- so counting it is the assertion that matters; Machine:Start is reached only
 		-- from inside StartWave, which its own scenarios cover.
 		horde.StartWave = function() Hits.wave = Hits.wave + 1 end
-		horde.Machine = { IsActive = function() return false end }
+		--- The double grows with the command surface: the restart branch clears the cooldown
+		--- before starting, and a fake that only answers IsActive would throw there -
+		--- a test double must model the transition, not just the calls the test happens to reach.
+		horde.Machine = {
+			IsActive = function() return false end,
+			ClearCooldown = function() end,
+		}
 
 		-- Driven through Shine:RunCommand, NOT by calling the handler directly.
 		-- The first version of this scenario called OnHordeCommand(nil, {"status"})
@@ -2661,7 +2702,10 @@ function Plugin:InitialiseScenarios()
 					Self.gameState = kGameState.NotStarted
 				end,
 				JoinTeam = function(Self, Player, Team, Force)
-					Order[#Order + 1] = "spectate"
+					--- A trap, not a step: since 2026-09-28 the handback joins NOBODY to
+					--- ANYTHING, and any code that calls this records itself here and fails
+					--- the assertion below.
+					Order[#Order + 1] = "moved"
 
 					return true
 				end,
@@ -2691,17 +2735,18 @@ function Plugin:InitialiseScenarios()
 
 		horde.Machine:Stop("test handback", Shared.GetTime())
 
-		--- The claim here is the CALL ORDER, not who gets moved - `stop_moves_humans_to_spectator`
-		--- owns that. So the move is stubbed to record itself rather than observed through real
-		--- player entities: on a headless server an entity created this tick is not guaranteed to
-		--- be enumerable in it, and an ordering test whose premise depends on engine timing would
-		--- fail for reasons that have nothing to do with the code under test.
-		local SavedMove = horde.MovePlayersToSpectator
+		--- The claim is the CALL ORDER plus one negative: reset before switch, census in
+		--- between, and no player touched anywhere. Since 2026-09-28 the handback moves no
+		--- one - `stop_leaves_humans_on_their_teams` owns who is counted; this scenario owns
+		--- WHERE in the sequence the census sits, so it is stubbed to record its position.
+		--- (An ordering test must not depend on real player entities: on a headless server an
+		--- entity created this tick is not guaranteed enumerable in it.)
+		local SavedCensus = horde.ReportHumansKept
 
-		horde.MovePlayersToSpectator = function(Self)
-			Order[#Order + 1] = "spectate"
+		horde.ReportHumansKept = function()
+			Order[#Order + 1] = "census"
 
-			return 1, 0, nil
+			return 1, 0, {}
 		end
 
 		local Machine = horde.Machine
@@ -2710,16 +2755,20 @@ function Plugin:InitialiseScenarios()
 			horde:Teardown(Shared.GetTime())
 		end)
 
-		horde.MovePlayersToSpectator = SavedMove
+		horde.ReportHumansKept = SavedCensus
 		GetGamerules = SavedRules
 		horde.HordeRoundStarted = SavedStarted
 		horde.Machine, horde.HordeRegistry, horde.HordeSpawner = SavedMachine, SavedReg, SavedSpawn
 
-		local SpectateAt, SwitchAt
+		local CensusAt, SwitchAt, MovedAt
 
 		for Index, Item in ipairs(Order) do
-			if Item == "spectate" and not SpectateAt then
-				SpectateAt = Index
+			if Item == "census" and not CensusAt then
+				CensusAt = Index
+			end
+
+			if Item == "moved" then
+				MovedAt = Index
 			end
 
 			if Item:find("^switch") then
@@ -2729,10 +2778,11 @@ function Plugin:InitialiseScenarios()
 
 		Assert.True( Ok, "teardown survived the handback: " .. tostring(Err) )
 		Assert.Equal( "reset", Order[1], "the world goes back to vanilla first" )
-		Assert.NotNil( SpectateAt, "players were moved while we still held the win check" )
-		Assert.True( SpectateAt < SwitchAt,
-			string.format("and before it came off (spectate at %s, switch at %s)",
-				tostring(SpectateAt), tostring(SwitchAt)) )
+		Assert.Nil( MovedAt, "the handback joined no player to any team" )
+		Assert.NotNil( CensusAt, "the people were counted while we still held the win check" )
+		Assert.True( CensusAt > 1 and CensusAt < SwitchAt,
+			string.format("and on the world the reset produced, before the switch came off (reset 1, census %s, switch %s)",
+				tostring(CensusAt), tostring(SwitchAt)) )
 		Assert.Equal( "switch:nil", Order[#Order], "the switch is the last thing handed back" )
 		Assert.Equal( kGameState.NotStarted, Rules.gameState, "so the switch comes off on a round that cannot end" )
 		Assert.True( Machine:Is(horde.Phase.Inactive), "and the machine is idle again" )
@@ -2763,57 +2813,54 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Reason:find("never took the round over") ~= nil, "saying why: " .. tostring(Reason) )
 	end )
 
-	--- Who gets moved, with the roster and the player list injected: the claim is a rule about
-	--- humans versus bots versus the already-spectating, and a headless server cannot be asked to
-	--- supply all three.
-	self:RegisterScenario( "stop_moves_humans_to_spectator", false, function()
+	--- Who gets touched: nobody. The census is a rule about humans versus bots versus
+	--- everyone else, with the roster and the player list injected because a headless server
+	--- cannot supply all three. 2026-09-28 (live chair): the stop that MOVED humans to
+	--- spectator was the wrong rule - the team a player chose is theirs - so the contract now
+	--- is count-and-report, and the JoinTeam-free signature plus the SetTeamNumber traps
+	--- below are what keep a future "helpful" move from sliding back in.
+	self:RegisterScenario( "stop_leaves_humans_on_their_teams", false, function()
 		local horde = Shine.Plugins.hordemode
-		local Calls = {}
 
 		local function FakePlayer(Id, Team)
 			return {
 				GetId = function() return Id end,
 				GetTeamNumber = function() return Team end,
+				SetTeamNumber = function()
+					error( { Detail = string.format("player %s had its team changed by the handback", tostring(Id)) } )
+				end,
 			}
 		end
 
 		local BotPlayer = FakePlayer(3, kTeam1Index)
 		local Roster = { { GetPlayer = function() return BotPlayer end } }
+		local Thrower = {
+			GetId = function() return 6 end,
+			GetTeamNumber = function() error("player mid-reset") end,
+		}
+		local Marine = FakePlayer(1, kTeam1Index)
+
 		local Players = {
-			FakePlayer(1, kTeam1Index),        -- human marine
-			FakePlayer(2, kTeam2Index),        -- human alien
-			BotPlayer,                         -- a bot, which vanilla owns
-			FakePlayer(4, kSpectatorIndex),    -- already out of the round
-			FakePlayer(5, kTeam1Index),        -- a human whose move will be refused
+			Marine,                          -- human marine
+			FakePlayer(2, kTeam2Index),      -- human alien
+			BotPlayer,                       -- a bot, which vanilla owns
+			FakePlayer(4, kSpectatorIndex),  -- chose to watch; also nobody's to move
+			Thrower,                         -- a read that fails mid-reset must be reported, not fatal
 		}
 
-		local Rules = {
-			JoinTeam = function(Self, Player, Team, Force)
-				if Player:GetId() == 5 then
-					error("team logic threw mid-reset")
-				end
+		local Marines, Aliens, Problems = horde.ReportHumansKept(Players, Roster)
 
-				Calls[#Calls + 1] = { id = Player:GetId(), team = Team, force = Force }
+		Assert.Equal( 1, Marines, "the marine is counted where he stands" )
+		Assert.Equal( 1, Aliens, "the alien is counted where she stands" )
+		Assert.Equal( 1, #Problems, "the thrower is named and the census finishes anyway" )
+		Assert.True( Problems[1]:find("mid%-reset") ~= nil, "named with its error: " .. tostring(Problems[1]) )
+		Assert.Equal( kTeam1Index, Marine:GetTeamNumber(), "and its team is still the one it chose" )
 
-				return true
-			end,
-		}
+		local ZeroM, ZeroA, ZeroP = horde.ReportHumansKept({}, {})
 
-		local Moved, Refused = horde:MovePlayersToSpectator(Rules, Players, Roster)
-
-		Assert.Equal( 2, Moved, "both humans went to spectator" )
-		Assert.Equal( 1, Refused, "and the one that threw is reported, not swallowed" )
-		Assert.Equal( 2, #Calls, "the bot and the spectator were never asked" )
-		Assert.Equal( kSpectatorIndex, Calls[1].team, "to the spectator team" )
-		Assert.Equal( kSpectatorIndex, Calls[2].team, "both of them" )
-		Assert.True( Calls[1].force == true and Calls[2].force == true,
-			"forced - the round is over whether or not the team logic would have let them choose" )
-		Assert.Equal( 1, Calls[1].id, "marine first" )
-		Assert.Equal( 2, Calls[2].id, "then alien - neither is a bot" )
-
-		local Nothing = horde:MovePlayersToSpectator({}, {}, {})
-
-		Assert.Equal( 0, Nothing, "no gamerules to move anyone with is zero, not an error" )
+		Assert.Equal( 0, ZeroM, "an empty world counts zero, not error" )
+		Assert.Equal( 0, ZeroA, "on both teams" )
+		Assert.Equal( 0, #ZeroP, "and no problems" )
 	end )
 
 	--- The real handback, run alone by `./dev/test.sh --handback`. The faked-order scenario above
