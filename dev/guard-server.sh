@@ -47,6 +47,19 @@ case "${1:-status}" in
   free)
     read -r C D <<<"$(session_counts)"
     OPEN=$(( C - D ))
+    if (( OPEN > 0 )) && ! process_running; then
+      # A dead server hosts no sessions, whoever the ledger thinks is in. The count can go
+      # stale two ways, both measured 2026-09-29: a kill can swallow the disconnect line, and
+      # a client refused at the mod-version handshake leaves "Client connecting" with no
+      # matching exit. And with TWO instances on this box the rotation assumption below is
+      # broken anyway - the second boot's ledger lands in log-Server-2.txt while the first
+      # file keeps the dead sessions of its own server. Refusing forever on that artifact is
+      # a guard that cannot distinguish "someone is playing" from "nobody can be": it protects
+      # nothing and blocks everything. The protection that matters is OPEN > 0 *while our
+      # tracked server is running* - that path below stays exactly as strict.
+      echo "[guard] ledger shows $OPEN open session(s) but no tracked server process is running - stale ledger, nothing to disturb" >&2
+      OPEN=0
+    fi
     if (( OPEN > 0 )); then
       echo "[guard] REFUSED - $OPEN client session(s) still connected to the server." >&2
       echo "[guard]       stopping it now writes a crash dump and looks like a game bug." >&2

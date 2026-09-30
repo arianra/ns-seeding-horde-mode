@@ -64,11 +64,11 @@ Arian the ability to play the game.
 | Dev server config | `D:\games\horde\server\cfg` (rebuilt from the live cfg + repo overlay each run) |
 | Dev mod storage | `D:\games\horde\server\mods` (`-modstorage`, isolated from Steam) |
 | Dev server port | **27025** (UDP; 27026 paired). Live server is 27015/27016 |
-| Arian's live server | `D:\games\ns2srv\` — do not touch, do not restart, do not enable `hordetest` |
+| Arian's live server | Runs ON THIS BOX: config `D:\games\ns2srv\cfg`, UDP **27015/27016**, default mod storage (`%APPDATA%\Natural Selection 2\workshop`). Boot/stop procedure in §6. Never write its cfg, never restart, never enable `hordetest` — **except on Arian's explicit request** (the 2026-09-29 restart, MapCycle/BaseConfig/Cooldown edits were such a request) |
 | Engine log | `C:\Users\aria\AppData\Roaming\Natural Selection 2\log-Server.txt` (Windows-side, shared with the live server's client — treat as read-only evidence) |
 | Our published mod | Workshop item **`3807461324`** (`seedinghorde`, public). Client auto-download **verified** — a vanilla client joins with no launch options |
 | Shine | published item `117887554`; our plugins load *alongside* it, never inside it |
-| Join from the same box | client launch option `+connect 127.0.0.1:27025` (or `connect 127.0.0.1:27025` in the console) |
+| Join | dev: client launch option `+connect 127.0.0.1:27025`; live (when booted): listed in the server browser under tag `horde`, or `+connect 127.0.0.1:27015` from this box |
 | Research clones | `/mnt/d/projects/ns2-td/research/` (shine, shine-wiki, laststand, combat) |
 | Issue tracker | beads (`bd`), Dolt-backed; `.beads/issues.jsonl` is a passive export committed for the remote |
 
@@ -176,7 +176,8 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
 ./dev/test.sh --handback        # PROBE ONLY: the real ResetGame handback (see §7)
 ./dev/server-start.sh [map]     # joinable DEV boot (hordetest disarmed, Debug.RevealMouths on)
 ./dev/server-start.sh --with-suite [map]   # armed boot (test.sh uses this)
-./dev/guard-server.sh           # refuses destructive action while a client session is open
+./dev/guard-server.sh           # refuses destructive action while a client session is open;
+                                # a stale ledger cannot block a boot when no tracked process runs
 ./dev/server-stop.sh            # PID-identity-checked stop, never by name
 ./dev/deploy.sh [--check|--clean]  # install dev files into the dev tree; --check asserts the
                                    # client's Steam copy is pristine; --clean undoes damage
@@ -200,6 +201,39 @@ status line after killing one mouth and after killing the last, a stop that decl
 changes no map, humans landing back in warmup **on the teams they chose** with vanilla bots
 restored, and positions differing across three consecutive `/horde` runs. Findings from it become
 beads. Every serious defect in this project arrived through that door, not through the suite.
+
+### Live server operation (same box, different tree)
+
+Documented 2026-09-29 after it turned out no session had written the procedure down, only the prohibitions.
+
+The live server boots **on this machine** from Arian's own config tree; since the 09-21 incident every
+agent loop used the dev tree, so "never point at live" was documented thoroughly and "how to run it
+when he asks" was not. Boot (canonical, from vault `reference/td-dev-environment-runbook`):
+
+```powershell
+Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\ns2-server' `
+  -ArgumentList '-config_path','D:\games\ns2srv\cfg','-port','27015','-limit','16','+map','ns2_summit'
+```
+
+- No `-modstorage`: the live uses the **default** store `%APPDATA%\Natural Selection 2\workshop\content\4920\`.
+  The engine downloads a Workshop item only if something names it: **`ns2srv/cfg/MapCycle.json`
+  `mods` must list both `706d242` (Shine) and `e2f13fcc` (our item, = 3807461324)** — that is how
+  `seedinghorde` reaches the live box, and how a republish reaches it too (fetched on boot/map-change).
+- `ns2srv/cfg/shine/BaseConfig.json`: `hordemode` on is Arian's flag to set (it was left off after the
+  09-21 crash-cleanup and the server ran no horde until 2026-09-29); `hordetest` must stay off there —
+  and it double-disarms anyway, needing `HordeTest.json RunSuite=true`, which no live boot should have.
+- **Stop**: same identity discipline as dev — resolve the PID whose command line carries
+  `ns2srv\cfg` (this box can run dev and live side by side; never kill by image name), then plain
+  `Stop-Process -Id`. Guard (`./dev/guard-server.sh`) first. A stop with players in it writes a large
+  minidump — expected, not a game crash.
+- Verify a live boot from its own rotated engine log (`log-Server-2.txt` when dev also holds the
+  shared slot — S4 `0k3/7sv`): `Mounting mod 'seedinghorde'` from the `%APPDATA%` store, `- Extension
+  'hordemode' loaded.`, `[HORDE] armed at game state 2`, and UDP 27015/27016 bound by that PID.
+  Bytes beat all of that: sha256 the store copy against `source/` — on 2026-09-29 it was 16/16
+  identical to the suite-passed build.
+- Config values the live box carries (all set 2026-09-29 at Arian's request): `HordeMode.json
+  Start.Cooldown = 5` — remember fact 15, the persisted file beats the code default, so a default
+  change NEVER reaches a booted server; edit the file where it matters.
 
 ## 7. Verification discipline (each of these was paid for)
 
