@@ -522,10 +522,11 @@ function Plugin:BeginCountdown(Seconds)
 	return Length
 end
 
---- Place and create this wave's mouths. Nothing walks out of them yet: i5a built the
---- bot factory (Spawner:SpawnBot), and wiring it into the wave is i6a (wave loop) -
---- a horde with no mouths is invisible, and this is the bead that made /horde
---- observable in-world.
+--- Place and create this wave's mouths - and, since 71c, pull the factory's trigger:
+--- each placed mouth emits `Waves.TestBotsPerMouth` skulks through the queue that
+--- the world tick registers and places. A horde with no mouths is invisible; a horde
+--- whose mouths never emit is a diorama. Composition (per-type counts, curves) is
+--- i6a's; this knob's whole job is that aliens RUN before any wave math trusts them.
 function Plugin:BeginWave(Config)
 	local Machine = self.Machine
 
@@ -554,6 +555,14 @@ function Plugin:BeginWave(Config)
 	local Spawned = 0
 	local Refused = {}
 
+	-- 71c: the first trigger pull the factory ever had. Each bot is queued AT the mouth's
+	-- own engine-validated point and emerges through PlaceBots on the tick - deliberately
+	-- NOT at the chair or a hive, and deliberately not composition: i6a replaces this flat
+	-- count with curve-driven spawn policy and deletes the knob. Read per wave so a
+	-- sanitizer-fixed file can never disagree with behaviour (fact 15).
+	local PerMouth = (Config.Waves and Config.Waves.TestBotsPerMouth) or 0
+	local BotsQueued = 0
+
 	for Index, Candidate in ipairs(Chosen) do
 		local Mouth, Reason = self.HordeSpawner:SpawnMouth(Candidate.point)
 
@@ -571,6 +580,14 @@ function Plugin:BeginWave(Config)
 				Plugin.Placement.Axis(Candidate.point, "z", 3),
 				string.format("%.1f", Candidate.distance or -1),
 				tostring(Mouth:GetId())))
+
+			-- Bots follow their mouth: a mouth that failed the build gate must not
+			-- orphan a queue of bots at a point nothing emerged from.
+			for _ = 1, PerMouth do
+				if self.HordeSpawner:SpawnBot(Candidate.point, kTechId.Skulk) then
+					BotsQueued = BotsQueued + 1
+				end
+			end
 		else
 			Refused[#Refused + 1] = tostring(Reason)
 		end
@@ -591,15 +608,13 @@ function Plugin:BeginWave(Config)
 			table.concat(Refused, "; "), tostring(Waves.BandMin), tostring(Waves.BandMax),
 			tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
 	else
-		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s seed=%s",
+		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s seed=%s, %s bots queued (Waves.TestBotsPerMouth=%s)",
 			tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
-			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed)))
+			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed),
+			tostring(BotsQueued), tostring(PerMouth)))
 
-		-- "placed", not "opened": the wave loop does not call the bot factory (i5a)
-		-- until i6a wires it, and saying opened oversells what the player is about
-		-- to see.
-		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s /horde status | /horde stop | /horde restart",
-			Spawned, RawCount, Reveal and " - they are revealed on your map" or "")
+		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s - %s aliens emerge shortly. /horde status | /horde stop | /horde restart",
+			Spawned, RawCount, Reveal and " (revealed on your map)" or "", tostring(BotsQueued))
 	end
 
 	-- The status surface reads these off the machine, and nothing used to write them:
@@ -694,7 +709,21 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 			Ids[#Ids + 1] = Item.id
 		end
 
-		if State == Vanished then
+		-- Bots are judged by their PLAYER (EngineStateOf), which answers "Gone" from two
+		-- different worlds: a bot someone already disconnected (its entity id really is
+		-- unresolvable), and a bot whose player has not materialised yet - entity alive,
+		--- virtual client attached, no player, still ours to destroy. Trusting Gone there
+		-- leaks a client that outlives the teardown, and 71c makes that window reachable
+		-- from the chair on purpose (stop right after a start, while bots are queueing).
+		-- The same trap sits one layer down: EngineStateOf answers Gone for ANY entry
+		-- without an id - which is exactly what TakePending hands over (refs born in the
+		-- creation tick are refused registration by design). Before 71c's early-stop unit
+		-- no teardown ever saw one; trusting it there would have leaked a pending mouth
+		-- with the leak poll blind to it (no id to poll). So: touch what is still real.
+		local BornUnregistered = Item.id == nil and Ref ~= nil
+		local BotStillReal = Kind == "bot" and (Item.id == nil or Shared.GetEntity(Item.id) ~= nil)
+
+		if State == Vanished and not BotStillReal and not BornUnregistered then
 			--- Fully gone - the engine finished it. That is the outcome we asked for, not a
 			--- failure, and counting it as one made a clean round look broken: measured
 			--- "teardown FAILED for 2 entries: ... Attempt to access an object that no longer
@@ -704,9 +733,12 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 			--- Two paths, one obligation. A husk (killed, still in the entity list through its
 			--- death sequence) is not killed again - it is only removed, because "as if it never
 			--- existed" is ours to deliver and the engine would otherwise leave it standing there
-			--- behind a teardown that logged PASS. The kill and the removal are separate pcalls so
-			--- that a refusal to die cannot skip the removal.
-			if State == Standing then
+			--- behind a teardown that logged PASS. The kill and the removal are separate pcalls
+			--- so that a refusal to die cannot skip the removal. A bot is ALWAYS disconnected
+			--- while its entity is real - standing, husk, or player-not-yet-born (BotStillReal)
+			--- - because Disconnect is what releases the virtual client; DestroyEntity alone
+			--- would strand it.
+			if State == Standing or BotStillReal or BornUnregistered then
 				pcall(function()
 					if Kind == "bot" and Ref.Disconnect then
 						Ref:Disconnect()

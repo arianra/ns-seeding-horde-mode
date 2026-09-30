@@ -1720,6 +1720,24 @@ function Plugin:InitialiseScenarios()
 				Problems[#Problems + 1] = "the tick pump registered no mouths"
 			end
 
+			-- 71c: wave 1 is no longer a diorama - BeginWave queued bots at each mouth
+			-- through the factory. Books first: registration needs only a tick, so this is
+			-- deterministic at t+6 (player MATERIALISATION timing is bot_factory_settles'
+			-- claim, not this one's). The leak poll below covers every id, bots included.
+			local PerMouth = horde.HordeConfig.Resolve(Shared.GetMapName()).Waves.TestBotsPerMouth or 0
+			local BotIds = {}
+
+			for _, BotId in ipairs(horde.HordeRegistry:GetAllIds()) do
+				if horde.HordeRegistry:GetKind(BotId) == "bot" then
+					BotIds[#BotIds + 1] = BotId
+				end
+			end
+
+			if #BotIds ~= Placed * PerMouth then
+				Problems[#Problems + 1] = string.format("BeginWave should queue %s bots (%s mouths x knob %s); the books hold %s",
+					tostring(Placed * PerMouth), tostring(Placed), tostring(PerMouth), tostring(#BotIds))
+			end
+
 			-- The status line reads these off the machine. BeginWave used to place
 			-- three real mouths and leave both fields nil, so BuildStatusLine printed
 			-- "mouths=-/-" and told the player the wave was empty. Asserting on the
@@ -1759,7 +1777,7 @@ function Plugin:InitialiseScenarios()
 
 			for _, Id in ipairs(Ids) do
 				if Shared.GetEntity(Id) ~= nil then
-					Problems[#Problems + 1] = "mouth " .. tostring(Id) .. " survived teardown"
+					Problems[#Problems + 1] = "entry " .. tostring(Id) .. " survived teardown"
 				end
 			end
 
@@ -1776,6 +1794,58 @@ function Plugin:InitialiseScenarios()
 				error( { Detail = "wave slice: " .. table.concat(Problems, "; ") } )
 			end
 		end )
+	end )
+
+	-- 71c, unit: the knob owns the trigger, both directions, zero timing assumptions.
+	-- BeginWave only QUEUES (pending refs); BotCount and PendingCount read on the same
+	-- tick, so no Defer and no window - registration and emergence are wave_slice's and
+	-- bot_factory_settles' claims respectively. This is also the suite's first teardown
+	-- of a BornUnregistered set: the whole point of TakePending, never actually exercised
+	-- until a chair user could stop mid-queue - and DestroyAll skipped exactly those refs
+	-- until this scenario found it (a pending mouth leaked with no id to poll). Swapped
+	-- instances restored synchronously, restore-before-assert as always.
+	self:RegisterScenario( "test_wave_knob_is_honest_both_ways", false, function()
+		local horde = Shine.Plugins.hordemode
+		local SavedMachine, SavedRegistry, SavedSpawner = horde.Machine, horde.HordeRegistry, horde.HordeSpawner
+
+		horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
+		horde.Machine:Start(Shared.GetTime())
+
+		local function RunWithKnob(Value)
+			horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineStateOf)
+			horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function() end)
+
+			local Config = horde.HordeConfig.Copy(horde.DefaultConfig)
+			horde.HordeConfig.Sanitize(Config)
+			Config.Waves.TestBotsPerMouth = Value
+
+			local Placed = horde:BeginWave(Config)
+			local Queued = horde.HordeSpawner.BotCount
+			local Pending = horde.HordeSpawner:PendingCount()
+
+			-- Destroy synchronously: pending mouths AND pending bots, nothing registered,
+			-- which is precisely the path that used to skip them.
+			local Destroyed, Failed = horde.DestroyAll(horde.HordeRegistry, horde.HordeSpawner:TakePending(), nil)
+
+			return Placed, Queued, Pending, Destroyed, Failed
+		end
+
+		local Placed0, Queued0, Pending0, Destroyed0, Failed0 = RunWithKnob(0)
+		local Placed2, Queued2, Pending2, Destroyed2, Failed2 = RunWithKnob(2)
+
+		horde.Machine, horde.HordeRegistry, horde.HordeSpawner = SavedMachine, SavedRegistry, SavedSpawner
+
+		Assert.True( Placed0 >= 1, "the live map places mouths for the knob to act on" )
+		Assert.Equal( 0, Queued0, "knob 0 queues NO bots - the guard can fail closed" )
+		Assert.Equal( Placed0, Pending0, "and the queue holds just the mouths" )
+		Assert.Equal( 0, #Failed0, "pending-only teardown reports no failures" )
+		Assert.Equal( Placed0, Destroyed0.mouth or 0, "and really destroyed them (pre-fix: skipped as Gone)" )
+
+		Assert.True( Placed2 >= 1, "the second run places too" )
+		Assert.Equal( Placed2 * 2, Queued2, "knob 2 queues exactly two bots per placed mouth" )
+		Assert.Equal( Placed2 * 3, Pending2, "pending holds 2 bots + 1 mouth per mouth placed" )
+		Assert.Equal( 0, #Failed2, "disconnecting never-materialised bots is clean" )
+		Assert.Equal( Placed2 * 2, Destroyed2.bot or 0, "every pending bot went through Disconnect" )
 	end )
 
 	-- The victory screen a joining marine saw on frame one was not a wave bug: with no
@@ -1859,6 +1929,17 @@ function Plugin:InitialiseScenarios()
 		local SavedLatch1, SavedLatch2 = Gamerules.team1Lost, Gamerules.team2Lost
 		local SavedWindow = Gamerules.timeDrawWindowEnds
 
+		-- Captured BEFORE anything is overridden: what the alien side's own methods answer
+		-- in the world this suite now lives in. 71c put real bots on team 2 (and vanilla's
+		-- start-of-round builds an alien structure of its own), so the probe's dangerous
+		-- premise - STARTED round, alien side has nothing - is now CONSTRUCTED, exactly
+		-- like the STARTED state is. Everything that decides, decides for real.
+		local SavedAlienRoster = {
+			Players = Aliens.GetNumPlayers,
+			Alive = Aliens.GetHasActivePlayers,
+			Structures = Aliens.GetNumAliveCommandStructures,
+		}
+
 		local function Restore()
 			Gamerules.EndGame = SavedEndGame
 			Gamerules.DrawGame = SavedDraw
@@ -1872,6 +1953,12 @@ function Plugin:InitialiseScenarios()
 			-- Released, not left on. An inactive horde has no business holding win/loss, and
 			-- both directions are idempotent so this cannot double-release.
 			horde:RestoreGameEnd("probe restore")
+
+			-- Roster overrides are restored on EVERY exit path - Measure may raise - the
+			-- same discipline as the recorders above.
+			Aliens.GetNumPlayers = SavedAlienRoster.Players
+			Aliens.GetHasActivePlayers = SavedAlienRoster.Alive
+			Aliens.GetNumAliveCommandStructures = SavedAlienRoster.Structures
 		end
 
 		--- Ask the engine's own predicate what it decides for a trio of inputs. Only what the
@@ -1910,6 +1997,11 @@ function Plugin:InitialiseScenarios()
 			Gamerules:SetGameState(kGameState.Started)
 
 			Result.AlienPlayers = Aliens:GetNumPlayers()
+			-- Since 71c this number legitimately includes the wave-slice and factory bots
+			-- (fact 36: the roster counts bots). What this probe's premises are about is
+			-- REAL players, so the trigger's own human-only snapshot is captured beside it:
+			-- the guard below tests that, and AlienPlayers stays printed as evidence.
+			Result.AlienRealPlayers = horde.Triggers.TakeSnapshot(nil).RealAlienCount or -1
 			Result.AlienAlive = Aliens:GetHasActivePlayers()
 			Result.AlienStructures = Aliens:GetNumAliveCommandStructures()
 			Result.AlienRespawn = Aliens:GetHasAbilityToRespawn()
@@ -1924,6 +2016,15 @@ function Plugin:InitialiseScenarios()
 			Result.CommanderNoStructure = Verdict(1, true, 0)
 			Result.NobodyNoStructure = Verdict(0, false, 0)
 
+			-- Install the empty-alien-side premise for the whole engine-path section
+			-- (latch, window, dispatch, suppression re-check). Restore() lifts it on every
+			-- exit path. Verdict()'s counterfactuals above already ran against the REAL
+			-- roster methods, so no claim here rests on a value this probe fed itself.
+			Aliens.GetNumPlayers = function() return 0 end
+			Aliens.GetHasActivePlayers = function() return false end
+			Aliens.GetNumAliveCommandStructures = function() return 0 end
+
+			Result.AlienLostEmpty = Aliens:GetHasTeamLost()
 			-- Both ways an engine ends a round are recorded (NS2Gamerules.lua:1826-1840): zero
 			-- alive command structures on BOTH sides is a draw, and on a headless WarmUp server
 			-- that is a live possibility rather than a hypothetical. The first version of this
@@ -1991,9 +2092,13 @@ function Plugin:InitialiseScenarios()
 			tostring(Result.Decision), tostring(Result.WinnerIsMarines),
 			tostring(Result.CallsAfterSuppression), tostring(Result.EvaluatedWhileSuppressed) ) )
 
-		-- The dangerous state is measured, not assumed.
-		Assert.Equal( 0, Result.AlienPlayers, "the measured world really has no alien players" )
-		Assert.True( Result.AlienLost, "and the engine already considers the alien side beaten" )
+		-- The dangerous state is measured, not assumed. The empty-alien-side premise is
+		-- about PEOPLE: 71c put bots on team 2 during this very pass, and the structure
+		-- branch below is precisely the branch that presence cannot answer.
+		Assert.Equal( 0, Result.AlienRealPlayers, "the measured world has no real alien players" )
+		Assert.True( Result.AlienLostEmpty,
+			string.format("with the alien side emptied (the horde premise), the engine's own predicate scores it beaten - the raw reads (%s players incl. bots, %s structures) are what the wave scenarios made real since 71c",
+				tostring(Result.AlienPlayers), tostring(Result.AlienStructures)) )
 
 		-- The answer to the proposal, measured: a living alien clears the loss ONLY while an
 		-- alien command structure is standing. A horde round builds no hive, so the branch that

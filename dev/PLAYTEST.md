@@ -35,6 +35,10 @@ Start with a fresh `/horde` and work down. Every line is something the suite can
 | 10 | `/horde restart` right after a stop, then `/horde status` | Restart starts **immediately** — no cooldown wait, no move to spectator; you stay on your team; status reflects the new wave | restart clears the pending wait — `restart_clears_the_pending_cooldown` |
 | 11 | `/horde stop` twice in a row | Second is **rejected** (`inactive -> teardown is not a legal transition`), not ignored silently | `statemachine.lua` |
 | 12 | `/horde stop`, then bare `/horde` within 5 s | Refused with a counting-down `cooldown remaining`; a later `/horde` starts clean and nothing leaks from the last round | the 5 s brake is a spam guard only (2026-09-28) — teardown completeness (RD6) |
+| 13 | `/horde`, sit through the countdown | Chat announces **N aliens emerge shortly**; `ours=` climbs from 0 as the tick places them; you see them at the mouths | 71c test wave — `BeginWave` → `SpawnBot` queue → `PlaceBots`; [[td-ns2-bot-spawn-and-team-join]] |
+| 14 | **Watch them move (the t28 key risk) — this is the whole reason for step A** | Bots head toward the marine base / attack marines and structures. NOT: milling at the mouth, wandering map-edge, standing still | if they wander: stop, report direction + rough timings — the order-forcing fallback (Q16 governance) gets its own bead BEFORE any wave math trusts them |
+| 15 | Kill a few bots, watch `/horde status` | `ours=` drops live; the bots you kill stay dead and leave no "husk" count | registry is the accounting truth (RD6) |
+| 16 | `/horde stop` **immediately after a new `/horde restart`** (bots still queueing), then a second stop→start | No leaked ghost clients: server stays joinable, log shows no orphan bot chatter, `ours=` hits 0 | the early-stop window tests `BornUnregistered`/`BotStillReal` disconnect paths in `DestroyAll` (fixed while writing 71c — this row is its chair twin) |
 
 ## 2. Capture findings
 
@@ -52,11 +56,10 @@ rounds were tracked.
 
 ## 3. Known non-bugs (do not chase these)
 
-- **Nothing walks out of a mouth yet — and that is expected, not a bug this round.** The i5a bot
-  factory EXISTS (`Spawner:SpawnBot` + the join/place stage, proven by `bot_factory_settles`); the
-  wave loop that calls it per composition (i6a) is not wired, and stream-to-base behaviour (i5b)
-  is untested. `bots`/`ours` staying at 0 during a wave is the milestone state (tracker `1fv`/`t28`),
-  not a defect to chase from the chair.
+- **Every mouth emits the SAME flat count of skulks** (`Waves.TestBotsPerMouth`, currently 2).
+  That is the 71c test wave, not composition — per-type counts and the difficulty curve are i6a's
+  (`1fv`), which deletes this knob. Wave 1 having only skulks and no Gorge/Lerk/Fade/Onos is
+  expected: RD4's curve is real in config but nothing reads a composition table yet.
 - **There is no wave 2.** i6a (wave loop) does not exist yet.
 - **A horde that "ends" cannot end** — i8a (loss triggers) does not exist. Until then, stop it with
   `/horde stop`.

@@ -98,6 +98,11 @@ Plugin.DefaultConfig = {
 		--- derived instead of tuned. 0.5 keeps it well clear of any base room while never
 		--- rejecting a point the walking ring would want.
 		BandLineFactor = 0.5,
+		--- STEP A (bead 71c): the first trigger-pull of the bot factory — this many skulks
+		--- emerge at EACH mouth of wave 1. Deliberately not composition: i6a (1fv) replaces
+		--- this knob with curve-driven per-type counts and removes it. 2-per-mouth exists
+		--- so the chair can watch aliens RUN before any wave math trusts them.
+		TestBotsPerMouth = 2,      -- untuned, placeholder 2026-09-30
 		Composition = NewCurve(4, 24),
 		Health = NewCurve(1, 3),
 		Armor = NewCurve(0, 2),
@@ -247,6 +252,7 @@ function Config.Sanitize(In)
 	Section("Intermission", "SkipCost", 0, 10000, true)
 	Section("Waves", "PoolSize", 1, 12, true)
 	Section("Waves", "ActivePerWave", 1, 12, true)
+	Section("Waves", "TestBotsPerMouth", 0, 12, true)
 	Section("Waves", "BandMin", Config.BandFloor, Config.BandCeiling)
 	Section("Waves", "BandMax", Config.BandFloor, Config.BandCeiling)
 	Section("Economy", "WaveClearPayout", 0, 10000, true)

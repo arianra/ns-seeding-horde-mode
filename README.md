@@ -18,8 +18,8 @@ Phase 1 vertical slice, milestones **M0–M4 + M7 implemented, M5 partly** (i5a 
 | | |
 |---|---|
 | Gate | `./dev/lint.sh` · `./dev/test.sh` (suite, headless) · `./dev/test.sh --handback` (the only run allowed a real world reset) |
-| Built | mouths spawn on engine-validated surfaces and are marine-revealable; `/horde status` reports live truth; teardown destroys our set, hands the bot controller back (with the refill nudge), resets the world, keeps humans on their teams, and restart re-runs from a clean slate instantly |
-| Not built yet | i5b (bots stream to base), i6a (the wave loop that wires `Spawner:SpawnBot` — until it does, no aliens walk out of a mouth in-game), i8a (loss triggers — so a horde that "ends" cannot end) |
+| Built | `/horde` places mouths on engine-validated surfaces and **aliens emerge from them** (step A, flat test count), marine-revealable; `/horde status` reports live truth; teardown destroys our set (bots included, even never-materialised ones), hands the bot controller back (with the refill nudge), resets the world, keeps humans on their teams; restart re-runs from a clean slate instantly |
+| Not built yet | wave 2 / composition / intermission (i6a replaces the test knob), loss triggers (i8a — bots swarm but nothing ends), and the stream-to-base question (i5b) is now chair-verifiable: PLAYTEST steps 13-16 |
 | Balance | curve endpoints are **untuned placeholders**; the numbers are Arian's to set (RD3) |
 | Servers | **development uses the dev server only** (port 27025, `./dev/server-start.sh`). This is a mod project: the live tree exists for possible future use and is booted **only when Arian asks by name** (HANDOFF §2 rule 0) |
 | Tracker | beads (`bd`), exported to `.beads/issues.jsonl`; reconciliation in `MODDING.md` §7 |

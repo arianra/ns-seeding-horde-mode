@@ -266,24 +266,26 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
 
 - **Milestones**: M0 harness + static gate · M1 config + curves · M2 commands/gate · M3 registry +
   takeover + live integration · M4 placement (surface-gated, seeded) · M7 teardown + handback ·
-  **M5 partly: i5a bot factory landed 2026-09-28** (`Spawner:SpawnBot` + the join/place stage,
-  proven by `bot_factory_settles`; i5b stream-to-base is the open half). M6 (wave loop) and M8
-  (loss triggers) are not.
+  **M5 partly: i5a bot factory landed 2026-09-28** (`Spawner:SpawnBot` + the join/place stage);
+  **STEP A shipped 2026-09-30** (`71c`): `BeginWave` now pulls that trigger —
+  `Waves.TestBotsPerMouth` skulks emerge at each mouth, first aliens in a real `/horde`. i5b
+  (do they stream to base) is now chair-verifiable (PLAYTEST 13-16). M6 (the wave loop that
+  replaces the flat knob) and M8 (loss triggers) are not.
 - **Gates**: G1 (`-game` mounts) and G1d (dev owns `-modstorage`) passed; the loop now needs **no
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 63 pass / 0 fail / 1 expected (the negative control) — 64 scenarios, plus `--handback` 2/0.
+- **Suite**: 65 pass / 0 fail / 1 expected (the negative control) — 66 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
   hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
   they chose** (amended 2026-09-28; it used to move them to spectator), and does **not** declare a
   winner or change the map.
-- **Still not true**: no wave loop calls the factory yet, so in a real `/horde` nothing comes out of a
-  mouth (that wiring is i6a; the factory itself is built and tested); no wave 2 (i6a), and a horde
-  that "ends" cannot end (i8a). Vanilla win/loss stays suppressed for the round by one engine field,
-  which is precisely why i8a has to exist.
-- Tracker: 43 closed / 22 open beads.
+- **Still not true**: the wave that spawns is a flat test count, not composition, and there is no
+  wave 2 or intermission (i6a replaces `TestBotsPerMouth` with the curve-driven loop); a horde
+  that "ends" cannot end (i8a) — bots can swarm you but no trigger fires. Vanilla win/loss stays
+  suppressed for the round by one engine field, which is precisely why i8a has to exist.
+- Tracker: 46 closed / 22 open beads (71c closed on suite-green; chair acceptance = steps 13-16).
 
 ## 9. Known gaps and risks
 
@@ -306,20 +308,22 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
 
 ## 10. Next actions, in order
 
-1. **i8a loss triggers** (`cwo`, `7r3`, `qji`): all marines dead simultaneously, or the chair
-   destroyed. Must answer the measured draw behaviour and decide the surrender-vote question.
-2. **i6a wave loop** (`1fv`, `685`): pulls the trigger the factory already provides
-   (`Spawner:SpawnBot(mouthPoint, techId)` per composition entry). Needs RD3 numbers from Arian and
-   the sector/placement decision (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge
-   on summit — decide eligible sources, per-map `ActivePerWave`, band, fallback).
-3. Fix or route around the **harness ceiling** before committing to i5b/i6c as written — i5b
-   (`t28`, stream-to-base, 15–20 s windows) is now unblocked by i5a but blocked by `0k3`, not by
-   the factory.
-4. **New i5a fallout to decide**: the alien join only lands because the factory forces it past
-   `force_even_teams_on_join` (fact 16). A seeding host whose ServerConfig sets that flag is now a
-   behavioural dependency, not just a preference — keep the force (it is what 7q7 means), and note
-   it for the M8 playtest checklist.
-5. Human-facing polish: intermission timer + skip, HUD/banner (i9a), retro + tag v0.1-slice (i10a).
+1. **Chair gate for STEP A (PLAYTEST 13-16)** — Arian runs it; findings become beads. The
+   stream-to-base answer (t28) decides whether the order-forcing fallback (Q16 governance) gets
+   its own bead BEFORE i6a wave math is trusted.
+2. **i8a loss triggers** (`cwo`, `7r3`, `qji`): all marines dead simultaneously, or the chair
+   destroyed, or a real alien joins, or seed max. Must answer the measured draw behaviour and
+   decide the surrender-vote question. (With bots real since 71c, the wipe branch has teeth.)
+3. **i6a wave loop** (`1fv`, `685`): replaces the flat knob with curve-driven composition,
+   clear detection, payout, intermission + skip. Needs RD3 numbers from Arian and the
+   sector/placement decision (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge
+   on summit — decide eligible sources, per-map `ActivePerWave`, band, fallback) — judge `5ss`
+   during the same chair sessions, reveal is on there.
+4. Fix or route around the **harness ceiling** before committing i6c as written — i5b is now
+   chair-shaped, so `0k3` mainly blocks the automated 3-wave test.
+5. The forced alien join is a behavioural dependency of hosts running
+   `force_even_teams_on_join` (fact 16) — keep the force (it is what 7q7 means).
+6. Human-facing polish: HUD/banner (i9a), retro + tag v0.1-slice (i10a).
 
 Before any of that: `./dev/lint.sh && ./dev/test.sh && ./dev/test.sh --handback` must be green on
 an untouched tree, and `./dev/guard-server.sh` must show no open client session before you stop or
@@ -359,15 +363,15 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 
 ---
 
-Last updated: 2026-09-28, twice over. From the suite: the i5a bot factory (`eav` closed) —
-`SpawnBot` queues a `PlayerBot`, the pump registers it once its id is real, and the place stage
-forces the team-2 join vanilla's balance gate refuses and teleports the live Skulk to its mouth;
-two earlier engine facts corrected by measurement (fact 8's `Vector:GetRangeTo` does not exist on
-build 344; fact 16 — "alive" bots were pre-join lobby players all along). And from Arian's LIVE
-playtest the same day: stop and restart **no longer move humans at all** — the team a player chose
-is theirs, and `ResetGame` touches no team numbers, so everyone lands back in warmup as they were
-(the 2026-09-27 spectator step is reverted; ready room, never spectator, is the sanctioned
-fallback); `/horde restart` clears the post-teardown cooldown its own teardown started; the
-cooldown default went 60 → 5 — and because Shine keeps the config it loads (fact 15), the fix
-also had to touch the persisted `shine/plugins/HordeMode.json` on the dev AND live servers, which
-a default change alone would never reach. Suite 63/0/1, handback 2/0.
+Last updated: 2026-09-30 — **Step A (`71c`)**: `BeginWave` pulls the factory's trigger
+(`Waves.TestBotsPerMouth`, placeholder 2 per mouth, deleted by i6a). Writing its test found two
+real leaks on the early-stop path: a never-materialised bot reads `Gone` and skipped destruction
+(stranding its virtual client), and unregistered `TakePending` refs — mouths included — were
+skipped the same way; `DestroyAll` now judges a bot by its ENTITY and destroys anything born
+unregistered (synchronous unit as witness). The win/loss probe was re-armed for the new world:
+its empty-alien side is now a CONSTRUCTED premise (roster overrides, restored on every exit
+path), because wave bots legitimately populate team 2 during the suite — same class as its
+hand-set `Started` state, documented as such in the scenario. Earlier the same week: i5a
+factory (`eav`), keep-teams + restart-clears + 5 s cooldown (`q2p`), post-reset refill nudge
+(`5m5`); the history of those three is in `Atlas/_frontier.md` and the tracker.
+Suite 65/0/1, handback 2/0.
