@@ -30,7 +30,11 @@ not that the behaviour is right.
 - [ ] Entity death is proven by `Shared.GetEntity(id) == nil` polling, not by a stale
       reference going falsy.
 - [ ] Bot teardown: `bot:Disconnect()`, and `BotTeamController` restored
-      (`EnableUpdate` + `SetMaxBots(snapshot)`), never left locked.
+      (`EnableUpdate` + `SetMaxBots(snapshot)`), never left locked — and after a release we performed,
+      **exactly one `UpdateBots()` nudge** sent after the world reset (5m5: vanilla refills only on
+      join/leave/SetMaxBots events; a stop produces none, so warmup bots silently never return).
+- [ ] Player contract on any teardown/reset diff: **no player is moved** — humans keep chosen teams
+      through `ResetGame`; `JoinTeam` during handback is a regression (q2p, scenario traps it).
 
 ## State and registry discipline
 
@@ -74,12 +78,13 @@ not that the behaviour is right.
 
 ## Dev environment
 - **Never point a dev-only extension at the live server config.** `dev/deploy.sh` used to set
-  `ActiveExtensions.hordetest = true` in `D:\games\ns2srv\cfg`, the config an ordinary boot reads.
-  Result: every live server ran the scenario suite (spawning bots, capping the bot controller,
-  logging a bot into the commander chair, destroying entities) and the server kept crashing.
-  Now: deploy targets `D:\games\ns2hordetest\cfg` only, forces the live config off if it finds
-  those flags on, and `hordetest` additionally requires `HordeTest.json RunSuite=true` — being
-  *enabled* is not authorisation to run.
+  `ActiveExtensions.hordetest = true` in `D:\games\ns2srv\cfg`, the config a live boot reads.
+  Result: every live server ran the scenario suite (spawning bots, taking the chair, destroying
+  entities) and the server kept crashing.
+  Now: deploy targets the dev tree (`D:\games\horde\server\cfg` — `dev/paths.sh` owns the value)
+  only, forces the live config's harness flags off if it finds them, and `hordetest` additionally
+  requires `HordeTest.json RunSuite=true` — being *enabled* is not authorisation to run.
+  Live servers boot **only** on Arian's explicit request (HANDOFF §2 rule 0).
 - **Process control is by PID *and* verified identity, never by name.** `Stop-Process -Name
   Server -Force` killed every `Server.exe` on the box, including any real one. So
   `dev/.server.pid` is written at launch and only that PID is stopped; a missing pid file means
@@ -100,9 +105,10 @@ not that the behaviour is right.
   a shutdown crash. Re-measured with the lag respected: an isolated live-config boot + graceful
   stop produces **no dump at all**.
 - **Never overlap runs of the dev loop.** Two `dev/test.sh` invocations in flight mean two
-  `Server.exe` on port 27015 and one run's stop killing another's process - which produces
-  exactly the crash dumps we are trying to count. Serialise, and confirm `Get-Process Server`
-  is empty before starting a measurement.
+  `Server.exe` on the same port (dev is **27025**; 27015 is the live instance's port — they can
+  and do coexist, and did on 2026-09-29) and one run's stop killing another's process - which
+  produces exactly the crash dumps we are trying to count. Serialise, and confirm
+  `Get-Process Server` is empty before starting a measurement.
 - **A forced kill is indistinguishable from a crash to NS2's crash handler.** It writes a dump
   and uploads it (`options.xml: upload-dumps=true`), so a dev loop that terminates by force
   manufactures a false incident report - 21 "server" dumps appeared during one afternoon of
@@ -116,11 +122,11 @@ not that the behaviour is right.
   key — and why i5a's spawner must register on the following tick, not immediately.
 
 
-- [ ] `-config_path` is hyphen-free (`D:\games\ns2hordetest\cfg`); the arg parser breaks on hyphens.
+- [ ] `-config_path` is hyphen-free (`D:\games\horde\server\cfg`); the arg parser breaks on hyphens.
 - [ ] `tags` in `ServerConfig.json` stays an array — a string crashes `ConfigFileUtility.lua:53`
       and the world never initialises.
-- [ ] After a run: `dev/server-stop.sh` **and** verify zero `Server` processes, or the next
-      boot dies on port 27015.
+- [ ] After a run: `dev/server-stop.sh` **and** verify zero dev-loop `Server` processes (check the
+      command line — a live boot is not yours), or the next boot dies on port 27025.
 - [ ] Never copy a host config directory into the repo to make a test easier —
       `ns2srv/cfg/ProgressionConfig.json` holds live tokens and this repo is public.
 - [ ] Game lua source of truth is `D:\games\ns2-server\ns2\lua` (build 344); the

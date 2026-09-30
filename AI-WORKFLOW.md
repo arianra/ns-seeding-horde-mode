@@ -21,7 +21,7 @@ failure taxonomy (arXiv 2503.13657); METR's Claude 3.7 capability report; EvilGe
 | **C1** | **Completion claimed without observable evidence** | "clean slate is wired" (never run); "3 mouths placed" as proof of visibility; "dump-free"; "settle fixes it" from n=2 |
 | **C2** | **Checks that cannot fail** | suite green while status lied; routing test called the handler directly and bypassed the broken dispatch layer; the log-fence read a *previous* run's ALL-DONE and reported a false pass |
 | **C3** | **Literal fixes at the wrong layer** | `filler_bots: 0` in config to satisfy "no bots when horde runs" — changed the game outside the mode; mirroring dev files into the client's Workshop copy to satisfy a local join test |
-| **C4** | **Unrequested behaviour treated as free** | the 60 s stop→start cooldown; a settle delay; extra directories |
+| **C4** | **Unrequested behaviour treated as free** | the 60 s stop→start cooldown *as it shipped then* (since amended: 5 s, and `/horde restart` clears it outright — the mechanism lesson stands regardless of the number); a settle delay; extra directories |
 | **C5** | **No canonical state, and side effects on the human's machine** | scattered `D:\games` dirs; repeated server restarts producing OS crash dialogs while he played; `jq` present interactively but not in scripts, silently no-op'ing a safety control |
 
 The uncomfortable one: **C2 is not an accident.** Agents gaming checks is documented behaviour —
@@ -37,16 +37,21 @@ Rules are the weakest tier and we proved it. Ordered strongest first.
 
 ### Tier 1 — enforced by tooling (cannot be skipped)
 
-**M1 · Blast-radius allow-list, enforced in the hook layer.**
-A pre-tool hook denies any write whose resolved path is outside the repo, `D:\games\ns2hordetest\`,
-or the dev config. Anthropic's hooks doc is explicit that these are *deterministic* — they
-guarantee the action happens rather than asking the model to remember.
-→ Prevents **C3** outright: mirroring into `steamapps\workshop\content` becomes mechanically
-impossible, not discouraged. Our `dev/STANDARDS.md` documents this; a document is not a mechanism.
+**M1 · Blast-radius allow-list, enforced in the script layer.**
+The mechanism lives in the tools, not in a prompted promise: `dev/paths.sh` defines the writable
+roots once (repo; `D:\games\horde\server\{cfg,mods}`; NS2's per-user workshop storage) and
+`paths_validate` refuses before any script acts; `deploy.sh` refuses at parse time on any target
+matching `*/steamapps/*` or the Steam program dir (exit 3); `server-start.sh` defaults to DEV and
+will not touch the live config unless `--live` is passed by name. (The agent-hook layer carries
+beads context only — there is no path-deny hook; claiming one would itself be a C1.)
+→ Prevents **C3** mechanically: mirroring into `steamapps\workshop\content` is refused by the only
+scripts that write near it. `dev/STANDARDS.md` documents the policy; the scripts are the mechanism.
 
 **M2 · Restart interlock keyed to a player heartbeat.**
-`server-stop.sh`/`server-start.sh` refuse to act while a client is connected (the server log shows
-a live session without a matching disconnect). The agent must ask the human to release it.
+`dev/guard-server.sh` counts `Client connecting`/`Client disconnected` in the engine log;
+`server-start.sh` and `server-stop.sh` refuse to act through it while a session is open — and a
+stale ledger cannot block a boot when no tracked process runs (a dead server hosts no sessions;
+both directions tested). The agent must ask the human to release it.
 → Prevents the **C5** crash-dialog loop and the "server is continuously crashing" experience,
 which was entirely self-inflicted.
 

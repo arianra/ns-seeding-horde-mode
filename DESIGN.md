@@ -1,7 +1,9 @@
 # DESIGN.md — Seeding Horde Mode
 
 Canonical design specification for the NS2 seeding-minigame "Horde Mode".
-Status: **design phase complete, pre-implementation** (2026-09-17).
+Status: **design COMPLETE and largely SHIPPED** (M0–M4 + M7, and i5a; 2026-09-29). This is the
+spec; `HANDOFF.md` §8 records what is built vs still planned (i5b/i6a/i8a), and drift is reconciled
+toward the code, not the reverse.
 
 Decision history lives in the Obsidian vault (ADR-style notes, Q1–Q25):
 `Atlas/Projects/ns2-tower-defense/` (decisions/, design/, discussions/,
@@ -79,12 +81,18 @@ registry):
 1. Set state = TEARDOWN (idempotent; blocks re-entry).
 2. Destroy every entity in the HordeRegistry (bots, tunnel mouths, prebuilt
    hives/RTs/cysts, horde-placed structures).
-3. Restore marine-side state: team res, personal res, loadouts, IPs, RT
-   income, power — snapshot taken at `/horde` time; respawn players on their
-   pre-horde teams as vanilla seeding would.
-4. Cancel all Shine timers; eject chair occupants.
-5. Assert: server entity list diff vs snapshot == empty (logged; test hook).
-6. Announce in chat; apply start cooldown.
+3. **Touch no player** (amended 2026-09-28 from Arian's live playtest): `ResetGame` resets every
+   player that has a client **in place** and touches no team number, so humans wake in warmup on
+   the team they chose — the pre-2026-09-27 "respawn players on their pre-horde teams" step (and
+   the day-long spectator-move amendment) are both retired. Full restore of team res / personal res
+   / loadouts / IPs / RT income / power from a `/horde`-time snapshot is Phase 2 (logged, not
+   guessed, in v0). See §4's ordered teardown.
+4. Nudge the vanilla bot refill: fire `UpdateBots()` **once, after the reset** (5m5, 2026-09-29) —
+   a stop produces none of the join/leave/SetMaxBots events vanilla fills on, so without the nudge
+   the restored cap sits unfilled and warmup bots never return.
+5. Cancel all Shine timers; eject chair occupants.
+6. Assert: every id we ever registered stops resolving (logged leak poll; test hook).
+7. Announce in chat; apply the 5 s start cooldown (which a `restart`, not a bare `/horde`, clears).
 
 **Late joiners** while horde runs: chat notification + ScreenText banner
 ("Marines are in HORDE MODE — wave N"); they spawn as marines into the
@@ -102,7 +110,7 @@ At `/horde`, the server sculpts the map (all tracked in HordeRegistry):
   **invincible hives**; all alien RTs (refineries) prebuilt. Count of spots
   per map is irrelevant — prebuild whatever exists (Q18).
 - **Infestation:** natural vanilla behavior — hives auto-grow their initial
-  cyst rings at start (verified in source: `AlienTeam.lua:222-244`, no comm
+  cyst rings at start (verified in source: `AlienTeam.lua` ~497-534 — cyst loop, no comm
   needed); ongoing cyst chaining is a support-comm action = difficulty lever
   (Q21↔Q25 tie-in; full analysis in vault `discussions/td-infestation-behavior`).
 - **Tunnel mouths (DECIDED Q26–Q29, see vault
@@ -221,9 +229,10 @@ that have clients **in place** (`NS2Gamerules.lua:530`) and touches no team numb
 stop everyone is back in warmup on the team they chose — the phase the server was in before
 `/horde`. The 2026-09-27 step that moved humans to spectator was wrong (the team a player chose
 is theirs); if warmup landing ever proves broken the sanctioned fallback is the ready room
-(`kTeamReadyRoom`), never spectator. **Bots are left to vanilla** — the released controller
-fills to the restored cap from current team counts, so moving a bot makes it stop counting,
-gets it replaced, and strands the moved one.
+(`kTeamReadyRoom`), never spectator. **Bots are left to vanilla** — but *not* to the controller's
+own devices: it fills only when `UpdateBots` runs (join/leave/SetMaxBots events), and a stop fires
+none, so teardown sends the one nudge (§4 step 4 / 5m5). Moving a bot would make it stop counting,
+get replaced, and strand — but nothing moves anyone now.
 
 ## 5. Economy
 
@@ -265,13 +274,15 @@ builder of record (Q25):
 
 ## 7. Commands & surface
 
-| Command | Perm | Function |
-|---|---|---|
-| `/horde` | any marine (handler-gated) | start (seeding checks, cooldown) |
-| `sh_horde_stop` | admin | instant teardown |
-| `sh_horde_skip` | admin/chair | skip intermission (paid bonus applies) |
-| `sh_horde_setwave` | admin | jump to wave N (tuning) |
-| `sh_horde_reload` | admin | hot-reload balance config (spike: verify path) |
+| Command | Perm | Status | Function |
+|---|---|---|---|
+| `/horde` (bare) / `/horde start` | any marine (handler-gated) | **shipped** | gated start (seeding checks; 5 s cooldown on bare starts) |
+| `/horde status` / `sh_horde_status` | marine / admin | **shipped** | the one-line truth (state, mouths, humans, takeover, reveal) |
+| `/horde stop` / `sh_horde_stop` | marine / admin | **shipped** | instant ordered teardown |
+| `/horde restart` | any marine | **shipped** | teardown → clear the pending wait → start again from a clean slate |
+| `sh_horde_skip` | admin/chair | planned (i6b) | skip intermission (paid bonus applies) |
+| `sh_horde_setwave` | admin | planned (i6a tuning) | jump to wave N |
+| `sh_horde_reload` | admin | planned | hot-reload balance config (spike: verify path) |
 
 HUD (zero custom client lua for v1): Shine ScreenText (wave counter,
 intermission countdown, "HORDE ACTIVE" banner for joiners) + data-table
@@ -281,16 +292,19 @@ every 5 waves (join-hooks for seeders: "wave 12 reached!").
 
 ## 8. Config (configurability is the product)
 
-Shine extension `hordemode`, config `HordeMode.json` — validated JSON
-(Shine.Validator clamps every knob), versioned (`ConfigMigrationSteps` from
-1.0), per-map overrides via our `Maps.<mapname>` deep-merge convention
-(Shine has no per-map layer; we own ~30 lines).
+Shine extension `hordemode`, config `HordeMode.json`. Validation is **ours, not Shine's**:
+`config.lua`'s `PreValidateConfig`→`Sanitize` clamps and defaults every knob (the `Shine.Validator`
+rule objects are deliberately *not* used — see `config.lua` header), and there are no
+`ConfigMigrationSteps` in the shipped path. Per-map overrides via our own `Maps.<mapname>`
+deep-merge (Shine has no per-map layer; we own ~30 lines).
 
 **Curves as data:** every bezier = endpoints {Start, End} + control points
 [x1,y1,x2,y2] + segment wave range. The offline visualizer reads the same
 JSON the server loads.
 
-Starter schema (full proposal in levers note §6):
+**Proposed** starter schema — the **normative** shape is `Plugin.DefaultConfig` in
+`config.lua` (keys there differ: tunnels live under `Waves.*`, payout under `Economy.*`, the
+segments model above is M6 design, not loaded config; drift below is historical):
 ```jsonc
 {
   "__Version": "1.0",
@@ -357,8 +371,9 @@ persist transient horde state.
 
 1. **Seeding contract:** horde never blocks a real round; alien join =
    instant teardown; virtual-client filtering must be airtight.
-2. **Teardown integrity:** post-teardown entity diff = empty; timers all
-   destroyed; economy/teams/loadouts restored to snapshot.
+2. **Teardown integrity:** post-teardown leak poll over every ever-registered id is empty;
+   timers destroyed; bot controller released **and nudged to refill**; players untouched (§2.3);
+   full economy/teams/loadouts restore is Phase 2 (v0 logs what it does not restore).
 3. **No-win, no-loss-loop:** endless until loss/trigger; loss = simultaneous
    marine wipe OR CC death. CC weldable, never rebuildable.
 4. **Server-authoritative:** all economy, wave state, spawn decisions.
@@ -368,21 +383,13 @@ persist transient horde state.
 
 ## 11. Implementation plan
 
-Shine extension layout (repo):
-```
-lua/shine/extensions/hordemode/
-  shared.lua     -- Plugin def, SetupDataTable, network msgs, ScreenText keys
-  server/
-    init.lua     -- state machine, command bindings, lifecycle
-    registry.lua -- HordeRegistry: every spawned/modified entity (teardown)
-    waves.lua    -- orchestrator: bezier evaluation, composition, pacing
-    spawner.lua  -- tunnel mouths, virtual-client bots, governance
-    economy.lua  -- payouts, bounties, kill pres, skip bonus
-    support.lua  -- alien comm support patterns
-    config.lua   -- schema, validators, Maps deep-merge, migrations
-  client.lua     -- minimal (ScreenText is server-driven)
-balance/         -- visualizer tool + curve JSON experiments
-```
+The shipped layout is a repository fact, not a spec decision — it lives in
+`WORKFLOW.md §Layout` and `HANDOFF.md §4`, kept in sync with the code. Shape, for the record:
+one flat `hordemode/` extension (Shine loads `extensions/<name>/server.lua` as the entry —
+no `server/` subdir, no `init.lua`, no client Lua at all: v1 is zero-client-code by §7),
+plus the `hordetest/` headless harness and `dev/` loop. The original block here listed
+`server/init.lua`, `support.lua` and `client.lua`; none exists, and `support.lua`'s job
+moved into §6's AlienCommanderBrain evaluation.
 
 **Spike order** (beads): ~~zpw virtual clients~~ DONE (see §4 bot
 implementation — revised: use vanilla PlayerBot framework, bead e8o

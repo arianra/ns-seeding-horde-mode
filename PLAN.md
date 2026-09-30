@@ -4,6 +4,16 @@ Written 2026-09-22 after Arian's verdict: *"this is very sloppy overall."* Accur
 document replaces ad-hoc patching with a ladder where **every rung is something you can see and
 confirm in under a minute**, and it records the debt we're carrying.
 
+> **STATUS 2026-09-30 — superseded as current-state, kept as the working-method record.**
+> Everything this plan proposed has largely happened: the ladder (§7) ran to M0–M4 + M7 + i5a,
+> the delivery debt (L0) closed via the published item, and §1's `ns2hordetest` tree + overlay
+> model were replaced by `dev/paths.sh` + the isolated dev storage. Where any section below
+> contradicts `HANDOFF.md` (state, commands, layout, next actions) or `DESIGN.md` (spec),
+> **those documents and the code win.** Durable parts: §4's step-protocol rules (one observable
+> per step, no claim without the thing a human can check) and the debt discipline in §6 —
+> which is how the 2026-09-28/29 playtest findings (`q2p`, `5m5`) were handled, exactly as
+> this plan prescribed.
+
 Companion docs: `DESIGN.md` (product), `MODDING.md` (mod mechanics, cited), `dev/STANDARDS.md`
 (ownership rules), `dev/SCAFFOLDING.md` (procedure).
 

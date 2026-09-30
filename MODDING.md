@@ -1,8 +1,11 @@
 # MODDING.md — how we build, mount, ship, and run this mod
 
-Status: **proposal.** §1 facts are cited; §8 lists the decisions needed from Arian.
-Full research evidence: `/tmp/ns2-research/T1..T4-*.md` (promote to
-`Atlas/Projects/ns2-tower-defense/research/` once §8 is settled).
+Status: **the workflow this describes is shipped** (the mod is published, the loop runs from the
+artifact, P1-P7 + G1/G1d done below). §1 facts are cited and remain the load-bearing part; §§2-8
+read partly as proposal because they were written pre-implementation — where they contradict
+`HANDOFF.md`/the code, those win, and the stale present-tense rows are being retired as found.
+Full research evidence: `/tmp/ns2-research/T1..T4-*.md` — still ephemeral; promote to
+`Atlas/Projects/ns2-tower-defense/research/` (owed; one `/tmp` wipe from losing it).
 
 Written 2026-09-22 after the incident where dev files were mirrored into the client's
 Steam-managed copy of Shine and broke joins to every server. Read `dev/STANDARDS.md` first;
@@ -80,26 +83,28 @@ this document is the workflow that standard implies.
 | 34 | `botTeamController` is created in `NS2Gamerules:OnCreate()` — **per map, survives `ResetGame`** — so a snapshot taken at horde start is restorable at teardown. `SetMaxBots(n, com)` writes `com` to BOTH commander flags and removes bots immediately at 0; `updateLock` is a counter whose `EnableUpdate` asserts `>= 0`; `GetUpdateEnabled()` is `MaxBots > 0 and updateLock == 0` | `NS2Gamerules.lua:185`, `bots/BotTeamController.lua:140-193` |
 | 35 | **Shine writes the plugin config back from the table it loaded**: a key absent from `Plugin.DefaultConfig` is deleted from the JSON on the next boot, and a value a sanitizer computed wrongly is persisted as if it had been chosen. It also does **not** deep-merge defaults under the file — the file's table replaces ours wholesale | measured twice: `BandLineFactor` persisted as 0; `RunHandback` silently dropped |
 | 36 | A bot's virtual client owns a real `Player` entity, so "has a client" does not distinguish humans from bots; the `gServerBots` roster does. Bots also count as players in `Team:CountPlayers` | `Team.lua:126-134`, observed in teardown |
-| 37 | `Pathing.GetPathPoints`/`GetPathPointFrom` **always include the start point**, so a `CommandStructure` origin (inside its own footprint, mesh carved out) cannot be a path start — snap to the mesh first. Such queries are annotated `"Expensive !!!"` | `Pathing.lua:171-177`, `BotUtils.lua:357` |
+| 37 | `Pathing.GetPathPoints` **always includes the start point**, so a `CommandStructure` origin (inside its own footprint, mesh carved out) cannot be a path start — snap to the mesh first. Such queries are annotated `"Expensive !!!"` | `Cyst.lua:171-177` ("Always include the starting point" @174; there is **no `Pathing.lua`** in shipped Lua — the earlier cite here named it, and `GetPathPointFrom` exists nowhere either; re-verified 2026-09-30), `BotUtils.lua:357` |
+| 38 | **`UpdateBots()` is the only code that adds bots, and vanilla calls it from exactly three event sites** — `OnClientDisconnect` (:322), `SetMaxBots` (:1436), `JoinTeam`'s success path (:1575). Nothing calls it periodically. A horde stop fires none of them and our release restores the cap by direct field writes (fact 34's setter hazard), so **teardown must send the nudge itself** — measured chair finding (5m5: warmup bots never returned after `/horde stop`). Zero-humans caveat: the nudge also executes vanilla's wipe-all-bots rule (`:169-172`) | `NS2Gamerules.lua:322/1436/1575`, `bots/BotTeamController.lua:159-180`, repo `takeover.lua RefillVanillaBots` |
 
 ---
 
 ## 2. The architecture
 
-**Our plugins live in our own mod. The dev loop mounts that mod with `-game` overlays; the
-Workshop item exists only for shipping and for remote testers.**
+**Our plugins live in our own mod — and that mod is the published Workshop item the dev loop
+actually mounts.** The `-game` overlay era ended with P6 (`d51eda9`): DEV boots read the artifact
+from the isolated dev mod storage, and remote testers get the same bytes through Steam (§2b/§6).
 
 ```
 mod/
   lua/
-    entry/horde.entry            # modEntry = { Shared = "lua/horde_shared.lua", Priority = <TBD> }
+    entry/seedinghorde.entry     # modEntry = { Priority = 40 }  (no Shared declaration; see fact 2b)
     shine/extensions/
       hordemode/{shared,server,config,statemachine,registry,takeover,placement,
                  spawner,waves,triggers,economy,hud}.lua
       hordetest/{shared,server,scenarios}.lua      # see §8 decision 6
 dev/
-  build.sh                       # source/ -> build/mod/  (deterministic)
-  overlay/                       # -game overlay tree: build/mod mounted here, machine-local
+  package.sh / deploy.sh         # source/ -> output/ -> artifact zip -> DEV mod storage (+ MapCycle, config)
+  horde-test-cfg/                # the repo's config overlay merged onto the dev tree at boot
 ```
 
 Why this shape and not the old one:
@@ -177,31 +182,31 @@ Two caveats carried forward:
 
 | | **LIVE** (Arian's) | **DEV** (ours) |
 |---|---|---|
-| config dir | `D:\games\ns2srv\cfg` | `D:\games\ns2hordetest\cfg` |
+| config dir | `D:\games\ns2srv\cfg` | `D:\games\horde\server\cfg` (`dev/paths.sh` owns the value) |
 | ports | 27015 + 27016 | **27025 + 27026** (paired, fact 18) |
-| mod storage | engine default `%APPDATA%\…\workshop` | `-modstorage D:\games\ns2hordetest\mods` |
-| `-game` overlay | none | `dev/overlay/` with our built mod |
-| ownership | user; **agents read-only** | agent-owned, disposable |
-| pidfile | — | per-instance, under `dev/` |
+| mod storage | engine default `%APPDATA%\…\workshop` | `-modstorage D:\games\horde\server\mods` (S2/G1d: done) |
+| mounts our mod via | the published Workshop item | the same artifact, installed by `deploy.sh` — no `-game` overlay anywhere (P6) |
+| ownership | user; **agents read-only; booted only on his explicit request** (HANDOFF §2 rule 0) | agent-owned, disposable |
+| pidfile | — | per-instance, under `dev/`, identity-checked before any stop |
 | web admin | never enabled without your decision | optional, G2 only |
 
-Shared today regardless of config dir (fact 15 + observed): engine log, `dumps/`, and **the mod
-store**. That last one is the sharpest edge: while DEV and LIVE share `%APPDATA%\…\workshop`,
-a dev edit inside Shine's copy is a file the **live** server will mount. Isolating DEV's
-mod storage is therefore not tidiness, it is the containment for the exact incident we had.
+Shared today regardless of config dir (fact 15 + observed): **the engine log and `dumps/`** — S4
+(`-instance_id`) stays open precisely for that. What used to be shared — the mod store — was the
+incident's channel and is now isolated (G1d): a dev edit cannot reach a live server through files
+anymore. Two instances coexist safely on ports; the first such evening (2026-09-29) is why
+development runs DEV only.
 
-Fixes required, in priority order:
+Fixes required, in priority order — status as of 2026-09-30:
 
-1. **S1 — `server-start.sh:10` defaults to the LIVE config dir.** A bare invocation restarts
-   your server. Invert: default DEV, require `--live`, and refuse any `-config_path` outside an
-   allow-list.
-2. **S2 — isolate DEV mod storage** with `-modstorage` (switch is parse-verified; a boot proving
-   it takes effect is still outstanding — call it **G1d**).
-3. **S3 — paired ports** so both instances can run at once; document the Windows Defender UDP
-   allow needed for each.
-4. **S4 — instance identity in logs.** Engine log and dumps are shared; the runner already
-   fences by byte offset post-boot, and `-instance_id` should be added for legibility.
-5. **S5 — stop stays PID-scoped** (`taskkill` → `Stop-Process` → `-Force` last).
+1. **S1 — DONE:** `server-start.sh` defaults to DEV; the live path requires `--live` and passing
+   it positionally is REFUSED outright.
+2. **S2 — DONE (G1d passed 2026-09-22):** DEV boots with its own `-modstorage`; Shine mounts from it.
+3. **S3 — DONE:** paired ports; both instances ran side by side on 2026-09-29 (which produced
+   HANDOFF §2 rule 0 — dev-only by default).
+4. **S4 — OPEN:** engine log and dumps are shared between instances; the runner fences by
+   readiness-count instead of byte offset, and `-instance_id` is still owed for legibility.
+5. **S5 — DONE:** stop is PID-scoped and identity-checked (`guard-server.sh` interlocks a
+   session in progress; a stale ledger cannot block a boot when no tracked process runs).
 
 ### Versioned vs machine-local
 
@@ -232,10 +237,13 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 
 ## 5. Publishing (later, not first)
 
-1. One item, ours: "Seeding Horde Mode (dev)". Store `PublishedFileId` in `mod/publish.json`
-   **in the repo** — an identifier, not a secret; Valve says keep it forever.
-2. Visibility: **FriendsOnly** during playtesting (or Unlisted if LaunchPad offers it);
-   Public only at sign-off; Private is a takedown state, not a testing state (fact 25).
+1. ~~Store `PublishedFileId` in `mod/publish.json`~~ — that file never shipped: the id lives in
+   **`mod/mod.json` → `publishedFileId`** (plus `publish_id` in `mod.settings`), written once and
+   never edited thereafter (Valve's rule: every update is addressed by it).
+2. ~~Visibility: FriendsOnly during playtesting~~ — **superseded by outcome**: the item shipped
+   **public** (2026-09-24), because public is the only visibility an anonymous server reliably
+   auto-downloads (facts 25/28 found the rule, publication spent it). Private remains a takedown
+   state, not a testing state.
 3. Publisher: `x64/LaunchPad.exe`. Requires Steam running under an account that owns NS2, and
    the Workshop legal agreement accepted once.
 4. Do not depend on Workshop for iteration (fact 29). It is for distribution.
@@ -251,7 +259,7 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 | Step | Work | Acceptance (observable, before the next step) |
 |---|---|---|
 | ~~**G1**~~ **PASSED 2026-09-22** | `-game` overlay mounts on the dedicated server and Shine discovers extensions inside it | §2b: `Extension 'hordemode' loaded` with the workshop copy verified clean; plugin-shape rules settled |
-| **G1c** | **Client** mounts the same overlay (`SCAFFOLDING.md` §6b has the exact command). Needs a human at the keyboard: it opens the game on Arian's desktop | client log shows `Extension 'hordemode' loaded` and the join succeeds; or it reports a network-message mismatch, which proves `-game` is server-side only |
+| ~~**G1c**~~ **RETIRED 2026-09-24** | **Client** mounts the same overlay (the cite here, `SCAFFOLDING.md §6b`, never existed after SCAFFOLDING's rewrite — a dangling ref found in the 2026-09-30 doc review). Moot: P6 deleted the overlay from the loop and P7 proved the client side through the **published item** instead | client log shows `Extension 'hordemode' loaded` and the join succeeds — **achieved via §3b/P7**, no overlay involved |
 | ~~**G1d**~~ **PASSED 2026-09-22** | DEV boots with `-modstorage D:\games\ns2hordetest\mods` (8 MB store staged from the shared one; wired into `server-start.sh`) | `Passed 'D:/games/ns2hordetest/mods/' as mod-storage directory`, Shine mounted **from there**, `Extension 'hordemode' loaded` from the overlay, suite 45/0/1, shared store verified untouched (0 dev dirs) |
 | **G1b** | Same overlay, but the extension registers a datatable | **expected to fail vanilla joins** — proves facts 9-13 empirically and measures what "client must mount our mod" costs |
 | **G2** | `-webadmin` on DEV: enumerate actions, attempt graceful shutdown | clean exit with **0** new `dumplog.txt` entries, or a written "no graceful path" verdict |
@@ -261,7 +269,7 @@ written down once instead of re-litigated. Never enabled on LIVE without you dec
 | **P4** | Config templates split DEV/LIVE + read-only `dev/config-check.sh` reporting LIVE drift. Still open: `dev/state.sh` covers disk state, not config drift | drift report produced; nothing written |
 | ~~**P5**~~ **DONE 2026-09-24** | Bead + doc reconciliation (§7) | tracker matches the code: every bead whose work landed is closed with a commit ref, the one inverted dependency edge (`i7a` blocked by `i6c`) is corrected, `WORKFLOW.md:66` names the overlay, not Shine's directory |
 | ~~**P6**~~ **DONE** | Real mod: `hordemode`/`hordetest` live in `mod/` and mount as `seedinghorde[3807461324]`; the suite runs from the published artifact, not from Shine's directory | suite green with **no `-game` overlay anywhere in the loop** (`d51eda9`) |
-| ~~**P7**~~ **DONE** | Published through LaunchPad, **public**; client auto-download verified with a vanilla client and no launch options | the mod was mounted by a real joining client (`bbe3005`); remaining gate is **G1c**, which is about the *overlay*, not about publishing |
+| ~~**P7**~~ **DONE** | Published through LaunchPad, **public**; client auto-download verified with a vanilla client and no launch options | the mod was mounted by a real joining client (`bbe3005`); the G1c it pointed at is retired above — publication is fully closed |
 
 **G1 is load-bearing for everything.** If `-game` does not mount on the dedicated server, the
 fallback is `-modstorage` + a hand-placed folder (fact 15), and if that also fails, publishing

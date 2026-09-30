@@ -43,18 +43,26 @@ From Shine's own *Developing a Shine plugin*:
 > with the folder `lua/shine/extensions`. In this folder, place all the plugins you want
 > to add. Run your mod alongside the main Shine mod and your plugins will be loaded.
 
-So: **our plugins live in our own mod, loaded alongside Shine** — never inside Shine's
-files. That is also the only path that lets a human client join with our features, because
-the client then receives our mod through Steam's normal subscription, not through a
-hand-edit.
+So: **our plugins live in our own mod, loaded alongside Shine** — never inside Shine's files.
+That is also the only path that lets a human client join with our features, because the client
+then receives our mod through Steam's normal subscription, not through a hand-edit — and nothing
+"solves" a join problem by touching the client's copy.
 
-Until that mod exists, the honest state of the world is:
+That is the shipped shape today: **the mod is published** (Workshop `3807461324`, `seedinghorde`),
+`dev/deploy.sh` installs the packaged artifact into the DEV mod storage (`$DEV_MODS` —
+`-modstorage`, isolated from Steam's trees), and a joining client gets the same files through
+Steam's normal subscription. Verified from a real client, no launch options.
 
-- dev files in the server's `%APPDATA%` copy → **headless bot testing works, vanilla
-  clients cannot join** (the extension's `shared.lua` changes the network message table).
-- dev files removed (`./dev/deploy.sh --clean`) → any client can join, no dev features.
+Two consequences this tree enforces:
+- **A republish only reaches running servers on their next boot** (the engine fetches the mapcycle's
+  `mods` at startup). Republish ⇒ restart the dev server before a human joins, or the joiner's
+  newer copy is rejected with "server mod out of date" (measured 2026-09-29).
+- The client's `steamapps\workshop\content\**` stays **untouched in every direction** — dev files
+  go to the dev tree; the client's copy is Steam's to manage.
 
-Do not "solve" that trade by touching the client's copy.
+And the scope rule above it all: **development runs on the dev server only** (27025). Arian's
+community-server era is over — this is mod development; the live tree exists for a hypothetical
+future boot **only he can ask for by name** (HANDOFF §2 rule 0).
 
 ## Enforcement
 

@@ -52,7 +52,7 @@ edit source/
    │
    ├── ./dev/server-start.sh boot DEV on :27025 with -modstorage isolation
    │
-   ├── ./dev/test.sh         arm hordetest, run the 45-scenario suite, stop
+   ├── ./dev/test.sh         arm hordetest, run the headless suite, stop
    │
    └── ./dev/publish.sh      refresh output/, then tell you what to click in LaunchPad
           └── after you publish:  ./dev/publish.sh --id <PublishedFileId>
@@ -84,9 +84,10 @@ then, in Windows:
 1. Launch `C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2\LaunchPad.exe`
    — the **install-root** launcher, never the `x64` copy.
 2. **Open Mod** → `D:\games\horde\publish\seedinghorde` (printed by `publish.sh`).
-3. Configure → check name/description and **the tags**. `mod.settings` currently says
-   `tag_support = "Must be run on Server"`, but our extension has a `shared.lua`, so clients
-   must mount it too. Choose the server **and** client option if offered.
+3. Configure → check name/description and **the tags**. `mod.settings` ships `tag_modtype = ""` /
+   `tag_support = ""` with `publish_id = 3807461324`; if LaunchPad offers a visibility/tag choice,
+   remember our extension has a `shared.lua`, so clients must mount the mod too — choose the
+   server **and client** option if offered.
 4. **Publish** (first upload accepts the Workshop legal agreement).
 5. `./dev/publish.sh --id <PublishedFileId>`
 
@@ -128,6 +129,13 @@ passes **45 / 0 / 1** with no `-game` overlay anywhere in the loop.
 `-game` flag** joined the dev server and received the mod. That closes the last assumption in
 the pipeline — the product requirement *"the server has the mod, the client only connects"*
 holds, so remote playtesting needs nothing from a player beyond connecting.
+
+**Iteration rule (measured 2026-09-29):** a republished item reaches *running* servers only on
+their next boot — the engine fetches the mapcycle's `mods` at startup, and a joining client
+compares item stamps: server copy older than the client's bounces the join with
+**"server mod out of date"**. So: republish ⇒ `./dev/server-stop.sh && ./dev/server-start.sh`
+before anyone joins. The dev store's stamp self-heals on that boot (verified: 1790397192 →
+1790743218 across one restart).
 
 ## 4. Versioning
 
@@ -178,17 +186,20 @@ means the client mounts our mod — which is §3, not an optional extra.
 ## 7. Verify
 
 ```bash
+./dev/lint.sh                                            # static gate first: ~3 s vs a ~2 min boot
 ./dev/deploy.sh --check                                  # artifact installed, mirrors source, listed, delivery configured
-grep -a "Extension 'hordemode' loaded" "$LOG"            # boot log
-./dev/test.sh                                            # headless suite
+./dev/test.sh                                            # full headless suite, armed boot
+./dev/test.sh --handback                                 # the probe-only run: the ONLY one permitted a real ResetGame
+grep -a "Extension 'hordemode' loaded" "$LOG"            # boot log proof (see §3b's mount lines)
 ```
 Runtime assertion from Lua: `ModLoader.GetLoadedModNames()`, `ModLoader.GetModInfo(name)`.
-
-**Current blocker, stated plainly:** the id is unpublished, so the engine refuses to mount it
-(`Mod [999000001] wasn't available`) and `hordemode` does not load. That is the intended
-consequence of removing the `-game` overlay, not a regression. "A published item mounts and
-auto-downloads to a connecting client" is the pipeline's remaining unproven assumption — §6 of
-`MODDING-CASES.md` records why no Workshop-free route exists.
+The suite's **baseline is its own `ALL-DONE pass=N fail=0 expected_fail=1` line** — scenario
+counts grow with the work and are deliberately not hard-coded anywhere in this repo.
+`./dev/guard-server.sh` interlocks any stop/start against a live client session
+(`HANDOFF.md` §2 rule 2). This section once read "**Current blocker:** the id is unpublished" —
+published 2026-09-24, republished with the playtest fixes 2026-09-29, both proven by the §3b
+mount + vanilla-client lines; stale status prose is exactly why status now lives in `HANDOFF.md`
+and the tracker, never here.
 
 ## 8. Test-authoring rules, earned the hard way
 

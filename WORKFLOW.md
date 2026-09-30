@@ -1,48 +1,54 @@
 # Workflow
 
+How work moves here: what is tracked where, where the environment lives, and how the loop runs.
+**Current state and next actions are NOT in this doc** — they live in `HANDOFF.md` (§8, §10) and
+`bd ready`, and this file deliberately does not restate them (restated status is how this doc rotted
+once already; see the 2026-09-29 note below).
+
 ## Knowledge split
 - **Obsidian vault** (durable design knowledge):
   `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/Atlas/Projects/ns2-tower-defense/`
-  — `decisions/` (ADRs Q1–Q25), `design/` (pillars), `discussions/`
-  (deferred calls), `research/` (source dives, case studies, backlog).
-- **This repo** (code + working docs): README (pillars summary), DESIGN.md
-  (canonical spec, once consolidated), `.beads/` (task tracker).
+  — `decisions/` (ADRs Q1–Q29 + amendments), `design/` (pillars), `discussions/`
+  (deferred calls), `research/` (source dives, case studies, backlog), `reference/`
+  (engine mechanics and the environment runbook).
+- **This repo** (code + working docs): README (entry point), DESIGN.md (canonical spec),
+  HANDOFF.md (orientation, rules, state, next actions), MODDING.md (cited engine facts),
+  `.beads/` (task tracker).
 
 ## Task tracking — beads
-`bd` (v1.2.1) with dependency graph. Epic: `ns-seeding-horde-mode-f6x`.
+`bd` with dependency graph; issues live in a local Dolt DB, `.beads/issues.jsonl` is a passive
+export for the remote.
+
+Flow: `bd ready` → `bd show <id>` → work → findings go to the VAULT (research/ or decisions/
+notes) → `bd close <id> --reason "…"` → `./dev/beads-snapshot.sh` → commit the export. The vault
+never holds task state; bd never holds design rationale (link only). Every finding from a human
+playtest arrives as a bead (`dev/PLAYTEST.md`), and one commit per bead is the rhythm.
 
 ## Git remote
 - `origin` = git@github.com:arianra/ns-seeding-horde-mode.git (PUBLIC, branch main).
 - Auth: SSH (existing arianra key). `gh` CLI installed at ~/.local/bin/gh
   (device-flow login as arianra; token in plaintext ~/.config/gh/hosts.yml).
 - Push normally via SSH: `git push`. `gh` only needed for repo/API ops.
+- Never copy a host config directory into the repo — `ns2srv/cfg/ProgressionConfig.json`
+  holds live tokens and this repo is public.
 
-Flow: `bd list` → `bd claim <id>` → work → findings go to the VAULT
-(research/ or decisions/ notes) → `bd comment <id> "filed: <vault note>"`
-→ `bd close <id>`. The vault never holds task state; bd never holds design
-rationale (link only).
+## Dev environment — source of truth for paths is `dev/paths.sh`
+Single definition, verified here by pointer rather than by restating values:
 
-Current graph:
-- o9x WS1 NS2 mod case studies ─┐
-- 4t3 WS2 TD game case studies ─┴→ 865 WS3 difficulty levers → 407 DESIGN.md
-- f9t §8 dev setup → spikes: zpw virtual clients, 43t cyst autonomy,
-  8bw tunnel placement
+- **NS2 game Lua = build 344 installed server:** `/mnt/d/games/ns2-server/ns2/lua` (~650 files
+  incl. `bots/`). The `/mnt/d/projects/ns2-td/research/laststand` clone is **stale** (no
+  `lua/bots/`, old balance values) — historical reference only.
+- Dev server config + mod storage: `D:\games\horde\server\{cfg,mods}`, port **27025/27026**
+  (isolated `-modstorage`). Arian's live tree: `D:\games\ns2srv\cfg`, 27015/27016 — read-only,
+  and **development never needs it**: a live boot happens only on Arian's explicit request
+  (HANDOFF §2 rule 0).
+- Dedicated-server binaries: `D:\games\ns2-server` (steamcmd app 4940, anonymous; steamcmd at
+  `D:\games\steamcmd`). Launched/driven via `powershell.exe` from WSL — the scripts own it
+  (§Running).
+- Game client + mod tools: `C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2`,
+  `x64/Editor.exe`, `x64/Builder.exe`, `x64/Decoda.exe`, `x64/LaunchPad.exe` (the real publisher).
 
-## Dev environment (§8 — verified 2026-09-17)
-- **SOURCE OF TRUTH for NS2 game lua = build 344 installed server:**
-  `/mnt/d/games/ns2-server/ns2/lua` (650 files incl. `bots/` AI framework).
-  The `/mnt/d/projects/ns2-td/research/laststand` clone is STALE (556 files,
-  old balance values, no lua/bots/) — use for historical/mod reference only.
-- Game: `C:\Program Files (x86)\Steam\steamapps\common\Natural Selection 2`
-  → WSL: `/mnt/c/Program Files (x86)/Steam/steamapps/common/Natural Selection 2`
-- Mod tools: `x64/Editor.exe`, `x64/Builder.exe`, `x64/Decoda.exe` (lua IDE/debugger)
-- Dedicated server: `D:\games\ns2-server` (steamcmd app 4940, anonymous;
-  steamcmd at `D:\games\steamcmd`). Launch/drive via powershell.exe from WSL.
-- Reference mods NOT subscribed in-game (fine): sources live at
-  `/mnt/d/projects/ns2-td/research/`; ded server fetches workshop mods on demand.
-- Workshop dir (151 items): `steamapps/workshop/content/4920/`
-
-## Layout (i0b canonical; delivery reworked 2026-09-22 — repo source/ is truth, dev/deploy.sh builds a -game overlay)
+## Layout (i0b canonical; delivery reworked 2026-09-22 — repo `source/` is truth)
 Shine resolves the server entry as `extensions/<name>/server.lua`, NOT `server/init.lua`
 (extensions.lua:257) — multi-file extensions are FLAT and load siblings via
 `Shine.LoadPluginFile`. The i0a scaffold used a `server/` subdir; i0b flattened it.
@@ -53,57 +59,64 @@ source/lua/shine/extensions/hordemode/
   config.lua         -- DefaultConfig, validators, Maps deep-merge, migrations
   statemachine.lua   -- Inactive/Wave/Intermission/Teardown
   registry.lua       -- HordeRegistry: everything we spawn (teardown truth)
-  takeover.lua       -- BotTeamController lock/snapshot/restore
+  takeover.lua       -- BotTeamController lock/snapshot/restore + the refill nudge
   placement.lua      -- procedural tunnel-mouth selection (pure fns)
   spawner.lua        -- mouths (TunnelEntrance) + bots (PlayerBot recipe)
-  waves.lua          -- composition, clear detection, intermission
+  waves.lua          -- composition, clear detection, intermission (STUB - i6a)
   triggers.lua       -- /horde gates + loss predicates
-  economy.lua        -- v0 wave-clear payout + payout curve
-  hud.lua            -- ScreenText (server-driven)
-source/lua/shine/extensions/hordetest/   -- headless scenario harness (dev cfg only)
-dev/                   -- deploy.sh, server-start/stop.sh, test.sh, horde-test-cfg/
+  economy.lua        -- payouts, bounties (STUB - i6a)
+  hud.lua            -- ScreenText (STUB - i9a)
+source/lua/shine/extensions/hordetest/   -- headless scenario harness (never armed on a joinable boot)
+dev/                   -- lint/test/deploy/package/publish/server-start/stop/guard/state scripts
 ```
-Deploy target (dev): the `-game` overlay `D:\games\ns2hordetest\overlay`, built by
-`dev/build.sh` from `source/`. **Never** a workshop copy of Shine — writing dev files into
-`...\workshop\content\4920\117887554\...` is what broke Arian's client against every server
-(see `dev/STANDARDS.md`, `dev/SCAFFOLDING.md`, `MODDING.md` §2b).
+Deploy target (dev): `./dev/package.sh` builds the artifact zip; `./dev/deploy.sh` installs it
+into **DEV mod storage** (`$DEV_MODS/content/4920/e2f13fcc`) and `server-start.sh` boots with
+`-modstorage`. It is a published Workshop mod (`3807461324`), so the client side is fetched by
+Steam normally — a republish only reaches running servers on their next boot, so **republish ⇒
+restart dev before humans join**. **Never** write dev files into a workshop copy of Shine
+(`...\workshop\content\4920\117887554\...`) — that is what broke Arian's client against every
+server on earth; the full story and the enforcement live in `dev/STANDARDS.md`.
 
-## Running tests (i0c runner, i0d harness)
-`./dev/test.sh [map] [timeout]` — the full loop, seven steps: static lint → stop any stale
-server → materialise the test config → `deploy.sh` → boot and wait for Shine extensions →
-poll the log for `[TEST] ALL-DONE` (default 300s) → stop the server → print the scenario lines.
-**Exit 0** only when the suite reported `pass=N fail=0`.
+## Running the loop
+```bash
+./dev/lint.sh                   # static gate alone: Lua 5.1 parse + advisories (~3 s)
+./dev/test.sh [map] [timeout]   # full headless suite on the artifact
+./dev/test.sh --handback        # the probe-only run: the ONLY run allowed a real ResetGame
+./dev/test.sh --bad-config      # sanitizer round trip against a planted corrupt HordeMode.json
+./dev/server-start.sh [map]     # joinable DEV boot (hordetest disarmed, RevealMouths on)
+./dev/server-stop.sh            # PID-identity-checked stop, never by name
+./dev/guard-server.sh           # refuses destructive action while a client session is open;
+                                # a stale ledger cannot block a boot when no tracked process runs
+```
+`test.sh` prints an eight-step loop (`0/8` environment parity … `8/8` state ledger and managed
+content): materialise the dev config from the live cfg + repo overlay (never point `-config_path`
+at the repo copy — token safety), deploy, boot armed, fence the log *after* boot so a stale
+`ALL-DONE` cannot fake a pass, poll for `ALL-DONE` (default 300 s), stop, then assert the client's
+Steam copy is pristine. **Exit 0** only when `fail=0`. The baseline IS the `ALL-DONE` line of the
+current run — never hard-code a scenario count into a doc; read it.
 
-`./dev/lint.sh [--strict]` runs the static gate on its own (Lua 5.1 parse + advisories). It is
-step 1/7 of `test.sh`, so a syntax error costs a second instead of a two-minute boot. Judgment
-checks that no parser can see live in `dev/REVIEW-CHECKLIST.md` — run them against your own diff.
-
-The runtime config is built at `D:\games\ns2hordetest\cfg` (hyphen-free: `-config_path` breaks on
-hyphens) by copying the live `D:\games\ns2srv\cfg` and overlaying `dev/horde-test-cfg/`. **Never**
-point `-config_path` at the repo copy: the live config carries `ProgressionConfig.json` access and
-refresh tokens, and this repo is public. See `dev/horde-test-cfg/README.md`.
-
-Scenarios live in `source/lua/shine/extensions/hordetest/scenarios.lua` — register with
-`Plugin:RegisterScenario(Name, Expected, Func)` and raise through `Plugin.Assert.*`
-(`True`, `Equal`, `NotNil`, `Alive`, `Gone`). The runner waits for `GetGamerules()` (never touch
-game APIs in `Initialise` — spike zpw) plus a 10s settle, then runs them in registration order.
-
-`Expected = true` marks a **negative control**: it must fail, and it is counted separately as
-`expected_fail`. If a negative control passes, the runner reports a real FAIL — that is what keeps
-the suite honest. Add one per new assert helper, not per feature.
-
-Baseline today: `assert_helpers_fire` PASS · `world_ready` PASS · `negative_control`
-FAIL(expected) → `[TEST] ALL-DONE pass=2 fail=0 expected_fail=1`, exit 0.
-Assert.NoErrors is deliberately absent: a global "no lua errors since boot" check needs an
+`Assert.NoErrors` is deliberately absent: a global "no lua errors since boot" check needs an
 unverified hook, so it stays a spike rather than a fake assertion.
 
-Deviation from the bead: the demo-failure is an always-on negative control rather than a
-config-flagged `demo_fail`, because a flag that defaults off proves FAIL detection only when
-someone remembers to flip it. Shine's plugin-config file naming for extensions was not
-verified, so no config dependency was invented here.
+## Writing scenarios
+`source/lua/shine/extensions/hordetest/scenarios.lua` — register with
+`Plugin:RegisterScenario(Name, Expected, Func)` and raise through `Plugin.Assert.*`
+(`True`, `False`, `Equal`, `Nil`, `NotNil`, `Alive`, `Gone`). The runner waits for
+`GetGamerules()` (never touch game APIs in `Initialise` — spike zpw) plus a settle window,
+runs bodies in registration order in one synchronous pass, then lands deferred checks
+(`self:Defer(Name, Seconds, Expected, Func)` — on **hordetest**, not the plugin under test)
+and withholds `ALL-DONE` until every one resolves. Deferred checks fire reliably only within
+the first ~8 s of the queue (bead `0k3`) — one callback, no chains, which is what gates i5b
+and i6c as specced.
 
-## Implementation tracking
-Phase 1 plan: vault `plans/impl-phase1-vertical-slice.md` (validated).
-Beads: epic chain IMPL-0..IMPL-10 (ect→…→ay0), strictly sequential;
-`bd ready` shows the next bead. Workflow: claim → tests-first → implement →
-harness green → one conventional commit → bd close w/ deviation notes.
+`Expected = true` marks a **negative control**: it must fail, counted separately as
+`expected_fail`. If it passes, the runner reports a real FAIL — the suite's own honesty check.
+Add one per new assert helper, not per feature. The full authoring rules — including the ones
+paid for (demonstrate a new check failing before letting it pass; restore shared state before
+asserting; doubles model transitions, not errors) — are `dev/SCAFFOLDING.md` §8 and
+`dev/REVIEW-CHECKLIST.md`.
+
+---
+*Note (2026-09-29): this file previously carried a "Current graph" of design-era beads and a
+"Baseline today: pass=2". Both were dead weight within weeks; status now lives only in HANDOFF
+and the tracker, and this doc keeps procedure.*

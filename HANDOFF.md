@@ -29,6 +29,13 @@ carries the owned-content table that actually governs.
 These are not style preferences. Each one is the residue of an incident, and two of them cost
 Arian the ability to play the game.
 
+0. **This is mod development. There is no community server to run.** During development the only
+   server that exists is **dev** (27025, `./dev/server-start.sh`). The live tree
+   (`D:\games\ns2srv\cfg`, 27015) and its boot procedure (§6) are kept documented **for possible
+   future use only** — never boot, touch, or keep it running on your own initiative; a live server
+   happens **only when Arian asks for one by name**. Ruled 2026-09-29 after the first
+   two-servers-running evening produced exactly the confusion this rule prevents.
+   If the live is not what he asked about, the answer is dev.
 1. **Never write inside content another tool owns.** Writable: this repo, the dev config tree
    (`dev/paths.sh` is the single definition — currently `D:\games\horde\server\{cfg,mods}`), and
    NS2's per-user mod storage `%APPDATA%\Natural Selection 2\workshop`. **Read-only:**

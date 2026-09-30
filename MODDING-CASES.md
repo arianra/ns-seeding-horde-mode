@@ -84,13 +84,14 @@ Shine's plugin network layer (`core/shared/base_plugin/networking.lua`):
 **Our divergence, measured:** `hordemode` declares five datatable vars — `HordePhase`, `HordeWave`,
 `HordeIntermissionEndsAt`, `HordeMouthsActive`, `HordeMouthsTotal` — and **writes none of them**.
 We have **no `client.lua`** and **no `AddNetworkMessage` anywhere**. So we declared a client
-contract and never implemented it. That is the structural reason nothing is visible in game: the
-client has our code but no data from it.
+contract and never implemented it. That was, at this writing, the structural reason nothing was
+visible in game: the client had our code but no data from it. (Superseded for mouths 2026-09-25.)
 
 ### 2c. Chat commands: why `/horde status` silently started a horde
 
 `Shine:RunCommand` parses **only up to `#Command.Arguments`** — undeclared arguments are dropped
-silently (`core/server/commands.lua:884, 912-937`). `[CODE]` Multi-word arguments need
+silently (`core/server/commands.lua:779-830` — `GetCommandArgs` truncates to declared params and
+`TakeRestOfLine` @804; `[CODE]` multi-word arguments need
 `TakeRestOfLine`. Openness is `NoPerm`; imperative checks use `Shine:HasAccess`
 (`permissions.lua:1243`).
 
@@ -146,7 +147,7 @@ Three lessons in four lines:
 | Wave timer / on-screen identity | blocked on client Lua + delivery | **Unblocked.** `Shine.ScreenText.*` ships both halves. |
 | Mouths on minimap | "no graceful mechanism found" | Mechanism known (`SetIsSighted` / blip mask) with shipped precedent; **deferred until placement is proven on the surface** |
 | Mouths on the map at all | claimed "3 placed" | **Still unproven.** `CreateEntity` returning an object says nothing about position or visibility. |
-| Our client contract | not noticed | We declare 5 datatables and write none, and ship no `client.lua`. The client literally cannot know anything about the horde. |
+| Our client contract | not noticed | We declare 5 datatables and write none, and ship no `client.lua`. The client literally cannot know anything about the horde. *(written pre-§2d; superseded for mouths by `Debug.RevealMouths` riding the engine's own SensorBlip, 2026-09-25 — still zero client Lua; the wave/bannering data is i9a's, also ScreenText-only)* |
 | Command routing | patched | Convention is per-subcommand `BindCommand`; ours is a hand-rolled parser |
 
 ## 4. What I got wrong that this file corrects
@@ -226,9 +227,9 @@ is not a mod: no id, no delivery, no client download, no entry-file semantics.
    Steam-managed paths at parse time, and repairs the Workshop copies an earlier revision
    polluted. `dev/modserver.sh` stays — after publication it becomes the resilience layer
    WorkshopBackup's README recommends, not a workaround.
-3. **What is still unproven, stated plainly:** that a *published* item mounts and auto-downloads
-   to a client. That is the first thing to verify after publication — the pipeline's remaining
-   assumption. The placeholder id in `mod/mod.json` exists only to exercise the build; it is
-   replaced by the real `publishedFileId` and never changed afterwards.
+3. ~~**What is still unproven, stated plainly:** that a *published* item mounts and auto-downloads
+   to a client.~~ — **PROVEN 2026-09-24:** a vanilla client with no launch options received the
+   item and joined (`SCAFFOLDING.md §3b`; MODDING P7 `bbe3005`). The placeholder id in
+   `mod/mod.json` was replaced by the real `publishedFileId` and is never changed afterwards.
 4. **Nothing is hot-rigged.** The dev loop and the release path run the same scripts and produce
    the same artifact; the only difference after publication is which id is in `mod/mod.json`.

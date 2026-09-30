@@ -29,7 +29,8 @@ Start with a fresh `/horde` and work down. Every line is something the suite can
 | 5 | Kill **one** mouth, wait 3 s | The **other** mouths stay visible; status drops by exactly one | the three-state registry — [[never-dereference-a-stored-handle]] |
 | 6 | Kill the **last** mouth | status reads `mouths=0/M`, not `1/M` | the husk state (`GetIsAlive()`), fact 33 in `MODDING.md` |
 | 7 | `/horde stop` | No victory/defeat screen. **Same map.** No errors in chat | handback order — [[td-ns2-round-lifecycle-and-handback]] |
-| 8 | Look around after the stop | You are **still on your team**, back in warmup; vanilla filler bots are back on both teams | the handback order — [[td-ns2-round-lifecycle-and-handback]]; moving you was the bug (2026-09-28) |
+| 8 | Look around after the stop | You are **still on your team**, back in warmup | the handback order — [[td-ns2-round-lifecycle-and-handback]]; moving you was the bug (2026-09-28) |
+| 8b | After that stop, **wait ~10 s** without joining, leaving, or touching config | Warmup filler bots **return on their own, on both teams**; a later `/horde` still starts | a stop fires none of vanilla's three refill events (join/leave/`SetMaxBots`) — the post-reset `UpdateBots()` nudge (`RefillVanillaBots`, 5m5 chair finding 2026-09-29) is the only thing that refills; empty warmup = the nudge is dead — [[td-ns2-round-lifecycle-and-handback]] |
 | 9 | `/horde` again, twice more | Mouth positions **differ** between runs; the log prints a different `seed=` each time | the seeded draw — [[assert-the-guarantee-not-the-hope]] |
 | 10 | `/horde restart` right after a stop, then `/horde status` | Restart starts **immediately** — no cooldown wait, no move to spectator; you stay on your team; status reflects the new wave | restart clears the pending wait — `restart_clears_the_pending_cooldown` |
 | 11 | `/horde stop` twice in a row | Second is **rejected** (`inactive -> teardown is not a legal transition`), not ignored silently | `statemachine.lua` |
@@ -51,7 +52,11 @@ rounds were tracked.
 
 ## 3. Known non-bugs (do not chase these)
 
-- **Nothing walks out of a mouth.** i5a (bot spawner) does not exist yet.
+- **Nothing walks out of a mouth yet — and that is expected, not a bug this round.** The i5a bot
+  factory EXISTS (`Spawner:SpawnBot` + the join/place stage, proven by `bot_factory_settles`); the
+  wave loop that calls it per composition (i6a) is not wired, and stream-to-base behaviour (i5b)
+  is untested. `bots`/`ours` staying at 0 during a wave is the milestone state (tracker `1fv`/`t28`),
+  not a defect to chase from the chair.
 - **There is no wave 2.** i6a (wave loop) does not exist yet.
 - **A horde that "ends" cannot end** — i8a (loss triggers) does not exist. Until then, stop it with
   `/horde stop`.
