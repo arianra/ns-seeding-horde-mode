@@ -843,7 +843,7 @@ function Plugin:Teardown(Now)
 
 	-- v0 restore is the bot controller only. Team resources and any other engine state
 	-- we later touch are logged rather than guessed at (DESIGN.md: full restore is Phase 2).
-	local Took = false
+	local Took, ReleasedNow = false, false
 
 	if self.HordeTakeover then
 		Took = self.HordeTakeover:IsEngaged()
@@ -853,6 +853,7 @@ function Plugin:Teardown(Now)
 		--- engaged used to read as "controller released=false" and nothing more, which is how
 		--- "the bot never returned" arrived here with no trace of why.
 		local Released, ReleaseReason = self.HordeTakeover:Release()
+		ReleasedNow = Took and Released or false
 
 		if Took and not Released then
 			self:Log("bot controller NOT handed back: " .. tostring(ReleaseReason))
@@ -918,14 +919,33 @@ function Plugin:Teardown(Now)
 	--- `stop_leaves_humans_on_their_teams` pins.
 	local KeptMarines, KeptAliens, CensusProblems = Plugin.ReportHumansKept()
 
+	--- The refill nudge, AFTER the reset and while we still own the outcome: vanilla adds
+	--- bots only on join/leave/SetMaxBots events (see Takeover.RefillVanillaBots - chair
+	--- finding 2026-09-29: warmup bots never returned after a stop, because a stop produces
+	--- none of those events and our release must restore the cap by direct field writes).
+	--- A refill attempted BEFORE this reset would simply be destroyed by it. With humans
+	--- this fills to the cap; headless it is vanilla's own zero-humans wipe rule - so
+	--- scenarios that keep bots alive across deferred windows stub this step, exactly as
+	--- they stub the census.
+	local Refilled, RefillReason = false, nil
+
+	if ReleasedNow then
+		Refilled, RefillReason = Plugin.Takeover.RefillVanillaBots(self.BotController)
+
+		if not Refilled then
+			self:Log("bot refill nudge FAILED: " .. tostring(RefillReason))
+		end
+	end
+
 	self:RestoreGameEnd("teardown")
 
-	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
+	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",
 		tostring(Total - Gone - #Failed), tostring(Husks), tostring(Gone), tostring(#Failed),
 		tostring(Total),
 		#Parts > 0 and table.concat(Parts, " ") or "nothing to destroy",
 		tostring(Took),
+		tostring(Refilled),
 		Handed and "reset to NotStarted" or ("left as-is: " .. tostring(HandBackReason)),
 		tostring(KeptMarines),
 		tostring(KeptAliens),

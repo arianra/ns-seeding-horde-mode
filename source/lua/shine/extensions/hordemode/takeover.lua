@@ -96,6 +96,38 @@ function Takeover:Release()
 	return true, nil
 end
 
+--- The nudge vanilla never gets after OUR kind of stop. `BotTeamController:UpdateBots` is
+--- the ONLY code that adds bots, and it runs from exactly three event sites -
+--- `OnClientConnect`, `NS2Gamerules:SetMaxBots` and `OnClientDisconnect`
+--- (NS2Gamerules.lua:322, 1436, 1575). There is no periodic call. A horde stop produces no
+--- join, no leave, and - because the setter would collapse both commander flags
+--- (BotTeamController.lua:185-193) - not even a SetMaxBots: our release restores the cap by
+--- writing the fields directly, which is correct for state and silent for refill. So without
+--- this, the controller sits ready-to-fill and does nothing until the next real client joins.
+--- Chair-measured 2026-09-29: warmup bots never returned after `/horde stop`.
+---
+--- This is the same call vanilla's own wrapper makes after setting the cap - nothing custom.
+--- Note what it does with ZERO humans: `UpdateBots` WIPES every bot (:169-172, the rule that
+--- keeps idle servers bot-free); with humans it fills to the cap. That asymmetry is why the
+--- nudge lives HERE as its own injectable step: the headless suite has no humans and several
+--- scenarios keep live bots across deferred windows, so only the product path may fire it, and
+--- only AFTER the world reset (a pre-reset refill is destroyed by `ResetGame`).
+function Takeover.RefillVanillaBots(Controller)
+	if not Controller or not Controller.UpdateBots then
+		return false, "no controller to refill"
+	end
+
+	local Ok, Err = pcall(function()
+		Controller:UpdateBots()
+	end)
+
+	if Ok then
+		return true, nil
+	end
+
+	return false, tostring(Err)
+end
+
 --- Snapshot values as a flat string - status surface (RD6) and test evidence.
 function Takeover:Describe()
 	local Snap = self.Snapshot

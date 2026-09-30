@@ -1241,6 +1241,22 @@ function Plugin:InitialiseScenarios()
 				end
 			end
 
+			-- One final registration pass BEFORE destroying: an unregistered ref survives the
+			-- registry drain in DestroyAll, and the harness cannot observe anything after t+8
+			-- (`0k3`) to clean it later. The first version of this scenario left a live mouth
+			-- in the world when its single pump's ids came late; the next thing that mouth's
+			-- existence touches is the NEXT scenario's surface probe - whose surfaces die with
+			-- the round reset at teardown, turning one flaky premise into another
+			-- scenario's failure (restore-before-you-assert). If refs are STILL unregistered
+			-- after this pass that is a real fault, and it must be named before the destroy
+			-- hides the evidence.
+			Spawn:Pump()
+
+			if Spawn:PendingCount() > 0 then
+				Problems[#Problems + 1] = string.format("%s refs never registered - the created set cannot be fully destroyed",
+					tostring(Spawn:PendingCount()))
+			end
+
 			local Destroyed, Failed, Total = horde.DestroyAll(Reg, Spawn:TakePending(), nil)
 
 			if #Failed > 0 then
@@ -2749,22 +2765,51 @@ function Plugin:InitialiseScenarios()
 			return 1, 0, {}
 		end
 
+		--- The refill nudge must fire AFTER the reset (a refill before `ResetGame` is
+		--- destroyed by it) and before the switch comes off. Two swaps make that provable
+		--- without touching anything real: a fake takeover that claims "engaged" and releases
+		--- cleanly - a REAL Engage would `SetMaxBots(0)`, and BTC's setter wipes every bot
+		--- on the server at zero (BotTeamController.lua:190), killing the four scenarios whose
+		--- deferred bot checks are still outstanding - and a stubbed nudge that records its
+		--- position instead of calling the shared controller's UpdateBots (which, with zero
+		--- humans here, would run vanilla's wipe for the same reason). The real chain - engage,
+		--- release, nudge - is exercised end to end by the `--handback` probe, which runs
+		--- alone; the real nudge's contract is asserted by refill_nudge_calls_updatebots_once.
+		local SavedTakeover, SavedRefill = horde.HordeTakeover, horde.Takeover.RefillVanillaBots
+
+		horde.HordeTakeover = {
+			IsEngaged = function() return true end,
+			Release = function() return true, nil end,
+		}
+
+		horde.Takeover.RefillVanillaBots = function()
+			Order[#Order + 1] = "refill"
+
+			return true, nil
+		end
+
 		local Machine = horde.Machine
 
 		local Ok, Err = pcall(function()
 			horde:Teardown(Shared.GetTime())
 		end)
 
+		horde.Takeover.RefillVanillaBots = SavedRefill
+		horde.HordeTakeover = SavedTakeover
 		horde.ReportHumansKept = SavedCensus
 		GetGamerules = SavedRules
 		horde.HordeRoundStarted = SavedStarted
 		horde.Machine, horde.HordeRegistry, horde.HordeSpawner = SavedMachine, SavedReg, SavedSpawn
 
-		local CensusAt, SwitchAt, MovedAt
+		local CensusAt, RefillAt, SwitchAt, MovedAt
 
 		for Index, Item in ipairs(Order) do
 			if Item == "census" and not CensusAt then
 				CensusAt = Index
+			end
+
+			if Item == "refill" and not RefillAt then
+				RefillAt = Index
 			end
 
 			if Item == "moved" then
@@ -2783,6 +2828,10 @@ function Plugin:InitialiseScenarios()
 		Assert.True( CensusAt > 1 and CensusAt < SwitchAt,
 			string.format("and on the world the reset produced, before the switch came off (reset 1, census %s, switch %s)",
 				tostring(CensusAt), tostring(SwitchAt)) )
+		Assert.NotNil( RefillAt, "the bot refill nudge fires on a release we performed" )
+		Assert.True( CensusAt < RefillAt and RefillAt < SwitchAt,
+			string.format("refill lands after the reset world was counted, before the switch (census %s, refill %s, switch %s)",
+				tostring(CensusAt), tostring(RefillAt), tostring(SwitchAt)) )
 		Assert.Equal( "switch:nil", Order[#Order], "the switch is the last thing handed back" )
 		Assert.Equal( kGameState.NotStarted, Rules.gameState, "so the switch comes off on a round that cannot end" )
 		Assert.True( Machine:Is(horde.Phase.Inactive), "and the machine is idle again" )
@@ -2861,6 +2910,36 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 0, ZeroM, "an empty world counts zero, not error" )
 		Assert.Equal( 0, ZeroA, "on both teams" )
 		Assert.Equal( 0, #ZeroP, "and no problems" )
+	end )
+
+	--- 5m5, unit: the nudge's own contract. The chair symptom was "warmup bots never
+	--- returned after stop" because nothing event-triggers UpdateBots during a handback
+	--- (NS2Gamerules.lua:322/1436/1575 are the only call sites and a stop produces none of
+	--- them). The fix is one vanilla-shaped nudge - so the test is: exactly one UpdateBots,
+	--- and a controller that cannot answer is REPORTED, not swallowed (silent enforcement
+	--- is not enforcement).
+	self:RegisterScenario( "refill_nudge_calls_updatebots_once", false, function()
+		local Takeover = Shine.Plugins.hordemode.Takeover
+		local Calls = 0
+
+		local Good = { UpdateBots = function() Calls = Calls + 1 end }
+
+		local Ok, Err = Takeover.RefillVanillaBots(Good)
+
+		Assert.True( Ok, "a controller with UpdateBots is nudged" )
+		Assert.Nil( Err, "and nothing is reported against it" )
+		Assert.Equal( 1, Calls, "exactly one nudge - we do not hammer the fill loop" )
+
+		local Missing, MissErr = Takeover.RefillVanillaBots({})
+
+		Assert.False( Missing, "a controller without UpdateBots is refused" )
+		Assert.NotNil( MissErr, "by name" )
+
+		local Thrower = { UpdateBots = function() error("mid-reset") end }
+		local Threw, ThrowErr = Takeover.RefillVanillaBots(Thrower)
+
+		Assert.False( Threw, "a throwing nudge is contained" )
+		Assert.True( ThrowErr:find("mid%-reset") ~= nil, "and its reason survives: " .. tostring(ThrowErr) )
 	end )
 
 	--- The real handback, run alone by `./dev/test.sh --handback`. The faked-order scenario above
