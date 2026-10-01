@@ -259,8 +259,11 @@ sed 's/^/[deploy]   /' <<<"$CHECK_OUT"
 if [[ $HANDBACK -eq 1 ]]; then
   # A filter that selects nothing still prints ALL-DONE, and "0 failed" over a run that never
   # executed the probe reads exactly like a probe that passed. So the mode is proven by the
-  # probe's own report line, fenced to this boot like everything else.
-  if ! tail -c +$((LOG_OFFSET + 1)) "$LOG_WSL" | grep -aq "handback_returns_the_world_to_vanilla"; then
+  # probe's own report line. WHOLE FILE, like the load check above: the probe prints its
+  # scenario line at t+0, seconds after 'Extension loaded' - the byte fence, sampled after
+  # that grep loop polls, can land PAST it, and the check then fails a probe that ran (seen
+  # 2026-09-30). The engine rotates the log at boot, so whole-file IS this boot.
+  if ! grep -aq "handback_returns_the_world_to_vanilla" "$LOG_WSL" 2>/dev/null; then
     echo "[test] FAIL - handback mode was requested and the probe never reported" >&2
     exit 1
   fi

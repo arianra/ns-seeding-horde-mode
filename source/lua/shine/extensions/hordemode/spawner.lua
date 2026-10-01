@@ -397,6 +397,18 @@ function Spawner:Pump()
 	return Registered
 end
 
+function Spawner:PendingCount()
+	return #self.Pending
+end
+
+--- Spawns the factory still owns: queued for registration or waiting on their
+--- player. The wave-clear predicate needs this - a bot that has not materialised
+--- is neither alive nor dead, and a wave counting zero alive while spawns are
+--- outstanding would clear itself before its first alien existed.
+function Spawner:Outstanding()
+	return #self.Pending + #self.Placing
+end
+
 --- Kill + destroy by registry id. Kill() alone leaves the entity in the world for the
 --- frame, which is enough to make an entity-count diff lie, so both are called.
 function Spawner:DestroyMouth(Id)

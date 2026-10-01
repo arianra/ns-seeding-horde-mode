@@ -378,6 +378,11 @@ function Plugin:StartWave(Client, Now)
 	self:Announce("HORDE: round reset - vanilla bots cleared. You spawn when the count reaches zero (%s s).", Seconds)
 
 	self:BeginWave(Config)
+
+	-- 61a: the loss latches are round state. A station that only existed in the
+	-- previous horde round must not make THIS one lose on its first tick, and a
+	-- wipe clock from an old round is not a head start on this one.
+	self.HordeLoss = nil
 end
 
 --- Clean slate: wipe what the previous session left, then hand the round to vanilla's
@@ -522,21 +527,80 @@ function Plugin:BeginCountdown(Seconds)
 	return Length
 end
 
---- Place and create this wave's mouths - and, since 71c, pull the factory's trigger:
---- each placed mouth emits `Waves.TestBotsPerMouth` skulks through the queue that
---- the world tick registers and places. A horde with no mouths is invisible; a horde
---- whose mouths never emit is a diorama. Composition (per-type counts, curves) is
---- i6a's; this knob's whole job is that aliens RUN before any wave math trusts them.
+--- Every wave starts from a cleared board. Whatever mouths and bots outlived the last
+--- wave - an exit path that skipped the wave-end drain, a feature not yet written that
+--- forgets - are destroyed HERE, before this wave places or deals anything, so the wave
+--- the marines see is exactly this wave's set. The end drain stays (bots must die when
+--- the wave does, or intermission is a hunt, not a build phase); this is the belt AND
+--- the braces: without a start cull, one stale bot alive forever keeps `CountByKind("bot")`
+--- - which is not wave-scoped - nonzero and no later wave can ever clear.
+--- The return is the drained-by-kind count: what the books promised, not what the engine
+--- confirmed (a failed destroy is logged AND stays pollable via the ever-id history at
+--- teardown, which owns the difference).
+function Plugin:CullPreviousWave()
+	local Reg = self.HordeRegistry
+
+	if not Reg then
+		return 0, 0
+	end
+
+	local Entries = {}
+
+	for _, Item in ipairs(Reg:DrainKind("bot")) do
+		Entries[#Entries + 1] = Item
+	end
+
+	for _, Item in ipairs(Reg:DrainKind("mouth")) do
+		Entries[#Entries + 1] = Item
+	end
+
+	if #Entries == 0 then
+		return 0, 0
+	end
+
+	local Destroyed, Failed = Plugin.DestroyEntries(Entries,
+		Reg.StateOf or Plugin.Registry.EngineStateOf)
+
+	local CulledBots, CulledMouths = 0, 0
+
+	for _, Item in ipairs(Entries) do
+		if Item.kind == "bot" then
+			CulledBots = CulledBots + 1
+		elseif Item.kind == "mouth" then
+			CulledMouths = CulledMouths + 1
+		end
+	end
+
+	self:Log(string.format("wave start culled carry-over: %s bots, %s mouths (%s destroyed cleanly)%s",
+		tostring(CulledBots), tostring(CulledMouths),
+		tostring((Destroyed.bot or 0) + (Destroyed.mouth or 0)),
+		#Failed > 0 and (", FAILED: " .. table.concat(Failed, "; ")) or ""))
+
+	return CulledBots, CulledMouths
+end
+
+--- Place and spawn this wave: the cleared board first (CullPreviousWave), then mouths
+--- (only at engine-validated points), then the wave's bots dealt over the mouths that
+--- actually exist. 61a turned the flat STEP A knob into the curve: wave size is
+--- `Waves.HordeSize` at this wave's progress, and what BeginWave records on the machine
+--- (`WaveMouths`, `WaveBots`) is what the clear predicates compare the living registry
+--- counts against - PER WAVE on purpose, so a leftover can never hold a wave hostage.
+--- The mouth set is this wave's full expectation (Arian 2026-09-30: "at every wave start
+--- make sure we have the amount of mouths expected for that wave"): old ones are gone,
+--- the draw is fresh and complete - or the deficit says so out loud. A per-wave MOUTH
+--- count curve can ride here at RD3; ActivePerWave stays the static expectation for now.
 function Plugin:BeginWave(Config)
 	local Machine = self.Machine
+	local WaveNumber = (Machine and Machine:GetWave()) or 1
+
+	self:CullPreviousWave()
 
 	--- A fresh draw per wave, seeded and logged. The first version swept a fixed grid and then took
 	--- the nearest candidate per sector, so every wave on every boot landed in the same rooms -
 	--- reported from the chair as "surprisingly in the exact same positions". The seed goes in the
 	--- log because a placement someone reports has to be reproducible: the coordinates say where a
 	--- mouth ended up, only the seed says why that one.
-	local Seed = Plugin.Placement.SeedFor(Machine and Machine:GetWave() or 1,
-		Shared.GetSystemTime(), Shared.GetTime())
+	local Seed = Plugin.Placement.SeedFor(WaveNumber, Shared.GetSystemTime(), Shared.GetTime())
 	local Random = Plugin.Placement.NewRandom(Seed)
 
 	local Chosen, Base, RawCount, BandedCount, Stats = Plugin.Placement.Collect(Config, nil, nil, Random)
@@ -554,20 +618,14 @@ function Plugin:BeginWave(Config)
 
 	local Spawned = 0
 	local Refused = {}
-
-	-- 71c: the first trigger pull the factory ever had. Each bot is queued AT the mouth's
-	-- own engine-validated point and emerges through PlaceBots on the tick - deliberately
-	-- NOT at the chair or a hive, and deliberately not composition: i6a replaces this flat
-	-- count with curve-driven spawn policy and deletes the knob. Read per wave so a
-	-- sanitizer-fixed file can never disagree with behaviour (fact 15).
-	local PerMouth = (Config.Waves and Config.Waves.TestBotsPerMouth) or 0
-	local BotsQueued = 0
+	local PlacedPoints = {}
 
 	for Index, Candidate in ipairs(Chosen) do
 		local Mouth, Reason = self.HordeSpawner:SpawnMouth(Candidate.point)
 
 		if Mouth then
 			Spawned = Spawned + 1
+			PlacedPoints[#PlacedPoints + 1] = Candidate.point
 
 			-- Every coordinate we put a structure at, in the log. "3 mouths placed from
 			-- 46 candidates" is what we had when a marine reported all three inside the rock:
@@ -580,16 +638,25 @@ function Plugin:BeginWave(Config)
 				Plugin.Placement.Axis(Candidate.point, "z", 3),
 				string.format("%.1f", Candidate.distance or -1),
 				tostring(Mouth:GetId())))
-
-			-- Bots follow their mouth: a mouth that failed the build gate must not
-			-- orphan a queue of bots at a point nothing emerged from.
-			for _ = 1, PerMouth do
-				if self.HordeSpawner:SpawnBot(Candidate.point, kTechId.Skulk) then
-					BotsQueued = BotsQueued + 1
-				end
-			end
 		else
 			Refused[#Refused + 1] = tostring(Reason)
+		end
+	end
+
+	-- 61a: the wave's size comes from the curve, dealt round-robin over the mouths that
+	-- actually exist - a refused candidate takes no share, and the sum stays the wave's.
+	-- Bots emerge AT their mouth's validated point through the queue the tick pumps;
+	-- this call returns while they are still pending, and the clear predicate knows that
+	-- because Outstanding() says so.
+	local WaveSize = Plugin.Waves.HordeSize(Config.Waves, Plugin.HordeConfig.EvaluateCurve, WaveNumber)
+	local Shares = Plugin.Waves.Distribute(WaveSize, Spawned)
+	local BotsSpawned = 0
+
+	for Index, Point in ipairs(PlacedPoints) do
+		for _ = 1, Shares[Index] or 0 do
+			if self.HordeSpawner:SpawnBot(Point, kTechId.Skulk) then
+				BotsSpawned = BotsSpawned + 1
+			end
 		end
 	end
 
@@ -597,24 +664,36 @@ function Plugin:BeginWave(Config)
 	-- happen: no anchor entities at all, anchors that the engine refuses as unbuildable, or a
 	-- band that misses this map.
 	if Spawned == 0 then
-		local Waves = (Config and Config.Waves) or {}
+		local WaveKeys = (Config and Config.Waves) or {}
 
-		self:Announce("HORDE: the wave could NOT be placed - %s anchors, %s buildable, %s in the band, %s chosen. Check Waves.BandMin/BandMax for this map.",
-			RawCount, Plugin.Placement.ReasonCounts(Stats), BandedCount, #Chosen)
+		self:Announce(string.format(
+			"HORDE: the wave could NOT be placed - %s anchors, %s buildable, %s in the band, %s chosen. Check Waves.BandMin/BandMax for this map.",
+			tostring(RawCount), Plugin.Placement.ReasonCounts(Stats), tostring(BandedCount), tostring(#Chosen)))
 
 		self:Log(string.format(
-			"wave 1 produced NO mouths: anchors %s, buildable [%s], in band %s, chosen %s, refused [%s] (band %s-%sm, pool %s, per wave %s)",
-			tostring(RawCount), Plugin.Placement.ReasonCounts(Stats), tostring(BandedCount), tostring(#Chosen),
-			table.concat(Refused, "; "), tostring(Waves.BandMin), tostring(Waves.BandMax),
-			tostring(Waves.PoolSize), tostring(Waves.ActivePerWave)))
+			"wave %s produced NO mouths: anchors %s, buildable [%s], in band %s, chosen %s, refused [%s] (band %s-%sm, pool %s, per wave %s)",
+			tostring(WaveNumber), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats), tostring(BandedCount), tostring(#Chosen),
+			table.concat(Refused, "; "), tostring(WaveKeys.BandMin), tostring(WaveKeys.BandMax),
+			tostring(WaveKeys.PoolSize), tostring(WaveKeys.ActivePerWave)))
 	else
-		self:Log(string.format("wave 1: %s mouths placed from %s anchors [%s]%s seed=%s, %s bots queued (Waves.TestBotsPerMouth=%s)",
-			tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
+		self:Log(string.format("wave %s: %s mouths placed from %s anchors [%s]%s seed=%s, %s bots dealt from curve size %s",
+			tostring(WaveNumber), tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
 			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed),
-			tostring(BotsQueued), tostring(PerMouth)))
+			tostring(BotsSpawned), tostring(WaveSize)))
 
-		self:Announce("HORDE: WAVE 1 - %s tunnel mouths placed (from %s candidates on this map)%s - %s aliens emerge shortly. /horde status | /horde stop | /horde restart",
-			Spawned, RawCount, Reveal and " (revealed on your map)" or "", tostring(BotsQueued))
+		-- The wave-start promise is ACTIVEPERWAVE mouths (Arian 2026-09-30); a draw that came
+		-- up short is still a wave, but the announcement says so - a silent 2-of-3 is how the
+		-- 5ss summit judgement stayed invisible behind a green "3 mouths placed" line.
+		local Expected = (Config.Waves and Config.Waves.ActivePerWave) or 0
+		local Deficit = (Expected > 0 and Spawned < Expected)
+			and string.format(" (only %s of %s this map can build in the band)", tostring(Spawned), tostring(Expected)) or ""
+
+		-- Formatted HERE, not passed as Notify varargs: Shine would hand the template to the
+		-- clients to format, but the announce contract is asserted server-side
+		-- (wave_slice_end_to_end hooks Notify) - and a broadcast with %s in it is not an announcement.
+		self:Announce(string.format("HORDE: WAVE %s - %s tunnel mouths, %s aliens incoming%s%s. /horde status | /horde stop | /horde restart",
+			tostring(WaveNumber), tostring(Spawned), tostring(BotsSpawned),
+			Reveal and " (revealed on your map)" or "", Deficit))
 	end
 
 	-- The status surface reads these off the machine, and nothing used to write them:
@@ -624,6 +703,18 @@ function Plugin:BeginWave(Config)
 	Config.Waves = Config.Waves or {}
 	Machine.MouthsPool = Spawned
 	Machine.MouthsActive = Spawned
+	Machine.WaveMouths = Spawned
+	Machine.WaveBots = BotsSpawned
+
+	--- The wave's bookkeeping identity: the clear/loss predicates below compare LIVE
+	--- counts against this wave's books, so they are only meaningful against the exact
+	--- registry and spawner this wave was placed into. A harness swap (or any future
+	--- mid-wave replacement) mounting foreign books on the plugin must not let the wave
+	--- end against them - the 61a suite proved it destroys real entities: wave_slice's
+	--- live machine read revealed_mouths' registry, `Cleared(3,0,0)` fired on a spawner
+	--- that had never held a bot, and the EndWavePhase drain killed a mouth another
+	--- scenario was watching.
+	Machine.WaveReg, Machine.WaveSpawner = self.HordeRegistry, self.HordeSpawner
 
 	return Spawned
 end
@@ -665,6 +756,12 @@ function Plugin:HordeTick()
 	if Reg and self.Machine then
 		self.Machine.MouthsActive = Reg:CountByKind("mouth")
 	end
+
+	-- 61a: the wave loop's pulse. Runs after the prune and the pump so it decides on
+	-- the same counts the status line is about to report, never on a tick-old view.
+	if self.Machine and self.Machine:IsActive() then
+		self:EvaluateWaveState(Shared.GetTime())
+	end
 end
 
 --- Total entities in the world. Used only for the teardown diff, so a failure to
@@ -679,25 +776,201 @@ function Plugin.EntityCount()
 	return -1
 end
 
---- Destroy the created set: bots by player first (Disconnect releases the virtual
---- client, then the entity goes), mouths by Kill then DestroyEntity - Kill alone
---- leaves the entity in the world for a frame, which is enough to make the diff lie.
---- Injectable on purpose: i7b asserts integrity against real entities without
---- needing a live wave.
-function Plugin.DestroyAll(Reg, Pending, Log)
-	local Destroyed, Failed, Husks, Gone = {}, {}, 0, 0
+--- The wave loop's pulse, run from the world tick. Everything it reads is injectable for
+--- one reason: the harness cannot grow a real wave inside the ~8 s deferred ceiling
+--- (`0k3`), so the DECISIONS get unit-tested with fakes while the entities keep their own
+--- scenarios. Order inside a tick is deliberate: loss first (a destroyed station must not
+--- wait for the wave to finish politely), then wave-end, then the intermission clock.
+--- Returns the event handled, or nil; at most one per tick.
+function Plugin:EvaluateWaveState(Now, Deps)
+	local Machine = self.Machine
 
-	local Entries = Reg and Reg:Drain() or {}
-
-	for _, Item in ipairs(Pending or {}) do
-		Entries[#Entries + 1] = { ref = Item.ref, kind = Item.kind }
+	if not Machine or not Machine:IsActive() then
+		return nil
 	end
 
-	local Ids = {}
+	local Config = (Deps and Deps.Config) or self.HordeConfig.Resolve(Shared.GetMapName())
+	local Reg = Deps and Deps.Reg or self.HordeRegistry
+	local Spawner = Deps and Deps.Spawner or self.HordeSpawner
+	local Snapshot = Deps and Deps.Snapshot or Plugin.Triggers.TakeSnapshot(nil)
+	local Rules = Deps and Deps.Rules or GetGamerules()
 
-	-- The registry's own resolver, when there is a registry: in the real plugin that is the
-	-- engine-backed one, and this loop has to agree with whatever counted them a tick ago.
-	local StateOf = (Reg and Reg.StateOf) or Plugin.Registry.EngineStateOf
+	--- A wave owns its books, not the plugin's current mount: if the registry or spawner
+	--- is not the pair this wave was placed with, the counts below describe someone
+	--- else's world and every predicate is meaningless. Machines that never went through
+	--- BeginWave (unit-driven fakes) carry no identity and are exempt.
+	if Machine.WaveReg and (Reg ~= Machine.WaveReg or Spawner ~= Machine.WaveSpawner) then
+		if not Machine.ForeignBooksLogged then
+			Machine.ForeignBooksLogged = true
+
+			self:Log("wave evaluation SKIPPED: mounted registry/spawner are not the books this wave was placed with")
+		end
+
+		return nil
+	end
+
+	if Machine:GetState() == Plugin.Phase.Wave then
+		local Loss = self:EvaluateLoss(Snapshot, Rules, Now, Config)
+
+		if Loss then
+			self:EndHorde(Loss, Now)
+			return "loss"
+		end
+
+		local MouthsGone = Plugin.Waves.MouthsFallen(Machine.WaveMouths,
+			Reg and Reg:CountByKind("mouth") or 0)
+		local Cleared = Plugin.Waves.Cleared(Machine.WaveBots,
+			Reg and Reg:CountByKind("bot") or 0,
+			Spawner and Spawner:Outstanding() or 0)
+
+		if MouthsGone or Cleared then
+			self:EndWavePhase(MouthsGone and "mouths" or "cleared", Now, Config, Reg, Rules)
+			return MouthsGone and "mouths" or "cleared"
+		end
+	elseif Machine:GetState() == Plugin.Phase.Intermission then
+		local Wait = (Config.Intermission and Config.Intermission.Seconds) or 60
+
+		if Now - (Machine.ChangedAt or Now) >= Wait then
+			if Machine:BeginWave(Now) then
+				self:BeginWave(Config)
+			end
+
+			return "next-wave"
+		end
+	end
+
+	return nil
+end
+
+--- The two ways the horde ends by itself, both latched against false positives: the
+--- station must have BEEN standing to be lost (a warmup horde round starts without one,
+--- and "never had" is not "just lost"), and the wipe must HOLD through the grace window
+--- (respawns are seconds; D4's 3). The latch state lives on the plugin, cleared at
+--- start and at teardown.
+function Plugin:EvaluateLoss(Snapshot, Rules, Now, Config)
+	if not Rules then
+		return nil
+	end
+
+	self.HordeLoss = self.HordeLoss or {}
+
+	local MarineTeam = Rules.GetTeam and Rules:GetTeam(kTeam1Index)
+
+	if MarineTeam and MarineTeam.GetNumAliveCommandStructures then
+		local Alive = MarineTeam:GetNumAliveCommandStructures()
+
+		if (Alive or 0) > 0 then
+			self.HordeLoss.HadStation = true
+		elseif Plugin.Waves.StationsLost(self.HordeLoss.HadStation, Alive) then
+			return "the marine command station was destroyed"
+		end
+	end
+
+	local Grace = (Config.Waves and Config.Waves.WipeGraceSeconds) or 3
+	local Since, Fired = Plugin.Waves.Wipe(Now, self.HordeLoss.WipeSince,
+		Snapshot.RealMarinesAlive or Snapshot.RealMarineCount, Grace)
+
+	self.HordeLoss.WipeSince = Since
+
+	if Fired then
+		return "every marine died"
+	end
+
+	return nil
+end
+
+--- A wave is over: its content leaves the world (the bots that survived a mouth-kill,
+--- and the mouths the next draw re-places anyway), the flat payout lands on the marine
+--- team, and the intermission clock starts on the machine's own ChangedAt. Draining is
+--- BY KIND: a wave owns exactly its mouths and its bots - whatever else the registry
+--- grows later (prebuilds, economy props) survives its waves.
+function Plugin:EndWavePhase(Reason, Now, Config, Reg, Rules)
+	local Machine = self.Machine
+
+	if not Machine:EndWave(Now) then
+		return false
+	end
+
+	local Entries = {}
+
+	if Reg then
+		for _, Item in ipairs(Reg:DrainKind("bot")) do
+			Entries[#Entries + 1] = Item
+		end
+
+		for _, Item in ipairs(Reg:DrainKind("mouth")) do
+			Entries[#Entries + 1] = Item
+		end
+	end
+
+	local Destroyed = Plugin.DestroyEntries(Entries,
+		(Reg and Reg.StateOf) or Plugin.Registry.EngineStateOf)
+
+	local Payout = (Config.Economy and Config.Economy.WaveClearPayout) or 0
+	local MarineTeam = Rules and Rules.GetTeam and Rules:GetTeam(kTeam1Index)
+
+	if Payout > 0 and MarineTeam and MarineTeam.AddTeamResources then
+		local OkPay, PayErr = pcall(function()
+			MarineTeam:AddTeamResources(Payout)
+		end)
+
+		if not OkPay then
+			self:Log("wave payout FAILED: " .. tostring(PayErr))
+		end
+	end
+
+	local Survived = Machine:GetWave()
+	local Wait = (Config.Intermission and Config.Intermission.Seconds) or 60
+
+	Machine.MouthsPool = 0
+	Machine.MouthsActive = 0
+	Machine.WaveMouths = 0
+	Machine.WaveBots = 0
+
+	if Reason == "mouths" then
+		self:Announce("HORDE: every tunnel mouth destroyed - wave %s is over, +%s team res. Intermission %ss, then wave %s.",
+			tostring(Survived), tostring(Payout), tostring(Wait), tostring(Survived + 1))
+	else
+		self:Announce("HORDE: wave %s cleared, +%s team res. Intermission %ss, then wave %s.",
+			tostring(Survived), tostring(Payout), tostring(Wait), tostring(Survived + 1))
+	end
+
+	self:Log(string.format("wave %s ended (%s): %s bots, %s mouths destroyed, payout %s",
+		tostring(Survived), Reason, tostring(Destroyed.bot or 0),
+		tostring(Destroyed.mouth or 0), tostring(Payout)))
+
+	return true
+end
+
+--- A loss is an admin stop that someone told the truth to: the same machine edge, the
+--- same ordered Teardown, plus the one announcement the mode owes - the score. Pillar
+--- 3 has no win condition; this is the loss half landing, and with it the end of
+--- "a horde that ends cannot end".
+function Plugin:EndHorde(Reason, Now)
+	local Machine = self.Machine
+	local Survived = (Machine and Machine:GetWave()) or 0
+
+	if not Machine:Stop("loss: " .. Reason, Now) then
+		self:Log("loss teardown rejected while machine said " .. Machine:GetState())
+		return false
+	end
+
+	self:Announce("HORDE OVER - %s. Survived %s wave(s); back to seeding.",
+		Reason, tostring(Survived))
+	self:Teardown(Now)
+
+	return true
+end
+
+--- Destroy a given list of registry entries with the registry's own liveness answers.
+--- Extracted from DestroyAll when the WAVE loop needed the same machinery for a SUBSET
+--- (a wave ending drains its kinds, not the world). Both early-stop judgements from 71c
+--- live here and apply to every caller: a bot is touched while its ENTITY is real even
+--- if its player never materialised, and a ref that never registered at all is touched
+--- regardless of what the player-based verdict says.
+function Plugin.DestroyEntries(Entries, StateOf)
+	local Destroyed, Failed, Husks, Gone = {}, {}, 0, 0
+	local Ids = {}
 	local Standing, Vanished = Plugin.Registry.Alive, Plugin.Registry.Gone
 
 	for _, Item in ipairs(Entries) do
@@ -712,14 +985,12 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 		-- Bots are judged by their PLAYER (EngineStateOf), which answers "Gone" from two
 		-- different worlds: a bot someone already disconnected (its entity id really is
 		-- unresolvable), and a bot whose player has not materialised yet - entity alive,
-		--- virtual client attached, no player, still ours to destroy. Trusting Gone there
-		-- leaks a client that outlives the teardown, and 71c makes that window reachable
+		-- virtual client attached, no player, still ours to destroy. Trusting Gone there
+		-- leaks a client that outlives the teardown, and 71c made that window reachable
 		-- from the chair on purpose (stop right after a start, while bots are queueing).
 		-- The same trap sits one layer down: EngineStateOf answers Gone for ANY entry
-		-- without an id - which is exactly what TakePending hands over (refs born in the
-		-- creation tick are refused registration by design). Before 71c's early-stop unit
-		-- no teardown ever saw one; trusting it there would have leaked a pending mouth
-		-- with the leak poll blind to it (no id to poll). So: touch what is still real.
+		-- without an id - exactly what TakePending hands over (refs born in the creation
+		-- tick are refused registration by design). So: touch what is still real.
 		local BornUnregistered = Item.id == nil and Ref ~= nil
 		local BotStillReal = Kind == "bot" and (Item.id == nil or Shared.GetEntity(Item.id) ~= nil)
 
@@ -735,9 +1006,8 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 			--- existed" is ours to deliver and the engine would otherwise leave it standing there
 			--- behind a teardown that logged PASS. The kill and the removal are separate pcalls
 			--- so that a refusal to die cannot skip the removal. A bot is ALWAYS disconnected
-			--- while its entity is real - standing, husk, or player-not-yet-born (BotStillReal)
-			--- - because Disconnect is what releases the virtual client; DestroyEntity alone
-			--- would strand it.
+			--- while its entity is real - standing, husk, or player-not-yet-born - because
+			--- Disconnect is what releases the virtual client; DestroyEntity alone strands it.
 			if State == Standing or BotStillReal or BornUnregistered then
 				pcall(function()
 					if Kind == "bot" and Ref.Disconnect then
@@ -761,6 +1031,22 @@ function Plugin.DestroyAll(Reg, Pending, Log)
 	end
 
 	return Destroyed, Failed, #Entries, Ids, Gone, Husks
+end
+
+--- Destroy the created set (see DestroyEntries for what touching each entry means):
+--- drain the whole registry plus the caller's TakePending list, and account for all of
+--- it. Injectable on purpose: i7b asserts integrity against real entities without
+--- needing a live wave.
+function Plugin.DestroyAll(Reg, Pending, Log)
+	local Entries = Reg and Reg:Drain() or {}
+
+	for _, Item in ipairs(Pending or {}) do
+		Entries[#Entries + 1] = { ref = Item.ref, kind = Item.kind }
+	end
+
+	local Resolve = (Reg and Reg.StateOf) or Plugin.Registry.EngineStateOf
+
+	return Plugin.DestroyEntries(Entries, Resolve)
 end
 
 --- Put the world back the way we found it, and only when we were the ones who changed it.
@@ -1002,8 +1288,15 @@ end
 --- Verified rather than assumed: "silence unless refused" was exactly the complaint, and
 --- the fix is only real if the message actually reaches everyone.
 function Plugin:Announce(Message, ...)
-	self:Log(string.format("ANNOUNCE: %s", string.format(Message, ...)))
-	self:Notify(nil, Message, true, ...)
+	-- The choke point for chat broadcasts: format HERE, then send the FINAL text with the
+	-- format flag off. Shine would have formatted the varargs downstream anyway, but the
+	-- announce contract is asserted at the Notify hook (wave_slice_end_to_end) - a hook
+	-- that sees "WAVE %s" is watching the template, not the announcement. Callers that
+	-- pre-format pass no varargs and land on the raw branch.
+	local Text = select("#", ...) > 0 and string.format(Message, ...) or Message
+
+	self:Log("ANNOUNCE: " .. Text)
+	self:Notify(nil, Text)
 end
 
 function Plugin:Log(Message)

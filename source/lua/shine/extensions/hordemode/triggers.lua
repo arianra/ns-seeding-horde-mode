@@ -145,7 +145,7 @@ function Triggers.TakeSnapshot(Client)
 		return { GameState = nil }
 	end
 
-	local marineHumans, alienHumans = 0, 0
+	local marineHumans, alienHumans, marinesAlive = 0, 0, 0
 	local teams = { [kTeam1Index] = "marine", [kTeam2Index] = "alien" }
 
 	for Index, Side in pairs(teams) do
@@ -157,6 +157,13 @@ function Triggers.TakeSnapshot(Client)
 				if not Player:GetIsVirtual() then
 					if Side == "marine" then
 						marineHumans = marineHumans + 1
+
+						-- 61a: the WIPE trigger needs alive, not on-roster - roster
+						-- marines lying dead awaiting respawn are exactly the moment
+						-- the grace window exists to measure.
+						if Player.GetIsAlive and Player:GetIsAlive() then
+							marinesAlive = marinesAlive + 1
+						end
 					else
 						alienHumans = alienHumans + 1
 					end
@@ -173,6 +180,7 @@ function Triggers.TakeSnapshot(Client)
 		CallerTeamNumber = Caller and Caller:GetTeamNumber(),
 		BotCount = gServerBots and #gServerBots or 0,
 		RealMarineCount = marineHumans,
+		RealMarinesAlive = marinesAlive,
 		RealAlienCount = alienHumans,
 		PlayerCount = Server.GetNumClientsTotal() - Server.GetNumSpectators(),
 		MaxPlayers = Server.GetMaxPlayers(),

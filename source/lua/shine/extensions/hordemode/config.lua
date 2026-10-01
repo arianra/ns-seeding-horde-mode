@@ -61,9 +61,13 @@ local function BezierAxis(First, Second, T)
 end
 
 -- PLACEHOLDER: untuned, placeholder 2026-09-21. Endpoints are shapes, not values.
-local function NewCurve(Start, End)
+-- ENABLED is per-curve now (61a): the composition curve ships ON with deliberately weak
+-- numbers per Arian 2026-09-30 ("first wave is 3 aliens, move from there per wave");
+-- every other curve ships OFF until RD3, and a disabled curve evaluates to its Start -
+-- a flat value, not a broken one.
+local function NewCurve(Start, End, Enabled)
 	return {
-		Enabled = false,
+		Enabled = Enabled == true,
 		Start = Start,
 		End = End,
 		Bezier = { 0.25, 0.1, 0.25, 1 },
@@ -98,12 +102,14 @@ Plugin.DefaultConfig = {
 		--- derived instead of tuned. 0.5 keeps it well clear of any base room while never
 		--- rejecting a point the walking ring would want.
 		BandLineFactor = 0.5,
-		--- STEP A (bead 71c): the first trigger-pull of the bot factory — this many skulks
-		--- emerge at EACH mouth of wave 1. Deliberately not composition: i6a (1fv) replaces
-		--- this knob with curve-driven per-type counts and removes it. 2-per-mouth exists
-		--- so the chair can watch aliens RUN before any wave math trusts them.
-		TestBotsPerMouth = 2,      -- untuned, placeholder 2026-09-30
-		Composition = NewCurve(4, 24),
+		--- STEP A's flat knob is superseded by the wave loop (61a): the per-wave bot count
+		--- is `Composition` evaluated at Waves.Progress(wave, ReferenceWave). Wave 1 sits at
+		--- the curve's Start = 3 aliens; the End is reached at ReferenceWave and clamped
+		--- after. Health/Armor/Damage/MouthHealth stay DISABLED until RD3 - disabled means
+		--- "evaluate to Start", which for those is multiplier 1 / flat HP: honest nothing.
+		ReferenceWave = 20,          -- untuned, placeholder 2026-09-30
+		WipeGraceSeconds = 3,        -- D4: every real marine dead CONTINUOUSLY this long is the wipe
+		Composition = NewCurve(3, 15, true),   -- the only curve that ships ENABLED: weak but REAL
 		Health = NewCurve(1, 3),
 		Armor = NewCurve(0, 2),
 		Damage = NewCurve(1, 2),
@@ -139,7 +145,7 @@ Config.BandFloor = 40
 Config.BandCeiling = 400
 Config.NewCurve = NewCurve
 
-function Config.SanitizeCurve(CurveTable)
+function Config.SanitizeCurve(CurveTable, Shipped)
 	local Changed = false
 
 	local function FixNumber(Key, Low, High)
@@ -158,6 +164,29 @@ function Config.SanitizeCurve(CurveTable)
 
 	if FixNumber("Start", 0, 100000) then Changed = true end
 	if FixNumber("End", 0, 100000) then Changed = true end
+
+	--- `Enabled` is a switch and switches get the same normalisation as top-level flags:
+	--- the STRING "false" is truthy in Lua, so a hand-edited curve could silently turn
+	--- difficulty on (or off) in a way the file's text denies. A missing Enabled takes the
+	--- SHIPPED default for THIS curve - same rule Section applies to numbers: absent means
+	--- no opinion, and no opinion is the default, not the floor. Any other non-boolean is
+	--- normalised to `== true`.
+	local EnabledType = type(CurveTable.Enabled)
+
+	if EnabledType ~= "boolean" then
+		local NewEnabled
+
+		if EnabledType == "nil" then
+			NewEnabled = Shipped ~= nil and Shipped.Enabled == true or false
+		else
+			NewEnabled = CurveTable.Enabled == true
+		end
+
+		if CurveTable.Enabled ~= NewEnabled then
+			CurveTable.Enabled = NewEnabled
+			Changed = true
+		end
+	end
 
 	if type(CurveTable.Bezier) ~= "table" or #CurveTable.Bezier ~= 4 then
 		CurveTable.Bezier = { 0.25, 0.1, 0.25, 1 }
@@ -252,7 +281,8 @@ function Config.Sanitize(In)
 	Section("Intermission", "SkipCost", 0, 10000, true)
 	Section("Waves", "PoolSize", 1, 12, true)
 	Section("Waves", "ActivePerWave", 1, 12, true)
-	Section("Waves", "TestBotsPerMouth", 0, 12, true)
+	Section("Waves", "ReferenceWave", 2, 200, true)
+	Section("Waves", "WipeGraceSeconds", 0, 60, false)
 	Section("Waves", "BandMin", Config.BandFloor, Config.BandCeiling)
 	Section("Waves", "BandMax", Config.BandFloor, Config.BandCeiling)
 	Section("Economy", "WaveClearPayout", 0, 10000, true)
@@ -273,12 +303,18 @@ function Config.Sanitize(In)
 
 	for _, Entry in ipairs(CURVE_KEYS) do
 		local Owner = In and In[Entry.Owner]
+		local ShipOwner = Plugin.DefaultConfig and Plugin.DefaultConfig[Entry.Owner]
+		local Shipped = ShipOwner and ShipOwner[Entry.Key]
 
 		if type(Owner) == "table" then
 			if type(Owner[Entry.Key]) ~= "table" then
-				Owner[Entry.Key] = NewCurve(1, 1)
+				-- A missing or clobbered curve is replaced by the SHIPPED curve, not by a
+				-- flat NewCurve(1,1): for Composition the shipped default is 3-aliens
+				-- ENABLED; a 1,1 replacement would be a horde with one skulk per wave that
+				-- the sanitizer itself wrote into the file as if it had been chosen.
+				Owner[Entry.Key] = (Config.Copy and Shipped and Config.Copy(Shipped)) or NewCurve(1, 1)
 				Changed = true
-			elseif Config.SanitizeCurve(Owner[Entry.Key]) then
+			elseif Config.SanitizeCurve(Owner[Entry.Key], Shipped) then
 				Changed = true
 			end
 		end

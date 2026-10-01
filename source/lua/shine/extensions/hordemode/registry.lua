@@ -401,6 +401,32 @@ function Registry:Drain()
 	return Entries
 end
 
+--- Drain exactly one kind: when a WAVE ends its mouths and bots go, but any other
+--- registered content stays on the books. The id history survives - teardown's
+--- leak poll must still be able to ask about every id we ever made, wave content
+--- included.
+function Registry:DrainKind(Kind)
+	local List = self.ByKind[Kind]
+	local Entries = {}
+
+	if not List then
+		return Entries
+	end
+
+	for Index = 1, #List do
+		local Entry = self.Entries[List[Index]]
+
+		if Entry then
+			Entries[#Entries + 1] = Entry
+			self.Entries[List[Index]] = nil
+		end
+	end
+
+	self.ByKind[Kind] = nil
+
+	return Entries
+end
+
 --- Round boundary: forget everything, including the append-only id history. Called when a new
 --- horde starts, so a leak from the previous round cannot be blamed on this one - and so the
 --- history cannot grow across rounds on a server that runs hordes all day.

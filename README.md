@@ -12,14 +12,14 @@ broken, how to run anything, current state, and what to do next.
 
 ## Status
 
-Phase 1 vertical slice, milestones **M0–M4 + M7 implemented, M5 partly** (i5a bot factory done
-2026-09-28); the round trip is playable and verified from a real client.
+Phase 1 vertical slice, milestones **M0–M5 + M7 implemented, M8 partly** (the wave loop shipped
+2026-09-30; marines-wipe and station-destroyed end a horde); the loop is playable from a real client.
 
 | | |
 |---|---|
 | Gate | `./dev/lint.sh` · `./dev/test.sh` (suite, headless) · `./dev/test.sh --handback` (the only run allowed a real world reset) |
-| Built | `/horde` places mouths on engine-validated surfaces and **aliens emerge from them** (step A, flat test count), marine-revealable; `/horde status` reports live truth; teardown destroys our set (bots included, even never-materialised ones), hands the bot controller back (with the refill nudge), resets the world, keeps humans on their teams; restart re-runs from a clean slate instantly |
-| Not built yet | wave 2 / composition / intermission (i6a replaces the test knob), loss triggers (i8a — bots swarm but nothing ends), and the stream-to-base question (i5b) is now chair-verifiable: PLAYTEST steps 13-16 |
+| Built | `/horde` places mouths on engine-validated surfaces and **waves of aliens emerge from them** (composition curve, placeholder sizes); waves clear by wipe or mouth-kill, pay out, intermit, and escalate; marines-wipe and station-destroyed end the horde; `/horde status` reports live truth; teardown destroys our set (bots included, even never-materialised ones), hands the bot controller back (with the refill nudge), resets the world, keeps humans on their teams; restart re-runs from a clean slate instantly |
+| Not built yet | per-type composition (all skulks until RD3), loss triggers for real alien joins + seed max (i8a remainder `7x3`), the surrender-vote question, score persistence (i16); the stream-to-base question (i5b) rides PLAYTEST step 14 |
 | Balance | curve endpoints are **untuned placeholders**; the numbers are Arian's to set (RD3) |
 | Servers | **development uses the dev server only** (port 27025, `./dev/server-start.sh`). This is a mod project: the live tree exists for possible future use and is booted **only when Arian asks by name** (HANDOFF §2 rule 0) |
 | Tracker | beads (`bd`), exported to `.beads/issues.jsonl`; reconciliation in `MODDING.md` §7 |

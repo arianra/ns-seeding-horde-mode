@@ -801,13 +801,21 @@ function Plugin:InitialiseScenarios()
 		}
 
 		local Takeover = horde.Takeover.New(controller, horde.HordeRegistry)
+
+		--- Captured, not re-read at t+8: wave_slice_end_to_end (registered later) mounts
+		--- its private registry on the plugin from the sync pass until its own settle.
+		--- Registering/unregistering/counting through `horde.HordeRegistry` at t+8 meant
+		--- this cycle's bot landed in someone else's books and its emptiness check read
+		--- someone else's bots. This is OUR cycle; it goes in and out of the registry we
+		--- were handed at setup.
+		local OwnReg = horde.HordeRegistry
 		local Problems = {}
 		local Bot, BotId, Engaged, LockBaseline = nil, nil, false, 0
 
 		local function Cleanup()
 			if Bot then pcall(function() Bot:Disconnect() end) end
 			if Engaged then pcall(function() Takeover:Release() end) end
-			if BotId then horde.HordeRegistry:Unregister(BotId) end
+			if BotId then OwnReg:Unregister(BotId) end
 		end
 
 		local OkSetup, SetupErr = pcall( function()
@@ -826,12 +834,12 @@ function Plugin:InitialiseScenarios()
 			Bot = Server.CreateEntity(PlayerBot.kMapName)
 			Bot:Initialize(kTeam2Index, true)
 			Bot.lifeformEvolution = kTechId.Skulk
-			BotId = horde.HordeRegistry:Register(Bot, horde.Registry.Kind.Bot)
+			BotId = OwnReg:Register(Bot, horde.Registry.Kind.Bot)
 
 			if BotId == nil then Problems[#Problems + 1] = "bot not registered" end
 
 			self:Defer( "takeover_bot_survives_and_releases", 8, false, function()
-				BotId = horde.HordeRegistry:Register(Bot, horde.Registry.Kind.Bot)
+				BotId = OwnReg:Register(Bot, horde.Registry.Kind.Bot)
 
 				if BotId == nil then
 					Problems[#Problems + 1] = "bot could not be registered even after 8s"
@@ -883,7 +891,7 @@ function Plugin:InitialiseScenarios()
 				end
 
 				Bot:Disconnect()
-				horde.HordeRegistry:Unregister(BotId)
+				OwnReg:Unregister(BotId)
 				BotId = nil
 
 				if controller.MaxBots ~= Before.MaxBots then
@@ -896,7 +904,7 @@ function Plugin:InitialiseScenarios()
 					Problems[#Problems + 1] = "commander flags not restored independently"
 				end
 
-				Assert.Equal( 0, horde.HordeRegistry:GetBotCount(), "registry emptied after the cycle" )
+				Assert.Equal( 0, OwnReg:GetBotCount(), "registry emptied after the cycle" )
 
 				if #Problems > 0 then
 					error( { Detail = "live takeover cycle: " .. table.concat(Problems, "; ") } )
@@ -1701,18 +1709,34 @@ function Plugin:InitialiseScenarios()
 			end
 		end
 
-		local Placed = horde:BeginWave(Config)
+		-- Restore-before-assert, made load-bearing the hard way: the 61a announce-format
+		-- regression threw at the naming check BELOW, before the settle defer was ever
+		-- registered - and every later scenario inherited this wave's live machine, this
+		-- wave's private registry mounted on the plugin, and (takeover's "got 2") bots that
+		-- materialised into it after its own teardown had run. So: the mutating part runs
+		-- under pcall; on abort the plugin is handed back WHOLE before the error re-raises.
+		local Ok, Err = pcall(function()
+			local Placed = horde:BeginWave(Config)
+
+			Assert.True( Placed >= 1, "wave 1 places at least one mouth on the live map" )
+			Assert.Equal( 1, #Broadcasts, "a successful wave announces itself to everyone" )
+
+			if Broadcasts[1] and not Broadcasts[1]:find("WAVE 1") then
+				error( { Detail = "start broadcast does not name the wave: " .. tostring(Broadcasts[1]) } )
+			end
+		end)
 
 		horde.Notify = SavedNotify
 
-		Assert.True( Placed >= 1, "wave 1 places at least one mouth on the live map" )
-		Assert.Equal( 1, #Broadcasts, "a successful wave announces itself to everyone" )
+		if not Ok then
+			horde.Machine:Stop("wave slice abort", Shared.GetTime())
+			horde:Teardown(Shared.GetTime())
+			horde.HordeRegistry, horde.HordeSpawner = SavedRegistry, SavedSpawner
 
-		if Broadcasts[1] and not Broadcasts[1]:find("WAVE 1") then
-			error( { Detail = "start broadcast does not name the wave: " .. tostring(Broadcasts[1]) } )
+			error(Err)
 		end
 
-		self:Defer( "wave_slice_settles", 6, false, function()
+		self:Defer( "wave_slice_settles", 8, false, function()
 			local Problems = {}
 			local Registered = horde.HordeRegistry:CountByKind("mouth")
 
@@ -1720,22 +1744,28 @@ function Plugin:InitialiseScenarios()
 				Problems[#Problems + 1] = "the tick pump registered no mouths"
 			end
 
-			-- 71c: wave 1 is no longer a diorama - BeginWave queued bots at each mouth
-			-- through the factory. Books first: registration needs only a tick, so this is
-			-- deterministic at t+6 (player MATERIALISATION timing is bot_factory_settles'
-			-- claim, not this one's). The leak poll below covers every id, bots included.
-			local PerMouth = horde.HordeConfig.Resolve(Shared.GetMapName()).Waves.TestBotsPerMouth or 0
-			local BotIds = {}
+			-- 71c put bots into wave 1; 61a sizes them from the curve. The books must agree
+			-- with what BeginWave RECORDED (Machine.WaveBots / WaveMouths) and what the tick
+			-- actually registered - these same numbers are what the clear predicates compare
+			-- the living counts against, so a lie here ends a wave early or never ends it.
+			-- Player materialisation timing stays bot_factory_settles' claim; the leak poll
+			-- below covers every id, bots included.
+			local RegisteredBots, RegisteredMouths = 0, 0
 
-			for _, BotId in ipairs(horde.HordeRegistry:GetAllIds()) do
-				if horde.HordeRegistry:GetKind(BotId) == "bot" then
-					BotIds[#BotIds + 1] = BotId
+			for _, Id in ipairs(horde.HordeRegistry:GetAllIds()) do
+				local Kind = horde.HordeRegistry:GetKind(Id)
+
+				if Kind == "bot" then
+					RegisteredBots = RegisteredBots + 1
+				elseif Kind == "mouth" then
+					RegisteredMouths = RegisteredMouths + 1
 				end
 			end
 
-			if #BotIds ~= Placed * PerMouth then
-				Problems[#Problems + 1] = string.format("BeginWave should queue %s bots (%s mouths x knob %s); the books hold %s",
-					tostring(Placed * PerMouth), tostring(Placed), tostring(PerMouth), tostring(#BotIds))
+			if RegisteredBots ~= horde.Machine.WaveBots or RegisteredMouths ~= horde.Machine.WaveMouths then
+				Problems[#Problems + 1] = string.format("the books say %s bots / %s mouths, the registry holds %s / %s",
+					tostring(horde.Machine.WaveBots), tostring(horde.Machine.WaveMouths),
+					tostring(RegisteredBots), tostring(RegisteredMouths))
 			end
 
 			-- The status line reads these off the machine. BeginWave used to place
@@ -1796,56 +1826,434 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
-	-- 71c, unit: the knob owns the trigger, both directions, zero timing assumptions.
-	-- BeginWave only QUEUES (pending refs); BotCount and PendingCount read on the same
-	-- tick, so no Defer and no window - registration and emergence are wave_slice's and
-	-- bot_factory_settles' claims respectively. This is also the suite's first teardown
-	-- of a BornUnregistered set: the whole point of TakePending, never actually exercised
-	-- until a chair user could stop mid-queue - and DestroyAll skipped exactly those refs
-	-- until this scenario found it (a pending mouth leaked with no id to poll). Swapped
-	-- instances restored synchronously, restore-before-assert as always.
-	self:RegisterScenario( "test_wave_knob_is_honest_both_ways", false, function()
+	--- 61a, pure: the wave math itself. Curve progress endpoints and clamping, the
+	--- disabled-curve fallback (evaluate-to-Start, the honest flat wave), the never-zero
+	--- floor (a wave that spawns nothing hangs the clear predicate forever), round-robin
+	--- dealing (sums exact, spread within one), and all three verdicts in BOTH directions -
+	--- including the two false-positive traps the latches exist to refuse: outstanding
+	--- spawns are not a clear, and "never had a station" is not "just lost one".
+	self:RegisterScenario( "wave_math_is_pure", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Waves = horde.Waves
+		local Evaluate = horde.HordeConfig.EvaluateCurve
+
+		Assert.Equal( 0, Waves.Progress(1, 20), "wave 1 sits at the curve's Start" )
+		Assert.Equal( 1, Waves.Progress(20, 20), "the reference wave sits at its End" )
+		Assert.Equal( 1, Waves.Progress(500, 20), "and nothing past the reference overshoots" )
+		Assert.Equal( 0, Waves.Progress(1, 1), "a reference of 1 is a mis-set, not a divide" )
+
+		local Curve = { Enabled = true, Start = 3, End = 15, Bezier = { 0.25, 0.1, 0.25, 1 } }
+
+		Assert.Equal( 3, Waves.HordeSize({ Composition = Curve, ReferenceWave = 20 }, Evaluate, 1), "wave 1 = 3 aliens" )
+		Assert.Equal( 15, Waves.HordeSize({ Composition = Curve, ReferenceWave = 20 }, Evaluate, 20), "wave 20 = 15" )
+		Assert.Equal( 15, Waves.HordeSize({ Composition = Curve, ReferenceWave = 20 }, Evaluate, 999), "clamped after" )
+
+		local Off = { Enabled = false, Start = 7, End = 15, Bezier = { 0.25, 0.1, 0.25, 1 } }
+
+		Assert.Equal( 7, Waves.HordeSize({ Composition = Off, ReferenceWave = 20 }, Evaluate, 1), "a disabled curve is flat Start" )
+		Assert.Equal( 7, Waves.HordeSize({ Composition = Off, ReferenceWave = 20 }, Evaluate, 50), "at any wave" )
+		Assert.Equal( 1, Waves.HordeSize({ Composition = { Enabled = true, Start = 0, End = 0 }, ReferenceWave = 20 }, Evaluate, 1),
+			"and never zero" )
+
+		local Shares = Waves.Distribute(7, 3)
+		local Total = 0
+
+		for Mouth = 1, 3 do
+			Total = Total + Shares[Mouth]
+		end
+
+		Assert.Equal( 7, Total, "dealing sums exactly" )
+		Assert.Equal( 3, Shares[1], "first door takes the odd one" )
+		Assert.True( Shares[1] - Shares[3] <= 1, "no door differs from another by more than one" )
+		Assert.Equal( 0, #Waves.Distribute(4, 0), "no doors, no deals" )
+
+		Assert.False( Waves.Cleared(0, 0, 0), "a wave that spawned nothing cannot clear" )
+		Assert.False( Waves.Cleared(3, 1, 0), "one alive bot is not clear" )
+		Assert.False( Waves.Cleared(3, 0, 1), "an unfinished spawn is not a clear" )
+		Assert.True( Waves.Cleared(3, 0, 0), "spawned, all dead, none outstanding: clear" )
+
+		Assert.False( Waves.MouthsFallen(0, 0), "no placed mouths cannot fall" )
+		Assert.True( Waves.MouthsFallen(3, 0), "and the Q29 objective is real: 0 standing ends the wave" )
+
+		local Since, Fired = Waves.Wipe(100, nil, 1, 3)
+		Assert.Nil( Since, "a living marine keeps the wipe clock off" )
+		Assert.False( Fired, "and nothing fires" )
+
+		Since, Fired = Waves.Wipe(100, nil, 0, 3)
+		Assert.Equal( 100, Since, "the clock starts at the first tick with none alive" )
+		Assert.False( Fired, "not yet" )
+
+		Since, Fired = Waves.Wipe(102, Since, 0, 3)
+		Assert.False( Fired, "the grace window holds (D4: 3s of respawn mercy)" )
+
+		Since, Fired = Waves.Wipe(104, Since, 0, 3)
+		Assert.True( Fired, "and it fires on the crossing" )
+
+		Since, Fired = Waves.Wipe(105, Since, 1, 3)
+		Assert.Nil( Since, "one marine back alive resets it" )
+
+		Assert.False( Waves.StationsLost(nil, 0), "never had one is not losing one" )
+		Assert.False( Waves.StationsLost(true, 2), "two standing is not losing" )
+		Assert.True( Waves.StationsLost(true, 0), "had one, none standing: lost" )
+	end )
+
+	--- 61a, wiring: BeginWave DEALS the curve over the mouths it placed, through the
+	--- real placement + real factory on the live map - synchronously, because spawns stay
+	--- pending on the tick it ran in: BotCount and PendingCount are same-tick numbers.
+	--- This is also the suite's continuing witness for the 71c early-stop fix: the
+	--- teardown below drains a wholly-BornUnregistered set and must report zero failures
+	--- and every entry destroyed. Swapped instances, restored before asserting.
+	self:RegisterScenario( "begin_wave_deals_the_curve", false, function()
 		local horde = Shine.Plugins.hordemode
 		local SavedMachine, SavedRegistry, SavedSpawner = horde.Machine, horde.HordeRegistry, horde.HordeSpawner
 
 		horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
 		horde.Machine:Start(Shared.GetTime())
 
-		local function RunWithKnob(Value)
+		local function RunWave(Sizes)
 			horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineStateOf)
 			horde.HordeSpawner = horde.Spawner.New(horde.HordeRegistry, function() end)
 
 			local Config = horde.HordeConfig.Copy(horde.DefaultConfig)
 			horde.HordeConfig.Sanitize(Config)
-			Config.Waves.TestBotsPerMouth = Value
+			Config.Waves.Composition.Start = Sizes.Start
+			Config.Waves.Composition.End = Sizes.End
+			Config.Waves.Composition.Enabled = Sizes.Enabled
 
 			local Placed = horde:BeginWave(Config)
 			local Queued = horde.HordeSpawner.BotCount
 			local Pending = horde.HordeSpawner:PendingCount()
+			local Recorded = horde.Machine.WaveBots
 
-			-- Destroy synchronously: pending mouths AND pending bots, nothing registered,
-			-- which is precisely the path that used to skip them.
 			local Destroyed, Failed = horde.DestroyAll(horde.HordeRegistry, horde.HordeSpawner:TakePending(), nil)
 
-			return Placed, Queued, Pending, Destroyed, Failed
+			return Placed, Queued, Pending, Recorded, Destroyed, Failed
 		end
 
-		local Placed0, Queued0, Pending0, Destroyed0, Failed0 = RunWithKnob(0)
-		local Placed2, Queued2, Pending2, Destroyed2, Failed2 = RunWithKnob(2)
+		local P1, Q1, Pend1, Rec1, D1, F1 = RunWave({ Start = 7, End = 7, Enabled = true })
+		local P2, Q2, Pend2, Rec2, D2, F2 = RunWave({ Start = 4, End = 40, Enabled = false })
 
 		horde.Machine, horde.HordeRegistry, horde.HordeSpawner = SavedMachine, SavedRegistry, SavedSpawner
 
-		Assert.True( Placed0 >= 1, "the live map places mouths for the knob to act on" )
-		Assert.Equal( 0, Queued0, "knob 0 queues NO bots - the guard can fail closed" )
-		Assert.Equal( Placed0, Pending0, "and the queue holds just the mouths" )
-		Assert.Equal( 0, #Failed0, "pending-only teardown reports no failures" )
-		Assert.Equal( Placed0, Destroyed0.mouth or 0, "and really destroyed them (pre-fix: skipped as Gone)" )
+		Assert.True( P1 >= 1, "the live map places mouths to deal over" )
+		Assert.Equal( 7, Q1, "wave 1 of an enabled 7..7 curve deals exactly 7 bots" )
+		Assert.Equal( 7, Rec1, "and the machine books what was actually queued" )
+		Assert.Equal( Q1 + P1, Pend1, "pending = 7 bots + the mouths, all unregistered this tick" )
+		Assert.Equal( 0, #F1, "a wholly-BornUnregistered teardown reports no failures" )
+		Assert.Equal( Q1, D1.bot or 0, "every pending bot went through Disconnect" )
+		Assert.Equal( P1, D1.mouth or 0, "every pending mouth was really destroyed (the 71c fix, still load-bearing)" )
 
-		Assert.True( Placed2 >= 1, "the second run places too" )
-		Assert.Equal( Placed2 * 2, Queued2, "knob 2 queues exactly two bots per placed mouth" )
-		Assert.Equal( Placed2 * 3, Pending2, "pending holds 2 bots + 1 mouth per mouth placed" )
-		Assert.Equal( 0, #Failed2, "disconnecting never-materialised bots is clean" )
-		Assert.Equal( Placed2 * 2, Destroyed2.bot or 0, "every pending bot went through Disconnect" )
+		Assert.Equal( 4, Q2, "a DISABLED curve falls back to flat Start: 4, not a wave-1 curve read" )
+		Assert.Equal( 0, #F2, "second teardown clean too" )
+	end )
+
+	--- 61a, the decisions with fakes: the harness cannot grow a live wave inside the
+	--- deferred ceiling, so EvaluateWaveState's paths are driven as a unit - real machine
+	--- (the transitions under test are the point), the real EndWavePhase accounting, fake
+	--- eyes. Mouth-kill ends the wave, drains its kinds and pays out; the intermission
+	--- clock advances to wave 2 through the machine's own edge; a station destroyed AFTER
+	--- it stood ends the horde, while a station that never stood must NOT (the false-positive
+	--- the latch exists for - and the plugin-level latch is reset between sub-cases exactly
+	--- as StartWave does between rounds, so one case cannot pre-arm the next). Everything
+	--- swapped is handed back before any assertion; the pcall keeps the restore honest.
+	self:RegisterScenario( "wave_loop_edges_with_fakes", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Now = Shared.GetTime()
+
+		local function FakeRef()
+			return {
+				Disconnect = function() end,
+				Kill = function() end,
+			}
+		end
+
+		local function FakeReg(BotsAlive, MouthsAlive, Drained)
+			return {
+				CountByKind = function(_, Kind)
+					if Kind == "bot" then
+						return BotsAlive
+					end
+
+					return MouthsAlive
+				end,
+				DrainKind = function(_, Kind)
+					local Out = Drained[Kind] or {}
+
+					Drained[Kind] = nil
+
+					return Out
+				end,
+				StateOf = function() return horde.Registry.Alive end,
+			}
+		end
+
+		local function FakeTeam(StationAlive)
+			return {
+				GetNumAliveCommandStructures = function() return StationAlive end,
+				AddTeamResources = function(Self, Amount)
+					Self.Paid = (Self.Paid or 0) + Amount
+				end,
+			}
+		end
+
+		local function FakeRules(Team)
+			return { GetTeam = function() return Team end }
+		end
+
+		local function Harness(StationAlive)
+			local Machine = horde.StateMachine.New(Now, function() end)
+			Machine:Start(Now)
+			Machine.WaveMouths, Machine.WaveBots = 3, 5
+
+			local Team = FakeTeam(StationAlive)
+
+			return Machine, FakeRules(Team), Team
+		end
+
+		local Config = horde.HordeConfig.Copy(horde.DefaultConfig)
+		horde.HordeConfig.Sanitize(Config)
+		Config.Economy.WaveClearPayout = 10
+
+		local SavedMachine, SavedReg = horde.Machine, horde.HordeRegistry
+		local SavedAnnounce, SavedLog = horde.Announce, horde.Log
+		local SavedBeginWave, SavedTeardown = horde.BeginWave, horde.Teardown
+
+		local Announcements, Begun, TornDown = {}, 0, 0
+
+		horde.Announce = function(_, Message, ...)
+			Announcements[#Announcements + 1] = string.format(Message, ...)
+		end
+
+		horde.Log = function() end
+		horde.BeginWave = function() Begun = Begun + 1 return 3 end
+		horde.Teardown = function() TornDown = TornDown + 1 return true end
+
+		local Ok, Err = pcall(function()
+			-- Case 1: mouth-kill mid-wave. Bots still alive, mouths all dead -> early
+			-- end, kinds drained, ONE payout, books reset, intermission entered.
+			horde.HordeLoss = nil
+
+			local Machine, Rules, Team = Harness(1)
+			local Drained1 = {
+				bot = { { ref = FakeRef(), kind = "bot", id = 9101 } },
+				mouth = { { ref = FakeRef(), kind = "mouth", id = 9102 } },
+			}
+			local Reg = FakeReg(5, 0, Drained1)
+
+			horde.Machine, horde.HordeRegistry = Machine, Reg
+
+			local Event = horde:EvaluateWaveState(Now + 30, {
+				Config = Config, Reg = Reg, Spawner = { Outstanding = function() return 0 end },
+				Snapshot = { RealMarinesAlive = 2 }, Rules = Rules,
+			})
+
+			Assert.Equal( "mouths", Event, "the mouth-kill verdict is the early end" )
+			Assert.True( Machine:Is(horde.Phase.Intermission), "and the machine is in intermission" )
+			Assert.Equal( 10, Team.Paid or 0, "the flat payout landed exactly once on the marine team" )
+			Assert.Equal( 0, Machine.WaveMouths, "per-wave books reset" )
+			Assert.Equal( 0, Machine.MouthsPool, "and the status ones with them" )
+			Assert.Nil( Drained1.bot, "the wave's bots drained by kind" )
+			Assert.Nil( Drained1.mouth, "and its mouths - nothing else on the books was touched" )
+
+			-- Case 2: the intermission clock runs out -> wave 2 through the machine's
+			-- own edge, BeginWave called once (its entity path has its own scenarios).
+			Event = horde:EvaluateWaveState(Now + 30 + (Config.Intermission.Seconds or 60) + 1, {
+				Config = Config, Reg = Reg, Spawner = { Outstanding = function() return 0 end },
+				Snapshot = { RealMarinesAlive = 2 }, Rules = Rules,
+			})
+
+			Assert.Equal( "next-wave", Event, "the timer fired" )
+			Assert.Equal( 1, Begun, "BeginWave ran for the new wave" )
+			Assert.Equal( 2, Machine:GetWave(), "the counter advanced through the machine edge" )
+
+			-- Case 3: station NEVER stood (warmup reality). Latch reset first, as
+			-- StartWave does - the earlier cases saw a live station and the latch is
+			-- round state, not session state.
+			horde.HordeLoss = nil
+
+			local Machine2, Rules2 = Harness(0)
+
+			horde.Machine = Machine2
+
+			local Ev = horde:EvaluateWaveState(Now + 61, {
+				Config = Config, Reg = FakeReg(5, 3, {}), Spawner = { Outstanding = function() return 0 end },
+				Snapshot = { RealMarinesAlive = 2 }, Rules = Rules2,
+			})
+
+			Assert.Nil( Ev, "a round that never had a station does not lose one" )
+			Assert.True( Machine2:Is(horde.Phase.Wave), "the horde runs untouched" )
+
+			-- Case 4: it stood (this round's latch), then the swarm knocked it to 0 ->
+			-- loss: Stop edge taken, teardown ran exactly once, the score announced.
+			local Machine3, Rules3 = Harness(1)
+
+			horde.Machine = Machine3
+
+			Ev = horde:EvaluateWaveState(Now + 61, {
+				Config = Config, Reg = FakeReg(5, 3, {}), Spawner = { Outstanding = function() return 0 end },
+				Snapshot = { RealMarinesAlive = 2 }, Rules = Rules3,
+			})
+
+			Assert.Nil( Ev, "first tick only latches: a station exists" )
+
+			Ev = horde:EvaluateWaveState(Now + 62, {
+				Config = Config, Reg = FakeReg(5, 3, {}), Spawner = { Outstanding = function() return 0 end },
+				Snapshot = { RealMarinesAlive = 2 }, Rules = FakeRules(FakeTeam(0)),
+			})
+
+			Assert.Equal( "loss", Ev, "next tick, destroyed: the horde ends itself" )
+			Assert.Equal( 1, TornDown, "through the same ordered teardown an admin stop runs" )
+			Assert.True( Machine3:Is(horde.Phase.Teardown), "the machine took the loss edge (the stubbed teardown does not complete it)" )
+
+			local Over
+
+			for _, Line in ipairs(Announcements) do
+				if Line:find("HORDE OVER") then
+					Over = Line
+				end
+			end
+
+			Assert.NotNil( Over, "the end is announced, not implied" )
+			Assert.True( Over:find("Survived 1 wave") ~= nil, "and carries the score: " .. tostring(Over) )
+
+			-- Case 5: the wipe - grace holds, fires past the window; a marine back alive
+			-- (respawn) unarms it mid-window, restart of the clock included.
+			horde.HordeLoss = nil
+
+			local Machine5 = horde.StateMachine.New(Now, function() end)
+			Machine5:Start(Now)
+			Machine5.WaveMouths, Machine5.WaveBots = 3, 5
+
+			horde.Machine = Machine5
+
+			local Reg5 = FakeReg(5, 3, {})
+			local Spawner5 = { Outstanding = function() return 0 end }
+
+			Ev = horde:EvaluateWaveState(Now + 70, {
+				Config = Config, Reg = Reg5, Spawner = Spawner5,
+				Snapshot = { RealMarinesAlive = 0 }, Rules = FakeRules(FakeTeam(1)),
+			})
+
+			Assert.Nil( Ev, "the wipe clock starts but does not fire inside the grace" )
+
+			Ev = horde:EvaluateWaveState(Now + 71, {
+				Config = Config, Reg = Reg5, Spawner = Spawner5,
+				Snapshot = { RealMarinesAlive = 1 }, Rules = FakeRules(FakeTeam(1)),
+			})
+
+			Assert.Nil( Ev, "one marine back alive unarms it" )
+
+			Ev = horde:EvaluateWaveState(Now + 72, {
+				Config = Config, Reg = Reg5, Spawner = Spawner5,
+				Snapshot = { RealMarinesAlive = 0 }, Rules = FakeRules(FakeTeam(1)),
+			})
+
+			Assert.Nil( Ev, "the clock restarted at 72" )
+
+			Ev = horde:EvaluateWaveState(Now + 74, {
+				Config = Config, Reg = Reg5, Spawner = Spawner5,
+				Snapshot = { RealMarinesAlive = 0 }, Rules = FakeRules(FakeTeam(1)),
+			})
+
+			Assert.Nil( Ev, "two seconds into the restarted window is not three" )
+
+			Ev = horde:EvaluateWaveState(Now + 76, {
+				Config = Config, Reg = Reg5, Spawner = Spawner5,
+				Snapshot = { RealMarinesAlive = 0 }, Rules = FakeRules(FakeTeam(1)),
+			})
+
+			Assert.Equal( "loss", Ev, "and it fires on the crossing" )
+			Assert.True( Machine5:Is(horde.Phase.Teardown), "the wipe ends the horde through the same edge" )
+		end)
+
+		horde.Machine, horde.HordeRegistry = SavedMachine, SavedReg
+		horde.Announce, horde.Log = SavedAnnounce, SavedLog
+		horde.BeginWave, horde.Teardown = SavedBeginWave, SavedTeardown
+		horde.HordeLoss = nil
+
+		-- The body raises `error({ Detail = ... })` on a lost decision; tostring of that
+		-- table is a pointer. Unwrap it or the scenario fails forever telling us "table:".
+		Assert.True( Ok, "the loop decisions held: " ..
+			(type(Err) == "table" and tostring(Err.Detail) or tostring(Err)) )
+	end )
+
+	--- 61a, Arian's wave-start promise: EVERY wave begins from a cleared board, no matter
+	--- what ended the last one. The drain is BY KIND, so a future non-wave entry (a
+	--- prebuild, an economy prop) survives the sweep - and the counts are what came off
+	--- the books, not what the engine confirmed destroying: fake tables survive
+	--- DestroyEntity attempts, and testing that the double accepted a lie would be
+	--- testing the double. The empty re-cull runs while still swapped: against the
+	--- REAL registry this scenario's neighbours have live entries in, a second cull
+	--- would eat their setup.
+	self:RegisterScenario( "wave_start_culls_the_carryover", false, function()
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local Reg = R.New(function() return R.Alive end)
+
+		local function FakeRef(Name)
+			return {
+				GetId = function() return tonumber(Name:match("%d+")) end,
+			}
+		end
+
+		local Touched = {}
+
+		local function SpyRef(Name, Kind)
+			local Ref = FakeRef(Name .. "950" .. tostring(Kind == "bot" and 1 or Kind == "mouth" and 2 or 3))
+
+			Ref.Disconnect = function() Touched[#Touched + 1] = "disconnect" end
+			Ref.Kill = function() Touched[#Touched + 1] = "kill" end
+
+			return Ref
+		end
+
+		-- (the real registry refuses refs with no usable id; these carry one, like
+		-- carry-over registered on a previous tick would)
+		Assert.NotNil( Reg:Register(SpyRef("bot", "bot"), "bot"), "setup: stray bot registers" )
+		Assert.NotNil( Reg:Register(SpyRef("mouth", "mouth"), "mouth"), "setup: stray mouth registers" )
+		local KeptId = Reg:Register(SpyRef("entity", nil), "entity")
+
+		Assert.Equal( 1, Reg:CountByKind("bot"), "the books hold the bot before the sweep" )
+		Assert.Equal( 3, Reg:Count(), "and all three entries" )
+
+		local CulledBots, CulledMouths, EmptyBots, EmptyMouths
+
+		do
+			local SavedReg, SavedLog = horde.HordeRegistry, horde.Log
+
+			horde.HordeRegistry = Reg
+			horde.Log = function() end
+
+			CulledBots, CulledMouths = horde:CullPreviousWave()
+
+			-- the second sweep is the common case: wave-end already drained, and the
+			-- guarantee must say (0,0) silently rather than log a phantom carry-over
+			EmptyBots, EmptyMouths = horde:CullPreviousWave()
+
+			horde.HordeRegistry, horde.Log = SavedReg, SavedLog
+		end
+
+		Assert.Equal( 1, CulledBots, "the carry-over bot came off the books" )
+		Assert.Equal( 1, CulledMouths, "and the carry-over mouth" )
+		Assert.Equal( 0, Reg:CountByKind("bot"), "no bots left on the books" )
+		Assert.Equal( 0, Reg:CountByKind("mouth"), "no mouths left on the books" )
+		Assert.Equal( 1, Reg:Count(), "the non-wave entry SURVIVED the sweep - drain is by kind" )
+		Assert.NotNil( Reg:Get(KeptId), "still the same entry, not a replacement" )
+
+		local Disconnected, Killed = 0, 0
+
+		for _, Touch in ipairs(Touched) do
+			if Touch == "disconnect" then
+				Disconnected = Disconnected + 1
+			else
+				Killed = Killed + 1
+			end
+		end
+
+		Assert.Equal( 1, Disconnected, "the bot went through Disconnect (virtual client released)" )
+		Assert.Equal( 1, Killed, "the mouth was killed before the destroy attempt" )
+		Assert.Equal( 0, EmptyBots, "the cleared board culls zero bots" )
+		Assert.Equal( 0, EmptyMouths, "and zero mouths, silently" )
 	end )
 
 	-- The victory screen a joining marine saw on frame one was not a wave bug: with no
@@ -1867,30 +2275,51 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( true, Gamerules.preventGameEnd, "preventGameEnd is set on the gamerules object itself" )
 		Assert.True( not horde:SuppressGameEnd(), "engaging twice is a no-op, not a second claim of credit" )
 
+		-- The fakes carry the WHOLE surface HordeTick touches - IsActive alone was enough
+		-- before the wave loop, and the first 61a run proved the lesson the hard way: the
+		-- tick threw on the missing GetState, the throw skipped the restore line below it,
+		-- and a bare fake stayed installed on the plugin for every later scenario's ticks.
+		-- So: full fakes AND pcall around the tick, so a throw fails THIS scenario loudly
+		-- instead of poisoning the shared world.
+		local function TickWith(Machine)
+			local Real = horde.Machine
+
+			horde.Machine = Machine
+
+			local Ok, Err = pcall(horde.HordeTick, horde)
+
+			horde.Machine = Real
+
+			return Ok, Err
+		end
+
+		local function FakeMachine(Active)
+			return {
+				IsActive = function() return Active end,
+				GetState = function() return "inactive" end,
+				TimeSinceEnd = function() return 999 end,
+			}
+		end
+
 		-- ResetGame clears the flag (NS2Gamerules.lua:702). The tick is what notices, so
 		-- simulate the surprise clear rather than paying for a whole round reset.
 		Gamerules.preventGameEnd = nil
 
-		local RealMachine = horde.Machine
+		local Ok1, Err1 = TickWith(FakeMachine(true))
 
-		horde.Machine = { IsActive = function() return true end }
-		horde:HordeTick()
-		horde.Machine = RealMachine
-
+		Assert.True( Ok1, "the tick survives an active-inactive horde: " .. tostring(Err1) )
 		Assert.Equal( true, Gamerules.preventGameEnd, "the tick re-engages after a vanilla reset cleared it" )
 
 		-- A stopped horde must not keep re-engaging it, or the suppression outlives the
 		-- mode and the server silently stops awarding wins.
-		horde.Machine = { IsActive = function() return false end }
 		Gamerules.preventGameEnd = nil
-		horde:HordeTick()
-		horde.Machine = RealMachine
 
+		local Ok2, Err2 = TickWith(FakeMachine(false))
+
+		Assert.True( Ok2, "the tick survives an inactive horde: " .. tostring(Err2) )
 		Assert.True( Gamerules.preventGameEnd == nil, "an inactive horde leaves game end alone" )
 
-		horde.Machine = { IsActive = function() return true end }
 		horde:SuppressGameEnd()
-		horde.Machine = RealMachine
 
 		Assert.True( horde:RestoreGameEnd("scenario exit"), "release reports that it changed the field" )
 		Assert.True( Gamerules.preventGameEnd == nil, "vanilla win/loss is back exactly where we found it" )
@@ -2706,6 +3135,7 @@ function Plugin:InitialiseScenarios()
 	self:RegisterScenario( "killing_a_mouth_keeps_the_tick_and_the_map_healthy", false, function()
 		local horde = Shine.Plugins.hordemode
 		local SavedReg, SavedSpawn = horde.HordeRegistry, horde.HordeSpawner
+		local SavedMachine = horde.Machine
 		local SavedPool, SavedActive = horde.Machine.MouthsPool, horde.Machine.MouthsActive
 		local Reg, Spawn
 
@@ -2714,6 +3144,13 @@ function Plugin:InitialiseScenarios()
 			Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end, true)
 
 			horde.HordeRegistry, horde.HordeSpawner = Reg, Spawn
+
+			--- A PRIVATE machine for the manual tick. HordeTick now drives the wave loop,
+			--- and this scenario's claim is reveal+prune+status - not whatever phase another
+			--- scenario happened to leave the shared machine in. The 61a run proved it: a
+			--- leaked live wave made the manual tick END that wave, drain this scenario's
+			--- registry, and report the vanished corpse as a production bug.
+			horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
 
 			local Anchors = SurfaceAnchors(2)
 
@@ -2799,6 +3236,7 @@ function Plugin:InitialiseScenarios()
 		local Ok, Err = pcall(Run)
 
 		horde.HordeRegistry, horde.HordeSpawner = SavedReg, SavedSpawn
+		horde.Machine = SavedMachine
 		horde.Machine.MouthsPool, horde.Machine.MouthsActive = SavedPool, SavedActive
 
 		if not Ok then
