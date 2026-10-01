@@ -162,8 +162,30 @@ function Plugin:InitialiseScenarios()
 		local Config = horde.HordeConfig
 		Assert.NotNil( Config, "hordemode exposes its config module" )
 
+		-- If this ever fails, the failure must name the key: "defaults are dirty" with
+		-- no path is how a swallowed Damage curve hid behind one assert for a full run.
+		local Before = Config.Copy(horde.DefaultConfig)
 		local Copy = Config.Copy(horde.DefaultConfig)
-		Assert.True( not Config.Sanitize(Copy), "shipped defaults need no correction" )
+		local Clean = not Config.Sanitize(Copy)
+
+		if not Clean then
+			local function Walk(A, B, Path)
+				for K, V in pairs(B) do
+					local Was = A[K]
+
+					if type(V) == "table" and type(Was) == "table" then
+						Walk(Was, V, Path .. tostring(K) .. ".")
+					elseif V ~= Was then
+						print(string.format("[TEST-DEBUG] sanitize moved %s%s: %s -> %s",
+							Path, tostring(K), tostring(Was), tostring(V)))
+					end
+				end
+			end
+
+			Walk(Before, Copy, "")
+		end
+
+		Assert.True( Clean, "shipped defaults need no correction" )
 		Assert.True( Copy.Waves.BandMin >= 56, "mouth band respects the spike measurement (tby: 56-80m)" )
 		Assert.Equal( 1, Copy.Start.MinPlayers, "MinPlayers default" )
 	end )
@@ -204,6 +226,19 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Config.Sanitize(Missing), "a config missing new keys reports the repair" )
 		Assert.Equal( 0.5, Missing.Waves.BandLineFactor, "a missing key takes the shipped default, not the clamp floor" )
 		Assert.Equal( 6, Missing.Waves.PoolSize, "and that holds for every number, not just the new one" )
+
+		-- Q31's Types ladder is a table of records, not a Section() path: numbers get
+		-- clamped like any other (an Unlock of 0 would field an onos in wave 1), and
+		-- anything that cannot describe a type is DROPPED, not guessed at.
+		local Dirty = Config.Copy(horde.DefaultConfig)
+
+		Dirty.Waves.Types = { Skulk = { Unlock = 0, Ramp = 0, Weight = "many" }, Bad = 7 }
+
+		Assert.True( Config.Sanitize(Dirty), "a broken Types ladder reports the repair" )
+		Assert.Equal( 1, Dirty.Waves.Types.Skulk.Unlock, "no type unlocks before wave 1" )
+		Assert.Equal( 1, Dirty.Waves.Types.Skulk.Ramp, "ramps are at least one wave" )
+		Assert.Nil( Dirty.Waves.Types.Skulk.Weight, "a non-number weight is dropped, not guessed" )
+		Assert.Nil( Dirty.Waves.Types.Bad, "a type that is not a record is dropped" )
 	end )
 
 	self:RegisterScenario( "config_copy_is_deep", false, function()
@@ -1150,7 +1185,7 @@ function Plugin:InitialiseScenarios()
 		local Bots = {}
 
 		for _ = 1, 4 do
-			local Bot, BotErr = Spawn:SpawnBot(Anchor, kTechId.Skulk)
+			local Bot, BotErr = Spawn:SpawnBot(Mouth, kTechId.Skulk)
 
 			if not Bot then
 				error( { Detail = "SpawnBot refused a validated mouth point: " .. tostring(BotErr) } )
@@ -1203,7 +1238,13 @@ function Plugin:InitialiseScenarios()
 					-- The first version of this line threw, and the throw printed NOTHING -
 					-- it hid the alive/team answers this very failure needed. An engine fact
 					-- is only true for the build it was measured on.
-					local Range = horde.Placement.Distance2D(Player:GetOrigin(), Anchor)
+					-- Measured from the ENTRANCE, like production: SpawnBot resolves the
+					-- mouth entity to its entrance anchor and the fit ring (1-10 m) hangs
+					-- off that; the build point sits ~11 m back inside the shell, so
+					-- measuring from it would fail a placement that is correct.
+					local OkE, Entrance = pcall(function() return Mouth:GetEntranceAPosition() end)
+					local Range = horde.Placement.Distance2D(Player:GetOrigin(),
+						(OkE and Entrance) or Anchor)
 
 					print(string.format("[TEST-DIAG] bot %s id=%s alive=%s team=%s skulk=%s range=%.1fm placing=%s",
 						tostring(Index), tostring(Bot:GetId()), tostring(Alive), tostring(Team),
@@ -1213,12 +1254,26 @@ function Plugin:InitialiseScenarios()
 						return string.format("bot %s is not a live team-2 Skulk (alive=%s team=%s skulk=%s)",
 							tostring(Index), tostring(Alive), tostring(Team), tostring(IsSkulk))
 					end
-
-					-- The teleport landed inside this very callback, so the bot has had no
-					-- client tick to walk away: "near the mouth" is tight ON PURPOSE. The
-					-- loose end - do they then STREAM to base - is bead t28, not this one.
-					if Range > 4 then
+					-- Emergence is a CAPSULE-FIT search in a 1-10 m ring (the engine's egg
+					-- recipe - the tunnel origin is inside its own shell, so "right at the
+					-- point" was the bug the chair caught), and the jitter fallback is ±1 m.
+					-- So the tight claim changed shape: the bot must be NEAR the mouth AND
+					-- standing on ground the engine itself certifies - walkable nav flags
+					-- at the bot's own origin. Range alone can never prove "not embedded".
+					if Range > 12 then
 						return string.format("bot %s emerged %.1fm from its mouth", tostring(Index), Range)
+					end
+
+					-- The SAME validation the mouths pass, at the bot's own settled
+					-- origin (an invented small-box GetIsFlagSet query rejected every
+					-- point the engine itself had certified - conventions must be the
+					-- proven ones). Range alone can never prove "not embedded".
+					local Standing = horde.Placement.SnapToSurface(Player:GetOrigin(),
+						horde.Placement.DefaultHooks())
+
+					if not Standing then
+						return string.format("bot %s emerged onto ground that fails the mouth validation",
+							tostring(Index))
 					end
 
 					return nil
@@ -1848,6 +1903,86 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 15, Waves.HordeSize({ Composition = Curve, ReferenceWave = 20 }, Evaluate, 20), "wave 20 = 15" )
 		Assert.Equal( 15, Waves.HordeSize({ Composition = Curve, ReferenceWave = 20 }, Evaluate, 999), "clamped after" )
 
+		-- The economy directive of 2026-09-30 ("more res per wave, a sensible max,
+		-- progression through at least the first 10") is curve machinery, so it gets
+		-- the curve asserts: Start at wave 1, the max AT the reference wave, clamped
+		-- after, and - the contract every curve shares - disabled means FLAT AT START,
+		-- never zero. A payout that silently became 0 would starve marines with no
+		-- log line to follow.
+		local Pay = { WaveClearPayout = { Enabled = true, Start = 25, End = 100,
+			Bezier = { 0.25, 0.1, 0.25, 1 } }, PayoutReferenceWave = 10 }
+
+		Assert.Equal( 25, Waves.Payout(Pay, Evaluate, 1), "wave 1 pays the curve's Start" )
+		Assert.Equal( 100, Waves.Payout(Pay, Evaluate, 10), "wave 10 pays the max" )
+		Assert.Equal( 100, Waves.Payout(Pay, Evaluate, 500), "and holds it after" )
+
+		Pay.WaveClearPayout.Enabled = false
+
+		Assert.Equal( 25, Waves.Payout(Pay, Evaluate, 7), "disabled means flat at Start, not zero" )
+
+		-- Q31: the composition ladder. Three claims: types arrive at their unlock and
+		-- never before; the deal SUMS TO EXACTLY the wave size for every wave (a wave
+		-- that promises 15 fields 15 - the books the clear predicate reads depend on
+		-- it); and the interleaving puts a late type in the FIRST round of the deal,
+		-- not parked at the tail where round-robin dealing would hide it behind one
+		-- mouth's queue.
+		local Types = {
+			Skulk = { Unlock = 1, Ramp = 1, Weight = 6 },
+			Gorge = { Unlock = 3, Ramp = 4, Weight = 1 },
+			Lerk = { Unlock = 5, Ramp = 4, Weight = 1 },
+			Fade = { Unlock = 7, Ramp = 5, Weight = 1 },
+			Onos = { Unlock = 10, Ramp = 6, Weight = 2 },
+		}
+
+		local function Tally(Deal)
+			local Out, Total = {}, 0
+
+			for _, Name in ipairs(Deal) do
+				Out[Name] = (Out[Name] or 0) + 1
+				Total = Total + 1
+			end
+
+			return Out, Total
+		end
+
+		local C1, T1 = Tally(Waves.Deal(1, 3, Types))
+
+		Assert.Equal( 3, T1, "wave 1 deals exactly its size" )
+		Assert.Equal( 3, C1.Skulk, "wave 1 is all skulks" )
+		Assert.Nil( C1.Gorge, "and nothing unlocks early" )
+
+		for Wave = 1, 20 do
+			for Size = 1, 13, 3 do
+				local _, Total = Tally(Waves.Deal(Wave, Size, Types))
+
+				Assert.Equal( Size, Total, string.format("wave %s size %s sums exactly",
+					tostring(Wave), tostring(Size)) )
+			end
+		end
+
+		local C10 = Tally(Waves.Deal(10, 15, Types))
+
+		Assert.True( (C10.Gorge or 0) >= 1 and (C10.Lerk or 0) >= 1 and (C10.Fade or 0) >= 1
+			and (C10.Onos or 0) >= 1, "wave 10 fields every unlocked type" )
+		Assert.True( (C10.Skulk or 0) >= 6, "the skulk chaff floor holds its weight" )
+
+		local Late = Tally(Waves.Deal(12, 6, Types))
+
+		Assert.True( (Late.Skulk or 0) < 6, "by wave 12 a six-alien wave is not all skulks" )
+
+		local Round1 = Waves.Deal(12, 6, Types)
+		local Fresh = false
+
+		for I = 1, 3 do
+			if Round1[I] ~= "Skulk" then
+				Fresh = true
+			end
+		end
+
+		Assert.True( Fresh, "the interleaved deal leads with the fresh types, not the tail" )
+		Assert.Equal( 0, #Waves.Deal(5, 10, {}), "no configured types deals nothing (the caller's fallback owns that)" )
+		Assert.Equal( 0, #Waves.Deal(5, 10, { Big = { Unlock = 9, Ramp = 1, Weight = 1 } }), "nothing unlocked yet deals nothing" )
+
 		local Off = { Enabled = false, Start = 7, End = 15, Bezier = { 0.25, 0.1, 0.25, 1 } }
 
 		Assert.Equal( 7, Waves.HordeSize({ Composition = Off, ReferenceWave = 20 }, Evaluate, 1), "a disabled curve is flat Start" )
@@ -2012,7 +2147,7 @@ function Plugin:InitialiseScenarios()
 
 		local Config = horde.HordeConfig.Copy(horde.DefaultConfig)
 		horde.HordeConfig.Sanitize(Config)
-		Config.Economy.WaveClearPayout = 10
+		Config.Economy.WaveClearPayout = { Enabled = false, Start = 10, End = 10 }
 
 		local SavedMachine, SavedReg = horde.Machine, horde.HordeRegistry
 		local SavedAnnounce, SavedLog = horde.Announce, horde.Log

@@ -201,7 +201,8 @@ end
 
 --- An emergence point: the mouth's own (already surface-validated) point plus up to
 --- kBotJitter metres of jitter on each horizontal axis. y is quartered because the
---- anchor is a snapped surface and gravity settles the rest.
+--- anchor is a snapped surface and gravity settles the rest. Now the FALLBACK branch
+--- only - see EmergenceSpot for why the arithmetic lost.
 local function EmergencePoint(Point)
 	local function Off(Scale)
 		return (math.random() * 2 - 1) * Scale
@@ -210,7 +211,107 @@ local function EmergencePoint(Point)
 	return Vector(Point.x + Off(kBotJitter), Point.y + Off(kBotJitter * 0.25), Point.z + Off(kBotJitter))
 end
 
---- Create an alien bot that will emerge at Point (i5a). The recipe is spike e8o's,
+--- Where a bot actually stands: the engine's own egg recipe (Hive_Server.lua:505-511) -
+--- a point within the ring where a capsule of the creature's size FITS, asked of the
+--- physics and nav mesh, not of our arithmetic. The chair (2026-09-30) proved the old
+--- ±1 m jitter wrong in a way no headless assert could see: the tunnel's ORIGIN is
+--- inside its own shell (entrances sit at local (3, 0.5, ±11) - Tunnel.lua:49-50), so
+--- bots materialised embedded in geometry, pathing found no valid start, and they
+--- stood at the mouth forever while the registry - correctly - counted them ALIVE.
+--- That is also the "count does not match what I see" report: the bots WERE there,
+--- inside the shell, invisible. If the engine's fit search fails (no room in the
+--- ring), the jitter fallback keeps the bot VISIBLE at the mouth and the log says
+--- which branch ran - the chair can then tell us which map and mouth produced it.
+local kEmergenceMin, kEmergenceMax = 1, 10
+
+local function EmergenceSpot(Point)
+	-- Rebuild the anchor as a fresh native Vector from its components: the entrance
+	-- position is a COMPUTED vector (origin + coords:TransformVector(...)), and the
+	-- pathing bind refused exactly that userdata ("cannot convert 'userdata' to
+	-- 'const struct Vector &'", seen 2026-09-30). Components are numbers either way.
+	local Base = Vector(Point.x, Point.y, Point.z)
+
+	local function WalkableSpot(Spot)
+		-- The SAME validation the mouths pass (Placement.SnapToSurface: ground snap,
+		-- walk flag, no-build, obstacle capsule at 1.2 extents) - the first bot-side
+		-- query invented its own convention (a 0.3 box at +0.5) and rejected every
+		-- point the engine itself had certified, because GetIsFlagSet is only proven
+		-- at the extents and heights this module measured it at. One convention, the
+		-- working one. Returns the SNAPPED point (where a capsule actually stands).
+		local Ok, Snapped = pcall(function()
+			return Plugin.Placement.SnapToSurface(Spot, Plugin.Placement.DefaultHooks())
+		end)
+
+		if Ok and Snapped then
+			return Snapped
+		end
+	end
+
+	-- The EGG's capsule, deliberately: it is the size the engine itself clears
+	-- around hive and tunnel for aliens to pop out of, and lifeform techs do not
+	-- carry reliable extents. EVERY engine call inside the pcall - the first version
+	-- left the fit search outside, and one bind rejection threw through the whole
+	-- placement and dropped all four bots unplaced.
+	local Ok, Height, Radius = pcall(function()
+		local Extents = LookupTechData(kTechId.Egg, kTechDataMaxExtents, nil)
+
+		if not Extents then
+			return nil
+		end
+
+		return GetTraceCapsuleFromExtents(Extents)
+	end)
+
+	if Ok and Height then
+		-- CAPSULE-FIT ALONE IS NOT ENOUGH: the egg search certifies physics room, not
+		-- the nav mesh (eggs are structures; a skulk off-mesh cannot path anywhere -
+		-- measured 2026-09-30, every egg-fit point failed the walk check the mouths
+		-- pass). So each candidate must also clear the placement validation, and the
+		-- bot is placed at the SNAPPED point, not the raw candidate.
+		for _ = 1, 8 do
+			local FitOk, Fit = pcall(GetRandomSpawnForCapsule, Height, Radius, Base,
+				kEmergenceMin, kEmergenceMax, EntityFilterAll())
+
+			if not FitOk or not Fit then
+				break
+			end
+
+			local Standing = WalkableSpot(Fit)
+
+			if Standing then
+				return Standing, "fit"
+			end
+		end
+	end
+
+	-- Jitter around the ENTRANCE anchor, which sits on the mouth's own validated
+	-- (walk-flagged) build surface - the fallback is more on-mesh than it looks.
+	return EmergencePoint(Base), "jitter"
+end
+
+--- Resolve a mouth's ENTRANCE at the moment of use. The tunnel's origin sits inside
+--- its own shell (entrances are local (3, 0.5, ±11) - Tunnel.lua:49-50) and the interior
+--- is HOLLOW, so both older designs failed in measured ways: jitter around the origin
+--- embedded the bots (the chair's "stuck at the mouth"), and resolving the entrance on
+--- the SPAWN tick threw out of `GetEntranceAPosition` (orientation is not settled yet -
+--- seen 2026-09-30) and silently downgraded every anchor to the raw entity. So: ask at
+--- placement time, several ticks after the mouth exists, and keep the spawn-time origin
+--- as the named fallback rather than pretending the question cannot fail.
+local function MouthAnchor(Mouth, Fallback)
+	if Mouth then
+		local Ok, Entrance = pcall(function()
+			return Mouth:GetEntranceAPosition()
+		end)
+
+		if Ok and Entrance then
+			return Entrance
+		end
+	end
+
+	return Fallback
+end
+
+--- Create an alien bot that will emerge at a mouth (i5a). The recipe is spike e8o's,
 --- re-verified against the shipped Lua before anything was written down here:
 ---   * `Server.CreateEntity(PlayerBot.kMapName)` - the no-origin overload; the
 ---     positional 3-arg global CreateEntity is for entities that have one, and a
@@ -222,15 +323,32 @@ end
 ---     the type.
 ---
 --- Like a mouth, a fresh PlayerBot has no usable id in its creation tick, so it
---- queues and Pump() registers it. The Point rides along because placement needs it
+--- queues and Pump() registers it. The mouth rides along because placement needs it
 --- one delay LATER again: GetPlayer() answers only after the engine's own UpdateTeam
---- has joined and spawned the bot. This returns before the bot is in the world on
---- purpose - the pump is what finishes the job.
-function Spawner:SpawnBot(Point, TechId)
-	if not Point then
+--- has joined and spawned the bot - and the ENTRANCE anchor is only trustworthy at
+--- that later moment either (see MouthAnchor). This returns before the bot is in the
+--- world on purpose - the pump is what finishes the job.
+function Spawner:SpawnBot(MouthOrPoint, TechId)
+	if not MouthOrPoint then
 		self.FailedCount = self.FailedCount + 1
 
 		return nil, "no point given"
+	end
+
+	-- Entity or raw point: keep both readings. The origin answers on the creation
+	-- tick (position exists before orientation does); the entrance is asked later.
+	local Mouth, Point
+
+	local OkOrigin, Origin = pcall(function()
+		if MouthOrPoint.GetOrigin then
+			return MouthOrPoint:GetOrigin()
+		end
+	end)
+
+	if OkOrigin and Origin then
+		Mouth, Point = MouthOrPoint, Origin
+	else
+		Point = MouthOrPoint
 	end
 
 	local Ok, Bot = pcall(function()
@@ -253,7 +371,7 @@ function Spawner:SpawnBot(Point, TechId)
 		return nil, "bot spawn failed"
 	end
 
-	self.Pending[#self.Pending + 1] = { ref = Bot, kind = "bot", point = Point, Ticks = 0 }
+	self.Pending[#self.Pending + 1] = { ref = Bot, kind = "bot", mouth = Mouth, point = Point, Ticks = 0 }
 	self.BotCount = self.BotCount + 1
 
 	return Bot
@@ -278,7 +396,7 @@ function Spawner:PlaceBots()
 	local Placed = 0
 
 	for _, Item in ipairs(self.Placing) do
-		local Ok, Landed = pcall(function()
+		local Ok, Landed, Spot, How = pcall(function()
 			local Player = Item.ref.GetPlayer and Item.ref:GetPlayer()
 
 			if not Player then
@@ -319,20 +437,26 @@ function Spawner:PlaceBots()
 				return false
 			end
 
-			Player:SetOrigin(EmergencePoint(Item.point))
+			-- Anchor asked NOW, not at spawn: the entrance is trustworthy ticks after
+			-- the tunnel exists; the spawn-time origin is the named fallback.
+			local Placed, Method = EmergenceSpot(MouthAnchor(Item.mouth, Item.point))
+			Player:SetOrigin(Placed)
 
-			return true
+			return true, Placed, Method
 		end)
 
 		if Ok and Landed then
 			Placed = Placed + 1
 			self.PlacedCount = self.PlacedCount + 1
 
-			-- Coordinates in the log, like every mouth: "bots appeared" was never
-			-- enough to answer "WHERE did they appear" from the chair.
-			self.Log(string.format("[HORDE] bot emerged at (%.1f, %.1f, %.1f) id=%s",
-				Plugin.Placement.Axis(Item.point, "x", 1), Plugin.Placement.Axis(Item.point, "y", 2),
-				Plugin.Placement.Axis(Item.point, "z", 3), tostring(Item.id)))
+			-- The spot the bot ACTUALLY landed on, not the anchor it was asked for,
+			-- and WHICH branch placed it: "(capsule-fit)" or the loud "(JITTER
+			-- FALLBACK)" is the difference between "stuck in the shell" and
+			-- "stuck beside it" - the chair can read it without opening the log.
+			self.Log(string.format("[HORDE] bot emerged at (%.1f, %.1f, %.1f) id=%s %s",
+				Plugin.Placement.Axis(Spot, "x", 1), Plugin.Placement.Axis(Spot, "y", 2),
+				Plugin.Placement.Axis(Spot, "z", 3), tostring(Item.id),
+				How == "fit" and "(capsule-fit)" or "(JITTER FALLBACK - no fit in the ring)"))
 		elseif not Ok then
 			self.FailedCount = self.FailedCount + 1
 			self.Log(string.format("[HORDE] a bot went away before it could emerge: %s", tostring(Landed)))
@@ -375,7 +499,7 @@ function Spawner:Pump()
 			-- for it. Mouths are positioned by their own creation; only bots need
 			-- this second stage.
 			if Item.kind == "bot" then
-				self.Placing[#self.Placing + 1] = { id = Id, ref = Item.ref, point = Item.point, Ticks = 0 }
+				self.Placing[#self.Placing + 1] = { id = Id, ref = Item.ref, mouth = Item.mouth, point = Item.point, Ticks = 0 }
 			end
 		else
 			Item.Ticks = Item.Ticks + 1

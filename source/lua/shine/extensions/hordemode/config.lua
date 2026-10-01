@@ -36,6 +36,7 @@ local CURVE_KEYS = {
 	{ Owner = "Waves", Key = "Damage" },
 	{ Owner = "Waves", Key = "MouthHealth" },
 	{ Owner = "Economy", Key = "PayoutPerPlayer" },
+	{ Owner = "Economy", Key = "WaveClearPayout" },
 	{ Owner = "Difficulty", Key = "Accuracy" },
 	{ Owner = "Difficulty", Key = "Aggro" },
 }
@@ -88,7 +89,7 @@ Plugin.DefaultConfig = {
 		MinPlayers = 1,          -- real humans only; bot clients never count (verified, i0f)
 	},
 	Intermission = {
-		Seconds = 60,
+		Seconds = 30,
 		SkipCost = 0,            -- Q17 paid skip; 0 disables the charge
 	},
 	Waves = {
@@ -114,9 +115,29 @@ Plugin.DefaultConfig = {
 		Armor = NewCurve(0, 2),
 		Damage = NewCurve(1, 2),
 		MouthHealth = NewCurve(1000, 4000),   -- Q29: wave-1 mouths near-indestructible
+		--- The composition ladder (Q31, Arian 2026-09-30): a type joins at Unlock and
+		--- ramps to full Weight over Ramp waves; Waves.Deal splits the curve's wave size
+		--- across whatever is unlocked. The ladder follows the marine power curve
+		--- (DESIGN §wave model, built on measured damage/armor numbers): gorge when
+		--- armour L1 is affordable, lerk when spores punish clustering, fade against L2,
+		--- onos only once exosuit territory. Weights are share units (Skulk 6 = the
+		--- chaff floor). Untuned endpoints, same RD3 status as every other curve.
+		Types = {
+			Skulk = { Unlock = 1,  Ramp = 1,  Weight = 6 },
+			Gorge = { Unlock = 3,  Ramp = 4,  Weight = 1 },
+			Lerk  = { Unlock = 5,  Ramp = 4,  Weight = 1 },
+			Fade  = { Unlock = 7,  Ramp = 5,  Weight = 1 },
+			Onos  = { Unlock = 10, Ramp = 6,  Weight = 2 },
+		},
 	},
 	Economy = {
-		WaveClearPayout = 10,
+		--- Arian 2026-09-30: "more res per wave, a sensible max, progression through at
+		--- least the first 10". The scalar 10 becomes the curve's Start (25); End 100 is
+		--- the max he asked for, reached at PayoutReferenceWave = 10 and clamped after.
+		--- Ships ENABLED like Composition - a number, not a knob waiting for someone.
+		--- The endpoints are still placeholders until the power-vs-damage model lands.
+		WaveClearPayout = NewCurve(25, 100, true),
+		PayoutReferenceWave = 10,
 		PayoutPerPlayer = NewCurve(10, 2),    -- Q24: payout per head shrinks as players join
 		StartingResources = 1000,
 	},
@@ -285,13 +306,43 @@ function Config.Sanitize(In)
 	Section("Waves", "WipeGraceSeconds", 0, 60, false)
 	Section("Waves", "BandMin", Config.BandFloor, Config.BandCeiling)
 	Section("Waves", "BandMax", Config.BandFloor, Config.BandCeiling)
-	Section("Economy", "WaveClearPayout", 0, 10000, true)
+	Section("Economy", "PayoutReferenceWave", 2, 200, true)
 	Section("Economy", "StartingResources", 0, 100000, true)
 
 	Flag("Debug", "RevealMouths")
 
 	Section("Waves", "BandLineFactor", 0, 1)
 
+
+	--- Waves.Types is a table of small scalar records, not a Section() path: clamp each
+	--- field, and drop entries that cannot describe a type at all. An Unlock of 0 would
+	--- put an onos in wave 1; a Weight of 0 silently removes a type - both are typos,
+	--- and the sanitizer's job is to fix typos loudly rather than play them.
+	local Types = In and In.Waves and In.Waves.Types
+
+	if type(Types) == "table" then
+		for Name, Entry in pairs(Types) do
+			if type(Entry) ~= "table" then
+				Types[Name] = nil
+			else
+				for _, Spec in ipairs({ { "Unlock", 1, 200 }, { "Ramp", 1, 50 }, { "Weight", 0, 100 } }) do
+					local Key, Low, High = Spec[1], Spec[2], Spec[3]
+
+					if not IsNumber(Entry[Key]) then
+						Entry[Key] = nil
+						Changed = true
+					else
+						local Fixed = Clamp(math.floor(Entry[Key] + 0.5), Low, High)
+
+						if Fixed ~= Entry[Key] then
+							Entry[Key] = Fixed
+							Changed = true
+						end
+					end
+				end
+			end
+		end
+	end
 	local Waves = In and In.Waves
 
 	if type(Waves) == "table" and IsNumber(Waves.BandMin) and IsNumber(Waves.BandMax)

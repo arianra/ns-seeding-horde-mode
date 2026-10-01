@@ -82,6 +82,23 @@ function Waves.Distribute(Total, Slots)
 	return PerMouth
 end
 
+--- The wave-clear payout, same shape as HordeSize: the Economy.WaveClearPayout curve
+--- evaluated at this wave's progress toward PayoutReferenceWave, rounded, never
+--- negative. A disabled curve evaluates to Start (flat) - the same contract as every
+--- other curve, so "off" means "the number you wrote", not zero.
+function Waves.Payout(EconomyConfig, EvaluateFn, Wave)
+	local Curve = EconomyConfig and EconomyConfig.WaveClearPayout
+	local Reference = (EconomyConfig and EconomyConfig.PayoutReferenceWave) or 10
+	local Raw = EvaluateFn and EvaluateFn(Curve, Waves.Progress(Wave, Reference)) or 0
+	local Payout = math.floor(Raw + 0.5)
+
+	if Payout < 0 then
+		Payout = 0
+	end
+
+	return Payout
+end
+
 --- Wave clear: every bot THIS wave spawned is accounted dead, AND no spawn of
 --- this wave is still climbing out of the factory queue (a never-materialised
 --- bot is not alive by the registry's count, and calling that "cleared" would
@@ -94,7 +111,139 @@ end
 --- alive count is the registry's three-state one - a husk does not count, and
 --- a mouth the engine finished pruning does not either.
 function Waves.MouthsFallen(Placed, AliveMouths)
+
 	return (Placed or 0) > 0 and (AliveMouths or 0) == 0
+end
+
+--- The composition ladder (Arian 2026-09-30: "spawning not just skulks but a progression
+--- based on damage curve"). A type joins at its Unlock wave and ramps to full Weight over
+--- Ramp waves; shares are normalised against each other and split over the wave's size by
+--- LARGEST REMAINDER, so the counts sum to exactly WaveSize - a wave that promised 15
+--- aliens fields 15, not 14 and not 16. The result is interleaved (one of each available
+--- type in rotation) so round-robin dealing over mouths cannot cluster every onos behind
+--- one tunnel. Returns a list of type NAMES, length Total; empty when nothing is unlocked
+--- or configured - the caller decides what "no mix" means.
+function Waves.Deal(Wave, Total, Types)
+	local Names, Sum = {}, 0
+
+	for Name, Entry in pairs(Types or {}) do
+		local Unlock = Entry.Unlock or 1
+
+		if Wave >= Unlock and (Entry.Weight or 0) > 0 then
+			local Ramp = math.max(Entry.Ramp or 1, 1)
+			local Share = Entry.Weight * math.min(1, (Wave - Unlock + 1) / Ramp)
+
+			if Share > 0 then
+				Names[Name] = Share
+				Sum = Sum + Share
+			end
+		end
+	end
+
+	if Sum <= 0 or not Total or Total < 1 then
+		return {}
+	end
+
+	local Sorted, Counts, Assigned, Rem = {}, {}, 0, {}
+
+	for Name, Share in pairs(Names) do
+		Sorted[#Sorted + 1] = Name
+	end
+
+	table.sort(Sorted)
+
+	for _, Name in ipairs(Sorted) do
+		local Exact = Total * (Names[Name] / Sum)
+		local Floor = math.floor(Exact)
+
+		Counts[Name] = Floor
+		Assigned = Assigned + Floor
+		Rem[#Rem + 1] = { Name = Name, Rem = Exact - Floor }
+	end
+
+	table.sort(Rem, function(A, B)
+		if A.Rem ~= B.Rem then
+			return A.Rem > B.Rem
+		end
+
+		return A.Name < B.Name
+	end)
+
+	local Fill = 1
+
+	while Assigned < Total and #Rem > 0 do
+		Counts[Rem[Fill].Name] = Counts[Rem[Fill].Name] + 1
+		Assigned = Assigned + 1
+		Fill = Fill % #Rem + 1
+	end
+
+	--- An unlock that rounds to zero is not an unlock. A type whose fresh ramp share
+	--- rounds below 1 (onos at wave 10 of a 15-alien wave did exactly that) would stay
+	--- invisible for waves after its ladder entry - so every unlocked type gets ONE,
+	--- taken from the current largest holder (the skulk chaff, which exists to absorb
+	--- exactly this). Only when the wave can afford one per type at all.
+	local Live = 0
+
+	for Name in pairs(Counts) do
+		if Counts[Name] > 0 then
+			Live = Live + 1
+		end
+	end
+
+	if Live < Total then
+		local Guard = 0
+
+		while Guard < 64 do
+			local Missing, Biggest = nil, nil
+
+			for Name, Count in pairs(Counts) do
+				if Count == 0 then
+					Missing = Name
+				end
+			end
+
+			if not Missing then
+				break
+			end
+
+			for Name, Count in pairs(Counts) do
+				if Count > 1 and (not Biggest or Count > Counts[Biggest]) then
+					Biggest = Name
+				end
+			end
+
+			if not Biggest then
+				break
+			end
+
+			Counts[Missing] = 1
+			Counts[Biggest] = Counts[Biggest] - 1
+			Guard = Guard + 1
+		end
+	end
+
+	local Out, Left = {}, {}
+	local Rounds, Remaining = {}, 0
+
+	for _, Name in ipairs(Sorted) do
+		if Counts[Name] > 0 then
+			Rounds[#Rounds + 1] = Name
+			Left[Name] = Counts[Name]
+			Remaining = Remaining + Counts[Name]
+		end
+	end
+
+	while Remaining > 0 do
+		for _, Name in ipairs(Rounds) do
+			if Left[Name] > 0 then
+				Left[Name] = Left[Name] - 1
+				Remaining = Remaining - 1
+				Out[#Out + 1] = Name
+			end
+		end
+	end
+
+	return Out
 end
 
 --- D4's grace window as a pure step: while any real marine lives, the clock

@@ -370,6 +370,14 @@ function Plugin:StartWave(Client, Now)
 		end
 	end
 
+	--- Arian 2026-09-30: in a horde, buildings and upgrades finish instantly. The engine
+	--- already owns this switch - the autobuild gamerule force-completes every structure
+	--- on its construction tick (ConstructMixin.lua:133-183) and clamps research to 0.5 s
+	--- (ResearchMixin.lua:67-69) - so we borrow it, snapshot the prior value, and give it
+	--- back at teardown. Costs are still PAID (the resource sink that makes the payout
+	--- curve mean something survives untouched); only the clock goes away.
+	self:SetHordeBuildSpeed(true)
+
 	local Seconds = self:BeginCountdown(Config.Start and Config.Start.CountdownSeconds)
 
 	-- Order matters to the person reading chat. The first version announced "WAVE 1 - 3
@@ -510,6 +518,44 @@ function Plugin:RestoreGameEnd(Reason)
 	return true
 end
 
+--- Flip the vanilla autobuild cheat for the duration of the horde, ONCE: the snapshot is
+--- taken on the first engage and only an engage we performed is ever released (the same
+--- "release only what you took" discipline as the bot controller - a server that already
+--- ran autobuild keeps it after we stop, and a horde must not silently leave the cheat on).
+function Plugin:SetHordeBuildSpeed(On)
+	local Rules = GetGamerules()
+
+	if not Rules or not Rules.SetAutobuild then
+		self:Log("horde build speed: gamerules has no autobuild switch - builds stay vanilla")
+
+		return false
+	end
+
+	if On then
+		if self.HordeAutobuildSaved ~= nil then
+			return true
+		end
+
+		self.HordeAutobuildSaved = Rules.autobuild == true
+		Rules:SetAutobuild(true)
+		self:Log("horde build: autobuild engaged (builds and research finish near-instantly, costs still paid)")
+
+		return true
+	end
+
+	if self.HordeAutobuildSaved == nil then
+		return false
+	end
+
+	local Saved = self.HordeAutobuildSaved
+
+	self.HordeAutobuildSaved = nil
+	Rules:SetAutobuild(Saved)
+	self:Log("horde build: autobuild restored to " .. tostring(Saved))
+
+	return true
+end
+
 --- Hand the round to vanilla's countdown. Returns the seconds the client will see.
 function Plugin:BeginCountdown(Seconds)
 	local gamerules = GetGamerules()
@@ -631,7 +677,13 @@ function Plugin:BeginWave(Config)
 
 		if Mouth then
 			Spawned = Spawned + 1
-			PlacedPoints[#PlacedPoints + 1] = Candidate.point
+
+			--- The MOUTH entity rides to the factory, not a point: SpawnBot resolves the
+			--- entrance anchor itself (BotAnchor - one place knows tunnel geometry), and
+			--- the capsule-fit ring around that entrance is what keeps bots OUTSIDE the
+			--- shell. The old raw-point anchor put them inside it: the chair's "stuck at
+			--- the mouth" and the count that did not match what he could see.
+			PlacedPoints[#PlacedPoints + 1] = Mouth
 
 			-- Every coordinate we put a structure at, in the log. "3 mouths placed from
 			-- 46 candidates" is what we had when a marine reported all three inside the rock:
@@ -655,16 +707,40 @@ function Plugin:BeginWave(Config)
 	-- this call returns while they are still pending, and the clear predicate knows that
 	-- because Outstanding() says so.
 	local WaveSize = Plugin.Waves.HordeSize(Config.Waves, Plugin.HordeConfig.EvaluateCurve, WaveNumber)
-	local Shares = Plugin.Waves.Distribute(WaveSize, Spawned)
 	local BotsSpawned = 0
 
-	for Index, Point in ipairs(PlacedPoints) do
-		for _ = 1, Shares[Index] or 0 do
-			if self.HordeSpawner:SpawnBot(Point, kTechId.Skulk) then
-				BotsSpawned = BotsSpawned + 1
-			end
+	--- The wave's roster: type names dealt by the composition ladder (Waves.Deal -
+	--- unlock + ramp + largest-remainder split of WaveSize), falling back to all-skulks
+	--- only when nothing is configured or unlocked. Slots round-robin over the mouths
+	--- that actually exist, and the interleaved deal keeps one type from clustering
+	--- behind one tunnel.
+	local Deal = Plugin.Waves.Deal(WaveNumber, WaveSize, Config.Waves and Config.Waves.Types)
+
+	if #Deal == 0 then
+		Deal = {}
+
+		for _ = 1, WaveSize do
+			Deal[#Deal + 1] = "Skulk"
 		end
 	end
+
+	local MixLine, Seen = {}, {}
+	local Slot = 0
+
+	for _, Name in ipairs(Deal) do
+		Slot = Slot % Spawned + 1
+
+		if self.HordeSpawner:SpawnBot(PlacedPoints[Slot], kTechId[Name] or kTechId.Skulk) then
+			BotsSpawned = BotsSpawned + 1
+			Seen[Name] = (Seen[Name] or 0) + 1
+		end
+	end
+
+	for Name, Count in pairs(Seen) do
+		MixLine[#MixLine + 1] = string.format("%s x%s", Name, tostring(Count))
+	end
+
+	table.sort(MixLine)
 
 	-- "Nothing appeared" must never be silent, and the counts separate the three ways it can
 	-- happen: no anchor entities at all, anchors that the engine refuses as unbuildable, or a
@@ -682,10 +758,10 @@ function Plugin:BeginWave(Config)
 			table.concat(Refused, "; "), tostring(WaveKeys.BandMin), tostring(WaveKeys.BandMax),
 			tostring(WaveKeys.PoolSize), tostring(WaveKeys.ActivePerWave)))
 	else
-		self:Log(string.format("wave %s: %s mouths placed from %s anchors [%s]%s seed=%s, %s bots dealt from curve size %s",
+		self:Log(string.format("wave %s: %s mouths placed from %s anchors [%s]%s seed=%s, %s bots dealt from curve size %s [%s]",
 			tostring(WaveNumber), tostring(Spawned), tostring(RawCount), Plugin.Placement.ReasonCounts(Stats),
 			#Refused > 0 and (", refused: " .. table.concat(Refused, "; ")) or "", tostring(Seed),
-			tostring(BotsSpawned), tostring(WaveSize)))
+			tostring(BotsSpawned), tostring(WaveSize), table.concat(MixLine, ", ")))
 
 		-- The wave-start promise is ACTIVEPERWAVE mouths (Arian 2026-09-30); a draw that came
 		-- up short is still a wave, but the announcement says so - a silent 2-of-3 is how the
@@ -697,8 +773,9 @@ function Plugin:BeginWave(Config)
 		-- Formatted HERE, not passed as Notify varargs: Shine would hand the template to the
 		-- clients to format, but the announce contract is asserted server-side
 		-- (wave_slice_end_to_end hooks Notify) - and a broadcast with %s in it is not an announcement.
-		self:Announce(string.format("HORDE: WAVE %s - %s tunnel mouths, %s aliens incoming%s%s. /horde status | /horde stop | /horde restart",
+		self:Announce(string.format("HORDE: WAVE %s - %s tunnel mouths, %s aliens incoming (%s)%s%s. /horde status | /horde stop | /horde restart",
 			tostring(WaveNumber), tostring(Spawned), tostring(BotsSpawned),
+			#MixLine > 0 and table.concat(MixLine, ", ") or "Skulk x" .. tostring(BotsSpawned),
 			Reveal and " (revealed on your map)" or "", Deficit))
 	end
 
@@ -1068,7 +1145,8 @@ function Plugin:EndWavePhase(Reason, Now, Config, Reg, Rules)
 	local Destroyed = Plugin.DestroyEntries(Entries,
 		(Reg and Reg.StateOf) or Plugin.Registry.EngineStateOf)
 
-	local Payout = (Config.Economy and Config.Economy.WaveClearPayout) or 0
+	local Payout = Plugin.Waves.Payout(Config.Economy, Plugin.HordeConfig.EvaluateCurve,
+		(Machine and Machine:GetWave()) or 1)
 	local MarineTeam = Rules and Rules.GetTeam and Rules:GetTeam(kTeam1Index)
 
 	if Payout > 0 and MarineTeam and MarineTeam.AddTeamResources then
@@ -1418,6 +1496,10 @@ function Plugin:Teardown(Now)
 	end
 
 	self:RestoreGameEnd("teardown")
+
+	--- Give the build clock back with the win switch: the ordered handback now restores
+	--- every engine lever the horde borrowed (autobuild, suppression, controller, cap).
+	self:SetHordeBuildSpeed(false)
 
 	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",

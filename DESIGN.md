@@ -162,6 +162,42 @@ marine sustained DPS (damage × fire rate × reload uptime × players ×
 calibrated accuracy factor) — ratio band ~1.0–1.25 ("always slightly
 difficult"); exact bands per segment in the levers note §2.
 
+**Wave model v1 — SHIPPED 2026-09-30 (Q31 composition ladder, Q32 instant build).**
+The three curves the loop actually loads, all keyed to `t = Progress(wave, ReferenceWave)`:
+
+| knob | shape | ships | semantics |
+|---|---|---|---|
+| `Waves.Composition` | bezier Start→End | ENABLED 3→15 @ `ReferenceWave` 20 | aliens dealt this wave (rounded, ≥1) |
+| `Economy.WaveClearPayout` | bezier Start→End | ENABLED 25→100 @ `PayoutReferenceWave` 10 | team res paid at wave end; the max is the "sensible cap" (Arian: progression through at least the first 10) |
+| `Waves.Types.<T>` | `Unlock` + `Ramp` + `Weight` | skulk 1/1/6 · gorge 3/4/1 · lerk 5/4/1 · fade 7/5/1 · onos 10/6/2 | `Waves.Deal`: share(T) = Weight × min(1,(w−Unlock+1)/Ramp), normalised, largest-remainder split of the wave size, **every unlocked type gets ≥1** (an unlock that rounds to 0 is not an unlock), interleaved so round-robin dealing cannot cluster a type behind one mouth |
+
+**Power vs damage — why those unlock waves** (all values from shipped Balance/BalanceHealth/
+DamageTypes, build 344). Marines under Q32 (autobuild: builds force-complete on the construct
+tick, research clamps to 0.5 s — costs still paid) convert resources into power with no clock;
+the only gate is cumulative team res. Cumulative at wave start ≈ 60 + Σ payout: w2 ≈ 85,
+w3 ≈ 118, w5 ≈ 232, w7 ≈ 390, w10 ≈ 685. Marine EHP = 100 hp + 2×armor vs Normal:
+**L0 160 → L1 200 (20 res) → L2 240 (30) → L3 280 (40)**; exosuit is a 320+ armor pool (20 tech
++ 40 personal buy). Alien pressure per rung: skulk bite **75** (2.1 L0-hits → the wave-1 chuff);
+gorge spit **30** at range + bile **55/s Corrode** (eats the armor pool itself: 0.12 marine
+scalar) → arrives w3, when L1+arms-lab (40 total) is routine; lerk bite **60**+poison and
+spores **15/s Gas that ignores armor entirely** → w5, punishing the clustering L2 marines
+start doing; fade swipe **75 effective** (Puncture ×2 vs players) and stab **120 Structural**
+(two L3-hits) → w7, once L3+weapons2 (~90 cumulative research) is fielded; onos gore **90
+Structural** + stomp **40 Heavy at half armor efficiency** + charge-latch → w10, the wave
+exosuits become affordable (240 cumulative). Mouths stay near-indestructible wave-1 (Q29
+`MouthHealth` 1000→4000, still disabled until RD3).
+
+**Balance target stays** (§4 above): wave effective HP vs sustained marine DPS in the
+1.0–1.25 band; the ladder sets WHO, the curve sets HOW MANY, RD3 tunes endpoints against
+playtest telemetry — every number in this block is a placeholder with a shape we trust.
+
+**Q32, instant build (Arian 2026-09-30):** during a horde the vanilla `autobuild` gamerule is
+engaged (snapshot → `SetAutobuild(true)`), restored at teardown by the same
+release-only-what-you-took discipline as the controller and the win switch. Chosen over
+per-structure `SetConstructionComplete` sweeps (the engine's own tick already force-completes
+under the flag — one lever, zero polling of other people's entities) and over `SetAllTech`
+(that deletes the resource sink the payout curve feeds).
+
 **Key source facts** (from laststand snapshot):
 - Carapace *replaces* armor with zero speed penalty → armor-tier unlocks are
   free stat steps; partial-carapace machinery exists for multi-tier scaling.
@@ -315,6 +351,10 @@ JSON the server loads.
 **Proposed** starter schema — the **normative** shape is `Plugin.DefaultConfig` in
 `config.lua` (keys there differ: tunnels live under `Waves.*`, payout under `Economy.*`, the
 segments model above is M6 design, not loaded config; drift below is historical):
+
+*Shipped since this draft (2026-09-30):* `Waves.Types` (the Q31 ladder), `Economy.WaveClearPayout`
+as a curve with `Economy.PayoutReferenceWave`, and `Intermission.Seconds` default **30** (was 60 —
+Arian's pacing call). `DefaultConfig` remains the only normative shape.
 ```jsonc
 {
   "__Version": "1.0",

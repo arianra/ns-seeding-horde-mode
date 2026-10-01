@@ -93,12 +93,12 @@ loading path that exists).
 | `config.lua` | `DefaultConfig`, `Resolve(map)`, `Sanitize`, curves, `DeepMerge` | Every number that reaches gameplay is clamped **and** defaulted from `DefaultConfig` — a clamp floor is not a default (see §5) |
 | `registry.lua` | the created set: `Register/Unregister/Drain/Clear`, `PruneDead`, `GetEverIds`, BTC state | Accounting truth. Liveness is a **three-state** answer injected as `StateOf`; nothing may dereference a stored handle |
 | `placement.lua` | candidate generation + selection, all pure except the hooks | Only points the *engine* accepts as buildable; band in **walking** metres; base-room floor in **straight-line** metres; one per sector; spread by distance; seeded per wave |
-| `spawner.lua` | creates `TunnelEntrance` mouths and bot players, pending→registered across a tick, the bot join→place stage, the reveal | A fresh entity has no usable id in its creation tick, and a fresh bot has no *joined* player for several more; a reveal must be re-asserted every second or it lapses |
+| `spawner.lua` | creates `TunnelEntrance` mouths and bot players, pending→registered across a tick, the bot join→place→EMERGE stage, the reveal | A fresh entity has no usable id in its creation tick, and a fresh bot has no *joined* player for several more; a reveal must be re-asserted every second or it lapses. Emergence = the engine's egg recipe at the mouth's ENTRANCE (capsule fit + the same `SnapToSurface` validation mouths pass) — the tunnel ORIGIN is inside its own hollow shell, and bots placed there stand in it forever (the chair's t28 symptom) |
 | `statemachine.lua` | Inactive → Wave → Intermission → Teardown, cooldown | Legal transitions only; `Stop` while inactive is refused, not ignored |
 | `triggers.lua` | the gate (seeding state, marine caller, MinPlayers, cooldown) + snapshots | `/horde` must be answerable from one status line |
 | `takeover.lua` | hold/release of `botTeamController` | Snapshot → lock → cap 0 on the way in; restore on the way out. Release only what you took (the engine asserts on a negative lock counter) |
-| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace, the t28 motion-waypoint steer, the Q30 death reaper), `BeginWave` (cull → place → deal the curve), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch. Every wave starts from a cleared board — the end drain keeps intermission peaceful; the start cull is the guarantee. Skulks neither roam nor take orders, so the tick writes their move target directly; and death is release (Q30) — no bot client outlives its corpse by more than a tick |
-| `waves.lua` | the wave math: `Composition.HordeSize` curve evaluation (bezier, `Enabled` normalised at the sanitizer), `WaveClearPayout`, `HordeSizeAt` | Pure functions; the machine owns timing, the registry owns counts — the three separations that let the loop be tested without a server |
+| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace, the t28 motion-waypoint steer, the Q30 death reaper), `BeginWave` (cull → place → deal curve + Q31 ladder), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression, Q32 autobuild borrow/restore | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch → restore the build clock. Every wave starts from a cleared board. Skulks neither roam nor take orders, so the tick writes their move target; death is release; borrowed engine flags are given back exactly as found |
+| `waves.lua` | the wave math: `Composition`/`WaveClearPayout` curve evaluation (bezier, `Enabled` normalised at the sanitizer), the Q31 `Deal` ladder (unlock → ramp → largest remainder → one-per-unlocked → interleave), `Cleared`/`MouthsFallen`/`Wipe` predicates | Pure functions; the machine owns timing, the registry owns counts — the separations that let the loop be tested without a server |
 | `economy.lua`, `hud.lua` | stubs (i9a territory) | Not yet load-bearing — the wave payout currently credits the team resource directly (Q17); per-marine share + HUD announcement are i9a's |
 
 `hordetest` — the headless harness: `server.lua` is the runner (boot settle, scenario pass,
@@ -386,4 +386,13 @@ line: whole-file, because rotation already fences to the boot. Then the chair an
 bots stood at the mouths — skulk brains have no roam action and do not read the order queue
 (only Exo/marine-type brains do), so the tick now writes `GetMotion():SetDesiredMoveTarget()`
 to the base every second for every live out-of-combat bot (`SteerHordeBots`; combat overwrites,
-the tick re-arms). Suite 70/0/1, handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
+the tick re-arms). Then the SECOND chair pass: bots still stood at mouths — and the reason was
+under us the whole time: a tunnel's ORIGIN is inside its own hollow shell (entrances at local
+(3, 0.5, ±11), `Tunnel.lua:49-50`), so ±1 m jitter embedded every spawn; the "count mismatch"
+was bots alive-but-invisible inside the rock. Emergence now = the engine's egg recipe
+(`GetRandomSpawnForCapsule` + the mouths' own `SnapToSurface`) at the mouth's ENTRANCE, resolved
+at placement time (orientation is not settled on the creation tick — the suite caught that
+too). Same pass shipped: Q30 death-is-release reaper, Q31 type ladder (gorge w3/lerk w5/
+fade w7/onos w10, largest-remainder + one-per-unlocked, DESIGN §4 carries the power-vs-damage
+reasoning), Q32 instant builds via borrowed autobuild (restored at teardown), payout 25→100@w10,
+intermission 30 s. Suite 72/0/1, handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
