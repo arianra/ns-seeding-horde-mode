@@ -181,6 +181,19 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
     `.luarc.json` (lua-language-server, vendored in `D:\projects\ns2-lua-workspace` - git repo with the engine snapshot + the tool; GitNexus indexes it file-level only, still no Lua symbols) — mod↔engine definition/reference
     queries work through the `lsp` tool; GitNexus remains blind to all Lua (no grammar, and
     the engine tree is not and must not become a git repo).
+18. **`autobuild` is the engine's own instant-build+research lever**: `NS2Gamerules:SetAutobuild`
+    (`:1947-1953`) makes `ConstructMixin`'s server tick force-complete every structure
+    (`:133-183`) and clamps `ResearchMixin` research duration to ≤0.5 s (`:67-69`) — costs still
+    paid at order time (`Commander_Server.lua:246-254`). Q32 borrows it for the horde's duration
+    with snapshot/restore; `SetConstructionComplete` (`ConstructMixin.lua:463`) is the per-entity
+    path if we ever need one. `SetAllTech`/warmup grants everything FREE — rejected: it deletes
+    the resource sink the payout curve feeds.
+19. **Shine persists the config it loaded, and `test.sh` boots the same tree it plants fixtures
+    in** — hand-edits to `D:\games\horde\server\cfg\shine\plugins\HordeMode.json` are eaten by the
+    next suite run's boot/stop cycle (three were, 2026-09-30, silently: the chair kept seeing
+    intermission 60 after three "fixes"). Therefore `server-start.sh` DELETES the file on every
+    joinable dev boot: the config regenerates from the mod's `DefaultConfig`, and balance lives
+    only in `config.lua`. A persisted file is runtime state, never a source of truth.
 
 ## 6. The dev loop
 
@@ -283,22 +296,29 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
   station-destroyed (must-have-stood) end the horde; real alien joins + seed-max remain (`7x3`).
   t28 ANSWERED the same day: bots stood at the mouths — skulk brains have no roam action and
   never read the order queue — so the tick writes a standing motion-waypoint to the base
-  (`SteerHordeBots`); step 14 re-verifies the walk.
+  (`SteerHordeBots`), and the third chair pass added the rescue-watch for pathing dead-ends.
+  Emergence fixed to the mouth's ENTRANCE on capsule-fit walkable ground (fact 17); plus
+  **Q30** death-is-release reaper (facts: in-flight exception), **Q31** type ladder
+  (gorge w3 / lerk w5 / fade w7 / onos w10), **Q32** instant builds (fact 18), **Q33** mean
+  economy + 15/30 s pacing (DESIGN §4 wave model v1).
 - **Gates**: G1 (`-game` mounts) and G1d (dev owns `-modstorage`) passed; the loop now needs **no
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
 - **Suite**: 73 pass / 0 fail / 1 expected (the negative control) — 74 scenarios, plus `--handback` 2/0.
-- **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
-  `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
-  hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
-  they chose** (amended 2026-09-28; it used to move them to spectator), and does **not** declare a
-  winner or change the map.
-- **Still not true**: composition is all-skulks (per-type counts are RD3), a REAL alien joining
-  and seed-max still do not end the horde (`7x3`), and the score is logged, not persisted (i16).
+- **Playable today**: `/horde` runs the whole loop — mouths placed on validated surfaces
+  (revealed to marines), waves of steered aliens emerge at the entrances, escalate by curve and
+  ladder, pay 5→40 res, intermit 15/30 s; marines-wipe and station-destroyed end it; builds and
+  research are instant during the horde only; `/horde status` reports live truth; `/horde stop`
+  destroys our set (dead bots' clients released too), hands the bot controller back, resets the
+  world to NotStarted, **leaves every human on the team they chose**, restores the build clock,
+  and does **not** declare a winner or change the map.
+- **Still not true**: a REAL alien joining and seed-max still do not end the horde (`7x3`),
+  per-type HP/damage scaling is disabled (RD3 reads the ladder's numbers, not stats), and the
+  score is logged, not persisted (i16).
   Vanilla win/loss stays suppressed for the whole round by one engine field - the two live
   triggers are ours now, and every remaining exit (alien join, seed max, `7x3`) must go through them.
-- Tracker: 46 closed / 22 open beads (71c closed on suite-green; chair acceptance = steps 13-16).
+- Tracker: 50 closed / 22 open beads (chair acceptance = PLAYTEST 13-19).
 
 ## 9. Known gaps and risks
 
@@ -316,23 +336,25 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
    team resources or any other engine state we later touch is logged rather than guessed at.
 6. Stopping a busy server writes a minidump (mitigated: `upload-dumps=false`, idle stops are
    clean). No graceful exit exists on this engine.
-7. GitNexus has no Lua grammar — it is blind to this repo (re-verified 2026-09-28: a fresh index put
-   262 nodes in the graph, and every one of them is a Python dev script; all game logic is invisible
-   to it). Use `grep`/`read` on the shipped Lua.
+7. GitNexus has no Lua grammar — blind to all game logic (measured twice: 2026-09-28, 262 nodes
+   here, none Lua; 2026-10-01, the engine snapshot repo indexed 2,847 nodes and `context` still
+   answers "Symbol not found" for a shipped function — the nodes are files + FTS, not symbols).
+   Use the `lsp` tool (lua-language-server over `D:\projects\ns2-lua-workspace`, fact 17's note)
+   or `grep`/`read` on the shipped Lua.
 
 ## 10. Next actions, in order
 
-1. **Chair gate — PLAYTEST 13-18** (the wave loop, the loss triggers, and the t28 walk
-   re-verification at step 14) — Arian runs it; findings become beads. If bots still stand AT a
-   mouth, that is tunnel geometry, not objective — the spawn point becomes the suspect.
+1. **Chair gate — PLAYTEST 13-19** (the wave loop, the loss triggers, the emptied roster, the
+   ladder from wave 3, instant builds both directions) — Arian runs it; findings become beads.
+   Step 14 is the walk verdict on steer+emergence; a bot standing through TWO rescue windows
+   means the fit itself is trapped — report the mouth and the log's fit/jitter tag.
 2. **i8a remainder** (`7r3`, `qji`): a real alien joins, or seed max. Must answer the measured
    draw behaviour (vanilla DRAWS when neither side has players) and decide the surrender-vote
    question. (With bots real since 71c, the wipe branch has teeth.)
-3. **i6a wave loop** (`1fv`, `685`): replaces the flat knob with curve-driven composition,
-   clear detection, payout, intermission + skip. Needs RD3 numbers from Arian and the
-   sector/placement decision (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge
-   on summit — decide eligible sources, per-map `ActivePerWave`, band, fallback) — judge `5ss`
-   during the same chair sessions, reveal is on there.
+3. **Placement judgement (`5ss`)** — 3 mouths still land in 1 of 3 sectors at the `BandMin`
+   edge on summit: decide eligible sources, per-map `ActivePerWave`, band, fallback — judge it
+   during the chair sessions, reveal is on there. The wave-start deficit line now reports
+   partial draws out loud.
 4. Fix or route around the **harness ceiling** before committing i6c as written — i5b is now
    chair-shaped, so `0k3` mainly blocks the automated 3-wave test.
 5. The forced alien join is a behavioural dependency of hosts running
@@ -345,9 +367,9 @@ start anything.
 
 ## 11. What Arian owes
 
-- **RD3 balance numbers** for i6a: endpoints per curve (composition, HP, armor, damage, mouth HP,
-  payout, accuracy, aggro), horde size at w1/w10/w30, the plateau wave, cooldown/intermission/skip
-  cost.
+- **RD3 balance numbers** — the code now READS them all (size curve 3→15/w20, payout 5→40/w10,
+  ladder unlocks/ramps/weights, intermission 15/30, grace 3 s): tune from playtest telemetry, and
+  decide the still-disabled stat curves (HP/armor/damage/mouth-HP scaling, accuracy/aggro).
 - **Placement judgement** (`5ss`): whether the current spread reads well from the chair, and the
   eligible-source decision. `Debug.RevealMouths` makes this judgeable in-game.
 - **Playtest gates at M6 and M8**, and G1c if the overlay path is ever needed again.
@@ -374,6 +396,11 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
   `never-write-into-managed-content`, `never-point-dev-tools-at-live-state`,
   `ship-every-mirror-or-none` (disputed), `verify-the-bytes-not-the-status-code`,
   `scout-citations-need-verification`, `live-e2e-verification`
+- `Shared/lessons/a-wave-owns-its-books` — a side-effecting evaluator must pin the state it was
+  created against; the wave loop's tick drained a foreign scenario's registry
+- `decisions/td-death-is-release` — Q30: killed bot clients released within a tick, never reused
+- `decisions/td-wave-model-v1` — Q31 ladder + Q32 instant builds + Q33 economy/pacing, with the
+  power-vs-damage reasoning behind every unlock wave
 
 ---
 

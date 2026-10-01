@@ -14,6 +14,14 @@ The dev tree is **defined in one place — `dev/paths.sh`** (currently
 hard-code a dev path in prose or in a script, because this document carried a stale one
 (`D:\games\ns2hordetest\cfg`) long after that tree stopped being used.
 
+**A persisted config is runtime state, never a source of truth.** `HordeMode.json` in the dev
+tree is rewritten by Shine on stop with whatever the boot loaded — and `test.sh` boots the same
+tree it plants fixtures in — so hand-edits there are silently eaten (three were, 2026-09-30).
+Balance and defaults live in `config.lua`'s `DefaultConfig`; `server-start.sh` therefore
+DELETES `HordeMode.json` on every joinable dev boot (regenerate-from-defaults + per-boot flags
+via `set-reveal.py`). If a future feature needs a persistent dev override, it must be a file
+`server-start.sh` owns and writes, not a hand edit.
+
 Everything below is **read-only to us**, no matter how it makes a local test pass:
 
 | Path | Owner | Why writing it is forbidden |

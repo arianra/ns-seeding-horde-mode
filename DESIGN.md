@@ -1,8 +1,10 @@
 # DESIGN.md — Seeding Horde Mode
 
 Canonical design specification for the NS2 seeding-minigame "Horde Mode".
-Status: **design COMPLETE and largely SHIPPED** (M0–M4 + M7, and i5a; 2026-09-29). This is the
-spec; `HANDOFF.md` §8 records what is built vs still planned (i5b/i6a/i8a), and drift is reconciled
+Status: **design COMPLETE and largely SHIPPED** (M0–M5 + M7; the wave loop, the type ladder,
+two loss triggers, instant builds — 2026-09-30). This is the
+spec; `HANDOFF.md` §8 records what is built vs still planned (i5b walk-verdict, i8a remainder
+`7x3`, i9a, i16), and drift is reconciled
 toward the code, not the reverse.
 
 Decision history lives in the Obsidian vault (ADR-style notes, Q1–Q25):

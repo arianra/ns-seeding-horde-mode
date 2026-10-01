@@ -38,6 +38,11 @@ Single definition, verified here by pointer rather than by restating values:
 - **NS2 game Lua = build 344 installed server:** `/mnt/d/games/ns2-server/ns2/lua` (~650 files
   incl. `bots/`). The `/mnt/d/projects/ns2-td/research/laststand` clone is **stale** (no
   `lua/bots/`, old balance values) — historical reference only.
+- **Versioned snapshot + navigation:** `D:\projects\ns2-lua-workspace` (git repo) — a snapshot of
+  the shipped tree (re-snapshot ritual in its README) and the vendored `lua-language-server`;
+  the mod's `.luarc.json` adds the LIVE tree as `workspace.library`, so the `lsp` tool answers
+  mod↔engine definition/reference. GitNexus has no Lua grammar — its index of either tree is
+  files + full-text only (`HANDOFF.md` §9 landmine 7).
 - Dev server config + mod storage: `D:\games\horde\server\{cfg,mods}`, port **27025/27026**
   (isolated `-modstorage`). Arian's live tree: `D:\games\ns2srv\cfg`, 27015/27016 — read-only,
   and **development never needs it**: a live boot happens only on Arian's explicit request

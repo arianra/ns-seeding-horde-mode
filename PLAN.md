@@ -6,6 +6,8 @@ confirm in under a minute**, and it records the debt we're carrying.
 
 > **STATUS 2026-09-30 — superseded as current-state, kept as the working-method record.**
 > Everything this plan proposed has largely happened: the ladder (§7) ran to M0–M4 + M7 + i5a,
+> and on 2026-09-30 the wave loop, the type ladder, both first loss triggers, instant builds and
+> the death-release reaper shipped with it (Q29–Q33 — see `HANDOFF.md` §8 for the live state),
 > the delivery debt (L0) closed via the published item, and §1's `ns2hordetest` tree + overlay
 > model were replaced by `dev/paths.sh` + the isolated dev storage. Where any section below
 > contradicts `HANDOFF.md` (state, commands, layout, next actions) or `DESIGN.md` (spec),
