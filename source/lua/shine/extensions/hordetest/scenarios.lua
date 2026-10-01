@@ -2256,6 +2256,81 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 0, EmptyMouths, "and zero mouths, silently" )
 	end )
 
+	--- t28's answer, headless-able half: the steer writes a real move target into a real
+	--- PlayerBot's motion, aimed at the base anchor, and the no-anchor branch says so
+	--- once instead of every tick. Whether the bot then WALKS is chair physics (step 14).
+	--- Everything the steer reads (registry, anchor, cache, log) is swapped and handed
+	--- back inside the deferred callback - other scenarios' defers run in this window and
+	--- the plugin fields are shared state.
+	self:RegisterScenario( "steer_walks_the_horde_home", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Reg = horde.Registry.New(horde.Registry.EngineStateOf)
+
+		local Bot = Server.CreateEntity(PlayerBot.kMapName)
+
+		Assert.NotNil( Bot, "a real PlayerBot for the real motion object" )
+
+		Bot:Initialize(kTeam2Index, true)
+		Bot.lifeformEvolution = kTechId.Skulk
+
+		self:Defer( "steer_pins_the_base_waypoint", 8, false, function()
+			local Id = Reg:Register(Bot, horde.Registry.Kind.Bot)
+
+			Assert.NotNil( Id, "the bot registers once its player exists (t+8)" )
+
+			local SavedReg = horde.HordeRegistry
+			local SavedAnchor, SavedSnapped, SavedLogged = horde.HordeBaseAnchor, horde.HordeBaseSnapped, horde.HordeNoTargetLogged
+			local SavedLog = horde.Log
+			local Logs = {}
+
+			-- a destination 60 m from an arbitrary point, nowhere near where the bot
+			-- stands: the steer must write THIS, not the mouth the bot spawned beside
+			horde.HordeBaseAnchor = { x = 70, y = 0, z = 10 }
+			horde.HordeBaseSnapped = nil
+			horde.HordeNoTargetLogged = nil
+			horde.HordeRegistry = Reg
+			horde.Log = function(Self, Message)
+				Logs[#Logs + 1] = Message
+			end
+
+			local Steered = horde:SteerHordeBots()
+			local Motion = Bot:GetMotion()
+			local Target = Motion.desiredMoveTarget
+
+			-- the no-anchor branch, with the books emptied: it must speak once
+			Reg:Unregister(Id)
+
+			horde.HordeBaseAnchor = nil
+
+			local Quiet1 = horde:SteerHordeBots()
+			local Quiet2 = horde:SteerHordeBots()
+
+			horde.HordeRegistry, horde.HordeBaseAnchor, horde.HordeBaseSnapped = SavedReg, SavedAnchor, SavedSnapped
+			horde.HordeNoTargetLogged, horde.Log = SavedLogged, SavedLog
+
+			Bot:Disconnect()
+
+			Assert.Equal( 1, Steered, "the live bot was steered" )
+			Assert.NotNil( Target, "the motion object carries a move target now" )
+
+			local Flat = math.sqrt((Target.x - 70) * (Target.x - 70) + (Target.z - 10) * (Target.z - 10))
+
+			Assert.True( Flat < 15, "the target IS the base anchor (ground-snapped, flat dist " ..
+				string.format("%.1f", Flat) .. " m)" )
+			Assert.True( Quiet1 == 0 and Quiet2 == 0, "no anchor means no steering" )
+
+			local Complaints = 0
+
+			for _, Line in ipairs(Logs) do
+				if Line:find("nowhere to walk") then
+					Complaints = Complaints + 1
+				end
+			end
+
+			Assert.Equal( 1, Complaints, "and it is said once, not every tick" )
+		end )
+	end )
+
 	-- The victory screen a joining marine saw on frame one was not a wave bug: with no
 	-- hive and no aliens, vanilla's own loss check fires immediately
 	-- (ns2/lua/PlayingTeam.lua:536-546). What matters for the clean-slate promise is that

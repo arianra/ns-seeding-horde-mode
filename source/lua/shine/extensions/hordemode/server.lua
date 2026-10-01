@@ -605,6 +605,12 @@ function Plugin:BeginWave(Config)
 
 	local Chosen, Base, RawCount, BandedCount, Stats = Plugin.Placement.Collect(Config, nil, nil, Random)
 
+	--- The ring's centre is also the horde's standing objective (t28's answer, chair
+	--- 2026-09-30): the chair's origin when it stands, else the infestation centroid -
+	--- the base room either way. Saved per wave because placement already computed it,
+	--- and a bot needs a destination the moment it materialises.
+	self.HordeBaseAnchor = Base
+
 	if not Base then
 		self:Log("placement: no base anchor on this map, so the band exclusion is off")
 	end
@@ -719,6 +725,103 @@ function Plugin:BeginWave(Config)
 	return Spawned
 end
 
+--- Where the horde is going: the living marine command station if one stands (its origin
+--- is exact), else this wave's base anchor, ground-snapped once (the infestation centroid
+--- is a table at y=0 and the fallback of a fallback is no waypoint at all). Nil means
+--- this map gave us nothing to walk to, said once per wave, not every tick.
+function Plugin:ResolveHordeTarget()
+	for Ent in ientitylist(Shared.GetEntitiesWithClassname("CommandStructure")) do
+		local Ok, Origin = pcall(function()
+			if Ent:GetTeamNumber() == kTeam1Index and Ent:GetIsAlive() then
+				return Ent:GetOrigin()
+			end
+		end)
+
+		if Ok and Origin then
+			self.HordeNoTargetLogged = nil
+
+			return Origin
+		end
+	end
+
+	local Anchor = self.HordeBaseAnchor
+
+	if not Anchor then
+		if not self.HordeNoTargetLogged then
+			self.HordeNoTargetLogged = true
+
+			self:Log("steer: no base anchor and no marine station - the horde has nowhere to walk")
+		end
+
+		return nil
+	end
+
+	if not self.HordeBaseSnapped then
+		local Point = Vector(Anchor.x, Anchor.y + 2, Anchor.z)
+		local Snapped = GetGroundAtPointWithCapsule(Point, Vector(0.5, 0.5, 0.5),
+			PhysicsMask.CommanderBuild, CreateFilter(nil))
+
+		self.HordeBaseSnapped = Snapped or Vector(Anchor.x, Anchor.y, Anchor.z)
+	end
+
+	return self.HordeBaseSnapped
+end
+
+--- The t28 fallback, and the answer to "brain-native or order-driven": NEITHER for
+--- skulks - their brain has no roam action and does not consume the player order queue
+--- (SkulkBrain_Data has attack-within-50m-of-a-team-memory and an interrupt; only
+--- Exo/marine-type brains read orders, ExoBrain_Data.lua:288). Left alone they stand at
+--- the mouth, which is what the chair saw. So the tick writes the motion layer directly:
+--- a standing move target toward the base. Combat still owns the bot while it fights
+--- (the attack action's perform overwrites the target); this re-arms after, and
+--- SetDesiredMoveTarget is a no-op when the target hasn't moved, so the refresh is free.
+--- Returns how many bots were steered.
+function Plugin:SteerHordeBots()
+	local Reg = self.HordeRegistry
+
+	if not Reg then
+		return 0
+	end
+
+	local Target = self:ResolveHordeTarget()
+
+	if not Target then
+		return 0
+	end
+
+	local Steered = 0
+
+	Reg:IterateByKind("bot", function(Ref)
+		local Ok, Did = pcall(function()
+			local Player = Ref.GetPlayer and Ref:GetPlayer()
+
+			if not Player or not Player:GetIsAlive() then
+				return false
+			end
+
+			if Player.GetIsInCombat and Player:GetIsInCombat() then
+				return false
+			end
+
+			local Motion = Ref:GetMotion()
+
+			if not Motion then
+				return false
+			end
+
+			Motion:SetDesiredMoveTarget(Target)
+
+			return true
+		end)
+
+		if Ok and Did then
+			Steered = Steered + 1
+		end
+	end)
+
+	return Steered
+end
+
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
@@ -755,6 +858,13 @@ function Plugin:HordeTick()
 	-- rather than what we remember creating.
 	if Reg and self.Machine then
 		self.Machine.MouthsActive = Reg:CountByKind("mouth")
+	end
+
+	-- t28: the standing waypoint, written every tick while the wave runs (a no-op when
+	-- the target hasn't moved, so the refresh is free; combat overwrites it and this
+	-- re-arms after).
+	if self.Machine and self.Machine:GetState() == Plugin.Phase.Wave then
+		self:SteerHordeBots()
 	end
 
 	-- 61a: the wave loop's pulse. Runs after the prune and the pump so it decides on
