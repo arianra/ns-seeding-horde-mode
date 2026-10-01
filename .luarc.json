@@ -1,0 +1,17 @@
+{
+    "runtime.version": "Lua 5.1",
+    "runtime.nonstandardSymbol": [
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "//",
+        "continue"
+    ],
+    "workspace.library": [
+        "/mnt/d/games/ns2-server/ns2/lua"
+    ],
+    "diagnostics.enable": false,
+    "hover.enable": true,
+    "completion.enable": true
+}

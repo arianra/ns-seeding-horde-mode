@@ -173,6 +173,14 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
     its own joins: `JoinTeam(player, 2, true)`. A forced join replaces the player with
     `AlienTeam.respawnEntity = Skulk` (`AlienTeam.lua:48`) **in the same tick** — the lifeform class is
     real immediately, no evolve race. Measured 2026-09-28 through `bot_factory_settles`.
+17. **Vanilla's own tunnel emergence is `player:SetOrigin(self:GetEntranceAPosition())`**
+    (`Tunnel.lua:646`, inside the go-to-tunnel move) — the engine teleports the emerging player
+    to the ENTRANCE, never the tunnel origin. Our `EmergenceSpot`/`MouthAnchor` independently
+    arrived at the same anchor; this is the citation that says the design matches the game.
+    Navigation note (2026-10-01): the shipped tree is now a `workspace.library` in
+    `.luarc.json` (lua-language-server, user-installed) — mod↔engine definition/reference
+    queries work through the `lsp` tool; GitNexus remains blind to all Lua (no grammar, and
+    the engine tree is not and must not become a git repo).
 
 ## 6. The dev loop
 
