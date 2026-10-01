@@ -90,6 +90,11 @@ Plugin.DefaultConfig = {
 	},
 	Intermission = {
 		Seconds = 30,
+		--- Q33 (chair 2026-09-30): the gap after WAVE 1 is 15 s, every later one 30.
+		--- Wave 1 is a scout wave; doubling the first pause just stalls the session
+		--- before the mode has said anything. EndWavePhase stores the chosen wait on
+		--- the machine so the clock and the announcement can never disagree.
+		FirstSeconds = 15,
 		SkipCost = 0,            -- Q17 paid skip; 0 disables the charge
 	},
 	Waves = {
@@ -131,12 +136,13 @@ Plugin.DefaultConfig = {
 		},
 	},
 	Economy = {
-		--- Arian 2026-09-30: "more res per wave, a sensible max, progression through at
-		--- least the first 10". The scalar 10 becomes the curve's Start (25); End 100 is
-		--- the max he asked for, reached at PayoutReferenceWave = 10 and clamped after.
-		--- Ships ENABLED like Composition - a number, not a knob waiting for someone.
-		--- The endpoints are still placeholders until the power-vs-damage model lands.
-		WaveClearPayout = NewCurve(25, 100, true),
+		--- Q33 (chair 2026-09-30): 25/wave was "too much res" - marines hit useful
+		--- upgrades (L1 armor 20, arms lab 20, shotgun 20) before the mode had
+		--- threatened them. Start 5: wave 1 pays nothing you can spend a plan on;
+		--- the first real purchase lands around wave 3-4 of cumulative payouts.
+		--- End 40 at PayoutReferenceWave 10 is the cap. Vanilla's own 60 start and
+		--- extractor income are not ours to change (and not touched).
+		WaveClearPayout = NewCurve(5, 40, true),
 		PayoutReferenceWave = 10,
 		PayoutPerPlayer = NewCurve(10, 2),    -- Q24: payout per head shrinks as players join
 		StartingResources = 1000,
@@ -299,6 +305,7 @@ function Config.Sanitize(In)
 	Section("Start", "Cooldown", 0, 600, true)
 	Section("Start", "MinPlayers", 0, 16, true)
 	Section("Intermission", "Seconds", 0, 600, true)
+	Section("Intermission", "FirstSeconds", 0, 600, true)
 	Section("Intermission", "SkipCost", 0, 10000, true)
 	Section("Waves", "PoolSize", 1, 12, true)
 	Section("Waves", "ActivePerWave", 1, 12, true)

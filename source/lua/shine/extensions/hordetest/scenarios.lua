@@ -2466,6 +2466,73 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	--- The stuck-watch, as a unit: a fake alive bot at a fixed position, the steer called
+	--- with explicit Now values. Nothing here needs the engine to materialise a player -
+	--- the claim is about the WATCH arithmetic (arm, wait, rescue once, at the crossing)
+	--- and the rescue's landing ring, both of which are pure against the fake's frozen
+	--- origin. The real-bot half (does a rescued bot then walk) is the chair's step 14.
+	self:RegisterScenario( "stuck_bots_get_rescued", false, function()
+		local horde = Shine.Plugins.hordemode
+		local R = horde.Registry
+		local Reg = R.New(function() return R.Alive end)
+
+		local Placed, Moves = {}, 0
+
+		local FakePlayer = {
+			GetIsAlive = function() return true end,
+			GetIsInCombat = function() return false end,
+			GetOrigin = function() return Vector(100, 0, 100) end,
+			SetOrigin = function(_, Spot) Placed[#Placed + 1] = Spot end,
+		}
+
+		local FakeBot = {
+			GetId = function() return 9701 end,
+			GetPlayer = function() return FakePlayer end,
+			GetMotion = function()
+				return { SetDesiredMoveTarget = function() Moves = Moves + 1 end }
+			end,
+		}
+
+		local SavedMachine, SavedReg = horde.Machine, horde.HordeRegistry
+		local SavedWatch, SavedBase = horde.BotWatch, horde.WaveEmergeBase
+		local SavedRec = horde.WaveReconciled
+		local SavedAnchor, SavedSnapped = horde.HordeBaseAnchor, horde.HordeBaseSnapped
+		local SavedLog = horde.Log
+
+		horde.Machine = horde.StateMachine.New(Shared.GetTime(), function() end)
+		horde.HordeRegistry = Reg
+		horde.BotWatch = {}
+
+		local Id = Reg:Register(FakeBot, R.Kind.Bot)
+
+		-- Staged captures: the rescue count must be read AT each pass, not after the
+		-- fact - the first version asserted "#Placed == 0 at 0 s" after the 7 s pass had
+		-- already rescued, and the scenario failed on its own bookkeeping, not the code.
+		local First = horde:SteerHordeBots(100)   local N1 = #Placed
+		local Second = horde:SteerHordeBots(103)  local N2 = #Placed
+		local Third = horde:SteerHordeBots(107)   local N3 = #Placed
+		local Fourth = horde:SteerHordeBots(108)  local N4 = #Placed
+
+		horde.Machine, horde.HordeRegistry = SavedMachine, SavedReg
+		horde.BotWatch, horde.WaveEmergeBase, horde.WaveReconciled = SavedWatch, SavedBase, SavedRec
+		horde.HordeBaseAnchor, horde.HordeBaseSnapped, horde.Log = SavedAnchor, SavedSnapped, SavedLog
+
+		Assert.NotNil( Id, "the fake bot registers on its carried id" )
+		Assert.Equal( 1, First, "the standing bot is steered and armed in the watch" )
+		Assert.Equal( 0, N1, "0 s is not stuck" )
+		Assert.Equal( 1, Second, "3 s: still only steered" )
+		Assert.Equal( 0, N2, "3 s is under the 6 s window - no rescue" )
+		Assert.Equal( 1, Third, "7 s: steered" )
+		Assert.Equal( 1, N3, "and rescued ONCE, at the crossing" )
+		Assert.Equal( 1, N4, "the next pass re-armed, it did not rescue twice" )
+		Assert.True( Moves >= 4, "the waypoint was written on every pass" )
+
+		local Spot = Placed[1]
+		local Flat = math.sqrt((Spot.x - 100) * (Spot.x - 100) + (Spot.z - 100) * (Spot.z - 100))
+
+		Assert.True( Flat <= 12, "the rescue lands in the ring around where it stood, not across the map" )
+	end )
+
 	--- Death is release (Arian 2026-09-30): a killed bot's virtual client must not sit on
 	--- the team-2 roster until teardown - corpses inflate the headcounts
 	--- force_even_teams_on_join balances against, and a spawn structure built later could

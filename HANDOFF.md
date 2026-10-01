@@ -280,7 +280,7 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 72 pass / 0 fail / 1 expected (the negative control) — 73 scenarios, plus `--handback` 2/0.
+- **Suite**: 73 pass / 0 fail / 1 expected (the negative control) — 74 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
   hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
@@ -394,5 +394,13 @@ was bots alive-but-invisible inside the rock. Emergence now = the engine's egg r
 at placement time (orientation is not settled on the creation tick — the suite caught that
 too). Same pass shipped: Q30 death-is-release reaper, Q31 type ladder (gorge w3/lerk w5/
 fade w7/onos w10, largest-remainder + one-per-unlocked, DESIGN §4 carries the power-vs-damage
-reasoning), Q32 instant builds via borrowed autobuild (restored at teardown), payout 25→100@w10,
-intermission 30 s. Suite 72/0/1, handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
+reasoning), Q32 instant builds via borrowed autobuild (restored at teardown). The THIRD chair
+pass (same day) added: a stuck-watch in the steer (no move 1.5 m in 6 s out of combat = rescue
+re-placement, logged), a once-per-wave dealt/emerged/alive RECONCILE log, the reaper's
+IN-FLIGHT exception (a Gone bot still in the spawner's Placing queue is being born, not dead —
+the suite killed wave_slice's third bot before this), Q33 pacing (first intermission 15 s,
+later 30 s) and a deliberately mean economy (payout 5→40@w10 — useful upgrades should land
+wave 3-4), and `server-start.sh` now CLEARS the persisted HordeMode.json on every joinable
+dev boot (test boots persist what they load; three hand-edits were eaten before this was
+admitted — balance lives in DefaultConfig, not in a file). Suite 73/0/1, handback 2/0;
+the WALK itself is PLAYTEST step 14's verdict.

@@ -799,6 +799,13 @@ function Plugin:BeginWave(Config)
 	--- scenario was watching.
 	Machine.WaveReg, Machine.WaveSpawner = self.HordeRegistry, self.HordeSpawner
 
+	--- Q33: a new wave's per-wave facts. The stuck-watch and the emerge reconciliation
+	--- belong to THIS wave; the intermission wait was consumed by the clock that read it.
+	Machine.IntermissionWait = nil
+	self.BotWatch = {}
+	self.WaveEmergeBase = self.HordeSpawner and self.HordeSpawner.PlacedCount or 0
+	self.WaveReconciled = false
+
 	return Spawned
 end
 
@@ -852,8 +859,19 @@ end
 --- a standing move target toward the base. Combat still owns the bot while it fights
 --- (the attack action's perform overwrites the target); this re-arms after, and
 --- SetDesiredMoveTarget is a no-op when the target hasn't moved, so the refresh is free.
+---
+--- The third chair pass added the WATCH: even from validated entrance ground, some bots
+--- never arrive - geometry between a fit point and the objective (a ledge, the tunnel's
+--- own lip) defeats pathing no placement can predict. So a bot that has moved less than
+--- kStuckMove metres in kStuckSeconds while out of combat is picked up and re-placed at a
+--- fresh capsule-fit point around where it stands. Loud in the log: a bot needing rescue
+--- is a fact the chair should see, and the count says how many needed it.
 --- Returns how many bots were steered.
-function Plugin:SteerHordeBots()
+local kStuckMove, kStuckSeconds, kReconcileAfter = 1.5, 6, 12
+
+function Plugin:SteerHordeBots(Now)
+	Now = Now or Shared.GetTime()
+
 	local Reg = self.HordeRegistry
 
 	if not Reg then
@@ -866,9 +884,11 @@ function Plugin:SteerHordeBots()
 		return 0
 	end
 
+	self.BotWatch = self.BotWatch or {}
+
 	local Steered = 0
 
-	Reg:IterateByKind("bot", function(Ref)
+	Reg:IterateByKind("bot", function(Ref, Id)
 		local Ok, Did = pcall(function()
 			local Player = Ref.GetPlayer and Ref:GetPlayer()
 
@@ -877,6 +897,9 @@ function Plugin:SteerHordeBots()
 			end
 
 			if Player.GetIsInCombat and Player:GetIsInCombat() then
+				-- Combat legitimately stops a bot holding a line; that is not stuck.
+				self.BotWatch[Id] = nil
+
 				return false
 			end
 
@@ -888,6 +911,30 @@ function Plugin:SteerHordeBots()
 
 			Motion:SetDesiredMoveTarget(Target)
 
+			local Origin = Player:GetOrigin()
+			local Watch = self.BotWatch[Id]
+
+			if not Watch then
+				self.BotWatch[Id] = { x = Origin.x, z = Origin.z, t = Now }
+			else
+				local Moved = math.sqrt((Origin.x - Watch.x) * (Origin.x - Watch.x)
+					+ (Origin.z - Watch.z) * (Origin.z - Watch.z))
+
+				if Moved >= kStuckMove then
+					Watch.x, Watch.z, Watch.t = Origin.x, Origin.z, Now
+				elseif Now - Watch.t >= kStuckSeconds then
+					local Spot = Plugin.Spawner.EmergenceSpot(Origin)
+
+					Player:SetOrigin(Spot)
+					self.BotWatch[Id] = nil
+
+					self:Log(string.format("re-placed a stuck bot id=%s (no move in %ss) to (%.1f, %.1f, %.1f)",
+						tostring(Id), tostring(kStuckSeconds),
+						Plugin.Placement.Axis(Spot, "x", 1), Plugin.Placement.Axis(Spot, "y", 2),
+						Plugin.Placement.Axis(Spot, "z", 3)))
+				end
+			end
+
 			return true
 		end)
 
@@ -895,6 +942,26 @@ function Plugin:SteerHordeBots()
 			Steered = Steered + 1
 		end
 	end)
+
+	--- Count honesty, once per wave: the announce promised N aliens. If a dozen seconds in
+	--- fewer have actually emerged (give-ups, refused joins), the log says
+	--- dealt/emerged/alive in one line - the chair's "count did not match" deserves an
+	--- answer that does not require counting shapes on a hillside.
+	local Machine = self.Machine
+
+	if Machine and not self.WaveReconciled and (Machine.WaveBots or 0) > 0
+		and Now - (Machine.ChangedAt or Now) >= kReconcileAfter then
+		self.WaveReconciled = true
+
+		local Emerged = (self.HordeSpawner and self.HordeSpawner.PlacedCount or 0)
+			- (self.WaveEmergeBase or 0)
+
+		if Emerged ~= Machine.WaveBots then
+			self:Log(string.format("wave %s RECONCILE: dealt %s, emerged %s, alive %s",
+				tostring(Machine:GetWave()), tostring(Machine.WaveBots), tostring(Emerged),
+				tostring(Reg:CountByKind("bot"))))
+		end
+	end
 
 	return Steered
 end
@@ -906,10 +973,11 @@ end
 --- build a spawn structure under a suppression the mode never expected. So the tick
 --- disconnects every NON-ALIVE bot (Bot:Disconnect releases client AND entity - the
 --- engine's own release, the same one DestroyEntries uses) and takes it off the books.
---- DEAD is the corpse whose client still sits on the roster; GONE is the branch where
---- the player entity is gone but a client may not be - and a Gone ref must never be
---- dereferenced outside pcall (first field access throws on a destroyed object, which
---- is exactly what the call is wrapped in). The id history keeps the record that the
+--- DEAD is the corpse whose client still sits on the roster - always released; GONE is
+--- two different worlds (a stranded client whose player was destroyed, and a healthy
+--- spawn whose player has not materialised yet), and the spawner's Placing queue decides
+--- which - see the InFlight note below. A Gone ref is never touched outside pcall (first
+--- field access throws on a destroyed object). The id history keeps the record that the
 --- bot was ours - teardown's leak poll still asks about every id we ever made.
 function Plugin:ReapDeadBots()
 	local Reg = self.HordeRegistry
@@ -920,8 +988,29 @@ function Plugin:ReapDeadBots()
 
 	local Reaped = 0
 
+	--- An in-flight bot is not a dead one. EngineStateOf answers GONE for "no player",
+	--- which is BOTH the stranded client we must release and the six-second materialise
+	--- window of a healthy spawn - and when a dozen virtual clients queue at once, that
+	--- window outlives the tick that reaps (the suite killed wave_slice's third bot this
+	--- way and reported "books 3, registry 2"). The spawner's Placing queue is the
+	--- authority on which Gone means "still being born"; DestroyEntries learned the same
+	--- distinction from the chair in 71c. DEAD (a corpse with a client) is always reaped.
+	local InFlight = {}
+
+	if self.HordeSpawner and self.HordeSpawner.Placing then
+		for _, Item in ipairs(self.HordeSpawner.Placing) do
+			if Item.id then
+				InFlight[Item.id] = true
+			end
+		end
+	end
+
 	Reg:IterateKindAll("bot", function(Ref, Id, Kind, State)
 		if State == Plugin.Registry.Alive then
+			return
+		end
+
+		if State == Plugin.Registry.Gone and InFlight[Id] then
 			return
 		end
 
@@ -1067,7 +1156,12 @@ function Plugin:EvaluateWaveState(Now, Deps)
 			return MouthsGone and "mouths" or "cleared"
 		end
 	elseif Machine:GetState() == Plugin.Phase.Intermission then
-		local Wait = (Config.Intermission and Config.Intermission.Seconds) or 60
+		--- The wait EndWavePhase announced IS the wait the clock keeps: it stored the
+		--- effective value (Q33: 15 s after wave 1, 30 s after) on the machine, so the
+		--- chat and the timer cannot disagree. The fallback only matters for a machine
+		--- that reached Intermission without our wave-end (it cannot, but nil is not a clock).
+		local Wait = Machine.IntermissionWait
+			or (Config.Intermission and Config.Intermission.Seconds) or 30
 
 		if Now - (Machine.ChangedAt or Now) >= Wait then
 			if Machine:BeginWave(Now) then
@@ -1160,7 +1254,14 @@ function Plugin:EndWavePhase(Reason, Now, Config, Reg, Rules)
 	end
 
 	local Survived = Machine:GetWave()
-	local Wait = (Config.Intermission and Config.Intermission.Seconds) or 60
+
+	--- Q33 (chair 2026-09-30): the first intermission is 15 s, every later one 30.
+	--- Stored on the machine, because the announcement below and the clock in
+	--- EvaluateWaveState must read the SAME number.
+	local Inter = Config.Intermission or {}
+	local Wait = (Survived <= 1 and Inter.FirstSeconds) or Inter.Seconds or 30
+
+	Machine.IntermissionWait = Wait
 
 	Machine.MouthsPool = 0
 	Machine.MouthsActive = 0

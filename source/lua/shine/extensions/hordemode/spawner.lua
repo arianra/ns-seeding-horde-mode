@@ -548,6 +548,7 @@ function Spawner:DestroyMouth(Id)
 		DestroyEntity(Ref)
 	end)
 
+
 	if self.Registry then
 		self.Registry:Unregister(Id)
 	end
@@ -575,6 +576,11 @@ end
 function Spawner:PendingCount()
 	return #self.Pending
 end
+
+--- Exported for the stuck-watch rescue (server.lua SteerHordeBots): a re-placement is
+--- the SAME emergence decision made from wherever the bot stands now, so it must come
+--- from this module and no other.
+Spawner.EmergenceSpot = EmergenceSpot
 
 Plugin.Spawner = Spawner
 

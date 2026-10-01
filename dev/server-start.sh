@@ -108,6 +108,18 @@ if [[ $LIVE -eq 0 && -d "$DEV_CFG_WSL/shine/plugins" ]]; then
   fi
 fi
 
+# HordeMode.json is whatever the LAST boot persisted - and the last boot may have been the
+# SUITE, which plants fixtures in this same tree (test.sh --bad-config) and runs against it,
+# and Shine writes back whatever a boot loaded. Three hand-edits to this file were silently
+# eaten before this was admitted (2026-09-30: the chair kept seeing intermission 60 after
+# three "fixes"). A joinable dev boot therefore starts from the mod's shipped DefaultConfig
+# EVERY time: delete the file, let Shine regenerate it, then set-reveal.py applies the
+# per-boot flags below. Balance lives in config.lua, not in a persisted file. Suite boots
+# keep the file: test.sh owns planting it for that run.
+if [[ $LIVE -eq 0 && $WITH_SUITE -eq 0 && -f "$DEV_CFG_WSL/shine/plugins/HordeMode.json" ]]; then
+  rm -f "$DEV_CFG_WSL/shine/plugins/HordeMode.json"
+  echo "[start] HordeMode.json cleared - this boot resolves from the mod's DefaultConfig"
+fi
 # Debug.RevealMouths follows the same rule as RunSuite: authorised per boot, written
 # unconditionally, never against LIVE. A joinable DEV boot is a debugging session, so the
 # mouths get marine-side markers; the suite is not, and must measure what a public server
