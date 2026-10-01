@@ -97,7 +97,7 @@ loading path that exists).
 | `statemachine.lua` | Inactive → Wave → Intermission → Teardown, cooldown | Legal transitions only; `Stop` while inactive is refused, not ignored |
 | `triggers.lua` | the gate (seeding state, marine caller, MinPlayers, cooldown) + snapshots | `/horde` must be answerable from one status line |
 | `takeover.lua` | hold/release of `botTeamController` | Snapshot → lock → cap 0 on the way in; restore on the way out. Release only what you took (the engine asserts on a negative lock counter) |
-| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace), `BeginWave` (cull → place → deal the curve), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch. Every wave starts from a cleared board — the end drain keeps intermission peaceful; the start cull is the guarantee |
+| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace, the t28 motion-waypoint steer), `BeginWave` (cull → place → deal the curve), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch. Every wave starts from a cleared board — the end drain keeps intermission peaceful; the start cull is the guarantee. Skulks neither roam nor take orders, so the tick writes their move target directly |
 | `waves.lua` | the wave math: `Composition.HordeSize` curve evaluation (bezier, `Enabled` normalised at the sanitizer), `WaveClearPayout`, `HordeSizeAt` | Pure functions; the machine owns timing, the registry owns counts — the three separations that let the loop be tested without a server |
 | `economy.lua`, `hud.lua` | stubs (i9a territory) | Not yet load-bearing — the wave payout currently credits the team resource directly (Q17); per-marine share + HUD announcement are i9a's |
 
@@ -273,12 +273,14 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
   tunes); waves clear by bot-wipe or mouth-kill (Q29), pay the flat `WaveClear` curve (Q17),
   intermission, next wave. **M8 partly (`cwo`)**: marines-wipe (3 s grace, D4) and
   station-destroyed (must-have-stood) end the horde; real alien joins + seed-max remain (`7x3`).
-  The chair gate for all of it is PLAYTEST 13-18; t28 (do they stream to base) rides step 14.
+  t28 ANSWERED the same day: bots stood at the mouths — skulk brains have no roam action and
+  never read the order queue — so the tick writes a standing motion-waypoint to the base
+  (`SteerHordeBots`); step 14 re-verifies the walk.
 - **Gates**: G1 (`-game` mounts) and G1d (dev owns `-modstorage`) passed; the loop now needs **no
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 68 pass / 0 fail / 1 expected (the negative control) — 69 scenarios, plus `--handback` 2/0.
+- **Suite**: 70 pass / 0 fail / 1 expected (the negative control) — 71 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
   hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
@@ -292,11 +294,12 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
 
 ## 9. Known gaps and risks
 
-1. **Harness ceiling (`0k3`)**: deferred checks past ~8 s never fire. i5b (stream-to-base 15–60 s)
-   and i6c (3-wave) cannot be written headless as specced. Either fix the runner or make those two
-   human-watched playtests. Decide before M5.
-2. **Balance numbers are placeholders** (RD3, Arian's). Curves ship disabled; `DESIGN.md` §8 marks
-   them `untuned, placeholder 2026-09-21`.
+1. **Harness ceiling (`0k3`)**: deferred checks past ~8 s never fire. i5b's pathing-QUALITY
+   claims (15–60 s walks) and i6c (3-wave) cannot be written headless as specced; the waypoint
+   itself is proven at `steer_pins_the_base_waypoint`, the walking is chair physics. Either fix
+   the runner or make those human-watched playtests.
+2. **Balance numbers are placeholders** (RD3, Arian's). The composition curve ships ENABLED at
+   3→15/w20 (`untuned, placeholder 2026-09-30`); per-type counts are not read by anything yet.
 3. **`votesurrender` bypasses suppression** — undecided: disable during a horde, or keep as an
    escape hatch.
 4. **Vanilla draws a round when neither side has players** (measured), so i8a cannot be modelled as
@@ -311,12 +314,12 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
 
 ## 10. Next actions, in order
 
-1. **Chair gate — PLAYTEST 13-18** (STEP A + the wave loop + the loss triggers) — Arian runs it;
-   findings become beads. The t28 stream-to-base question (step 14) still decides whether Q16
-   governance gets a bead BEFORE per-type composition and mouth HP scaling are trusted.
-2. **i8a loss triggers** (`cwo`, `7r3`, `qji`): all marines dead simultaneously, or the chair
-   destroyed, or a real alien joins, or seed max. Must answer the measured draw behaviour and
-   decide the surrender-vote question. (With bots real since 71c, the wipe branch has teeth.)
+1. **Chair gate — PLAYTEST 13-18** (the wave loop, the loss triggers, and the t28 walk
+   re-verification at step 14) — Arian runs it; findings become beads. If bots still stand AT a
+   mouth, that is tunnel geometry, not objective — the spawn point becomes the suspect.
+2. **i8a remainder** (`7r3`, `qji`): a real alien joins, or seed max. Must answer the measured
+   draw behaviour (vanilla DRAWS when neither side has players) and decide the surrender-vote
+   question. (With bots real since 71c, the wipe branch has teeth.)
 3. **i6a wave loop** (`1fv`, `685`): replaces the flat knob with curve-driven composition,
    clear detection, payout, intermission + skip. Needs RD3 numbers from Arian and the
    sector/placement decision (`5ss`: 3 mouths still land in 1 of 3 sectors at the `BandMin` edge
@@ -379,4 +382,8 @@ registry another scenario had mounted (`BeginWave` now records the wave's bookke
 identity and the tick refuses foreign books); and `Progress(1,1)` answering a mis-set
 reference with the curve's CAP — a typo must never hand wave 1 the wave-20 horde.
 `dev/test.sh --handback` also learned that its byte fence can land past the probe's own t+0
-line: whole-file, because rotation already fences to the boot. Suite 68/0/1, handback 2/0.
+line: whole-file, because rotation already fences to the boot. Then the chair answered **t28**:
+bots stood at the mouths — skulk brains have no roam action and do not read the order queue
+(only Exo/marine-type brains do), so the tick now writes `GetMotion():SetDesiredMoveTarget()`
+to the base every second for every live out-of-combat bot (`SteerHordeBots`; combat overwrites,
+the tick re-arms). Suite 70/0/1, handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
