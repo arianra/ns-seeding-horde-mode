@@ -178,7 +178,7 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
     to the ENTRANCE, never the tunnel origin. Our `EmergenceSpot`/`MouthAnchor` independently
     arrived at the same anchor; this is the citation that says the design matches the game.
     Navigation note (2026-10-01): the shipped tree is now a `workspace.library` in
-    `.luarc.json` (lua-language-server, user-installed) — mod↔engine definition/reference
+    `.luarc.json` (lua-language-server, vendored in `D:\projects\ns2-lua-workspace` - git repo with the engine snapshot + the tool; GitNexus indexes it file-level only, still no Lua symbols) — mod↔engine definition/reference
     queries work through the `lsp` tool; GitNexus remains blind to all Lua (no grammar, and
     the engine tree is not and must not become a git repo).
 
