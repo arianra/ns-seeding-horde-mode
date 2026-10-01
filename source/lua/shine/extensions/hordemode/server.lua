@@ -456,9 +456,10 @@ function Plugin:ResetWorldForHorde()
 	-- call that starts the round.
 	self:SuppressGameEnd()
 
-	-- We own the round now, and only we can give it back. Teardown's world handback is gated on
-	-- this flag: stopping a horde that never took a round over must not reset a game it did not
-	-- start.
+	-- Ownership is normally claimed by BeginCountdown (the true takeover); setting it here
+	-- too keeps the two entry points consistent and is idempotent. Teardown's world handback
+	-- is gated on the flag: stopping a horde that never took a round over must not reset a
+	-- game it did not start.
 	self.HordeRoundStarted = true
 
 	return true, nil
@@ -557,6 +558,16 @@ function Plugin:SetHordeBuildSpeed(On)
 end
 
 --- Hand the round to vanilla's countdown. Returns the seconds the client will see.
+---
+--- This is the moment the horde OWNS the round: SetGameState(Countdown) is what the
+--- engine drives to Started on its own, spawning marines into the horde. Ownership is
+--- claimed HERE, not only in ResetWorldForHorde, because StartWave runs the reset
+--- CONDITIONALLY (`Config.Start.ResetRound ~= false`) but the countdown UNCONDITIONALLY -
+--- and Teardown's world handback is gated on this flag. A boot that skipped the reset
+--- (a corrupt config once did exactly that) left the flag false, so stop never gave the
+--- round back, the game stayed Started, the seeding gate rejected every later command,
+--- and the server was bricked for horde use until a full restart. Whoever starts the
+--- countdown owns the round, always.
 function Plugin:BeginCountdown(Seconds)
 	local gamerules = GetGamerules()
 
@@ -569,6 +580,7 @@ function Plugin:BeginCountdown(Seconds)
 	gamerules:SetGameState(kGameState.Countdown)
 	gamerules.countdownTime = Length
 	gamerules.lastCountdownPlayed = nil
+	self.HordeRoundStarted = true
 
 	return Length
 end

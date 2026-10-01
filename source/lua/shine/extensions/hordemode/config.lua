@@ -397,10 +397,20 @@ function Config.Copy(Table)
 	return Out
 end
 
---- Effective config for a map: everything loaded, deep-merged with Maps[map].
+--- Effective config for a map. `DefaultConfig` is the BASE and the loaded file is the
+--- OVERRIDE — the file only needs to say what differs. This is load-bearing, not cosmetic:
+--- Shine does not merge the file under the defaults (the file's table replaces), and our
+--- `Sanitize` fills a missing KEY only inside a section that already EXISTS — `Section()`
+--- early-returns when the parent table is absent. So a minimal file used to resolve to a
+--- config with NO Waves/Economy/Intermission section at all. A regenerated dev boot writes
+--- just `{Debug.RevealMouths}` to disk, which meant: the horde ran with 1 alien (nil curve
+--- -> floor), 0 res (nil payout), the hardcoded 30 s, and — no `Start` section — SKIPPED
+--- the world reset, the exact state trap that bricked the server. Base-equals-defaults makes
+--- the file a real override layer and a partial section file safe (only the keys it names
+--- differ; the rest come from the shipped defaults).
 function Config.Resolve(MapName)
-	local Loaded = Plugin.Config or Plugin.DefaultConfig
-	local Merged = Config.Copy(Loaded)
+	local Loaded = Plugin.Config or {}
+	local Merged = Config.DeepMerge(Config.Copy(Plugin.DefaultConfig), Loaded)
 
 	if MapName and type(Loaded.Maps) == "table" and type(Loaded.Maps[MapName]) == "table" then
 		Merged = Config.DeepMerge(Merged, Loaded.Maps[MapName])

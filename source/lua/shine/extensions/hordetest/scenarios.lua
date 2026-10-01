@@ -313,6 +313,34 @@ function Plugin:InitialiseScenarios()
 		Assert.NotNil( Config.Resolve( "ns2_summit" ).Waves, "map resolution works on the loaded table" )
 	end )
 
+	--- The root cause of the "entirely broken" chair report. A regenerated dev boot writes a
+	--- MINIMAL HordeMode.json (just Debug.RevealMouths), and Shine does not merge the file
+	--- under the defaults — so `Resolve` used to hand back that minimal table with NO
+	--- Waves/Economy/Intermission/Start sections. The horde then ran degenerate (1 alien, 0
+	--- res, 30 s) AND skipped the world reset (no Start.ResetRound), which left the game
+	--- Started with no ownership claimed — the state trap. `config_loaded_is_valid` never
+	--- caught it because the SUITE boots a full fixture; this exercises the minimal file.
+	self:RegisterScenario( "resolve_fills_missing_sections", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Config = horde.HordeConfig
+		local Saved = horde.Config
+
+		horde.Config = { Debug = { RevealMouths = true }, __Version = "0.1" }
+
+		local Resolved = Config.Resolve( "ns2_summit" )
+
+		horde.Config = Saved
+
+		Assert.True( type(Resolved.Waves) == "table", "a minimal file still resolves a Waves section" )
+		Assert.Equal( "table", type(Resolved.Waves.Composition), "with the composition curve, not nil" )
+		Assert.Equal( 3, horde.Waves.HordeSize(Resolved.Waves, Config.EvaluateCurve, 1),
+			"which is 3 aliens at wave 1, not the floor of 1" )
+		Assert.Equal( "table", type(Resolved.Economy.WaveClearPayout), "the payout curve too" )
+		Assert.Equal( 15, Resolved.Intermission.FirstSeconds, "and the first intermission" )
+		Assert.NotNil( Resolved.Start, "the Start section whose absence skipped the world reset" )
+		Assert.Equal( true, Resolved.Debug.RevealMouths, "and the one override the file actually set" )
+	end )
+
 	-- i2a: the state machine is pure, so every transition - legal and illegal -
 	-- is checkable in a single tick with a fake clock.
 	self:RegisterScenario( "statemachine_happy_path", false, function()
@@ -505,6 +533,37 @@ function Plugin:InitialiseScenarios()
 
 		local _, SecondGate = horde.Triggers.Check(Snap, Machine, Config, 41)
 		Assert.Equal( "CooldownOk", SecondGate, "and the NEXT stop still starts a real cooldown" )
+	end )
+
+	--- The state-trap regression: a boot whose world reset was skipped (a corrupt config
+	--- once made StartWave do exactly that) still ran BeginCountdown, which drives the game
+	--- to Started - but ownership was claimed only inside the reset, so the flag stayed
+	--- false, stop never handed the round back, the game stayed Started, the seeding gate
+	--- rejected every later command, and the server was bricked for horde use until a full
+	--- restart. The fix couples ownership to the countdown itself; this pins it WITHOUT
+	--- touching the real gamerules (a fake records the state push).
+	self:RegisterScenario( "countdown_claims_the_round", false, function()
+		local horde = Shine.Plugins.hordemode
+		local SavedRules, SavedFlag = GetGamerules, horde.HordeRoundStarted
+		local Pushed = nil
+
+		GetGamerules = function()
+			return {
+				SetGameState = function(_, State) Pushed = State end,
+			}
+		end
+
+		horde.HordeRoundStarted = false
+
+		local Seconds = horde:BeginCountdown(6)
+		local Owned = horde.HordeRoundStarted
+
+		GetGamerules = SavedRules
+		horde.HordeRoundStarted = SavedFlag
+
+		Assert.Equal( 6, Seconds, "the countdown reports its length" )
+		Assert.Equal( kGameState.Countdown, Pushed, "and pushed the game to Countdown" )
+		Assert.True( Owned, "whoever starts the countdown owns the round, reset or no reset" )
 	end )
 
 	self:RegisterScenario( "horde_command_is_bound", false, function()
