@@ -185,6 +185,16 @@ spawn recipe = `Server.CreateEntity(PlayerBot.kMapName)` +
 live Skulk (or forced lifeform) on team 2, no Location.lua crash, brains
 run autonomously (vanilla pathing/combat active with zero orders given).
 Teardown = `bot:Disconnect()` (DisconnectClient + DestroyEntity), clean.
+**Death is release (Q30, 2026-09-30):** a killed bot's client is disconnected by the next
+tick — the reaper takes every NON-alive bot entry (`Disconnect` + unregister, pcall-guarded
+for Gone refs) — and bots are never reused or respawned; every wave spawns fresh entities.
+Corpses left on the roster inflate the headcounts `force_even_teams_on_join` balances
+against and could revive if a real alien ever built a spawn structure; the id history keeps
+the record for teardown's leak poll. Suppression + our own loss triggers make the empty
+alien team harmless to win/loss (vanilla would DRAW, measured). The same chair session
+amended line 186: "brains run autonomously" is true of COMBAT only — the skulk brain has no
+roam action and ignores the order queue, so the objective is ours to write
+(`GetMotion():SetDesiredMoveTarget`, the t28 steer).
 **Bot-killer gotcha:** `BotTeamController.lua:172` wipes ALL bots when
 humanCount==0 — lock it with `DisableUpdate()` on takeover (already our
 7q7 decision). GameState stays WarmUp while our bots live; horde operates

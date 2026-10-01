@@ -2331,6 +2331,89 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	--- Death is release (Arian 2026-09-30): a killed bot's virtual client must not sit on
+	--- the team-2 roster until teardown - corpses inflate the headcounts
+	--- force_even_teams_on_join balances against, and a spawn structure built later could
+	--- revive them off our books. Two REAL bots, destroyed two ways: A's PLAYER entity is
+	--- destroyed (the engine's marine-kill path resolves in C++, so the player is gone
+	--- while the PlayerBot id still resolves - the reaper's GONE branch, the one that
+	--- actually strands a client), and B stays alive to prove the reaper leaves it
+	--- standing. A third fake entry carries the DEAD branch - disconnect-and-forget,
+	--- which is what the real tick runs against the real books.
+	--- The disconnect itself is Bot:Disconnect's contract (client + entity), not ours to
+	--- re-prove; what IS ours is who it acts on and what the books say after.
+	self:RegisterScenario( "dead_bots_leave_no_ghost", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Reg = horde.Registry.New(horde.Registry.EngineStateOf)
+
+		local BotA = Server.CreateEntity(PlayerBot.kMapName)
+		local BotB = Server.CreateEntity(PlayerBot.kMapName)
+
+		for _, Bot in ipairs({ BotA, BotB }) do
+			Bot:Initialize(kTeam2Index, true)
+			Bot.lifeformEvolution = kTechId.Skulk
+		end
+
+		self:Defer( "reap_frees_the_corpse_only", 8, false, function()
+			local IdA = Reg:Register(BotA, horde.Registry.Kind.Bot)
+			local IdB = Reg:Register(BotB, horde.Registry.Kind.Bot)
+
+			Assert.NotNil( IdA, "both bots registered at t+8" )
+			Assert.NotNil( IdB, "with real ids" )
+
+			local PlayerA = BotA:GetPlayer()
+
+			Assert.NotNil( PlayerA, "A has a live player before the shot" )
+			Assert.Equal( horde.Registry.Alive, Reg.StateOf(Reg.Entries[IdA]), "A is Alive on the books" )
+
+			-- A: the GONE branch - the engine's kill resolves in C++ and can leave the
+			-- player entity gone while the client is the thing we still owe a release to.
+			-- Destroying the player is the harshest real state a registered bot can be in.
+			local OkKill = pcall(function() DestroyEntity(PlayerA) end)
+
+			-- C: the DEAD branch - a corpse whose client still resolves. No fake can
+			-- stand in for the engine's verdicts, but this one IS the verdict's input:
+			-- GetPlayer returns a not-alive player, which is exactly what Dead means.
+			local FakeCorpse = {
+				GetId = function() return 9601 end,
+				GetPlayer = function() return { GetIsAlive = function() return false end } end,
+				Disconnect = function() end,
+			}
+
+			local IdC = Reg:Register(FakeCorpse, horde.Registry.Kind.Bot)
+
+			local StateAfterKill = Reg.StateOf(Reg.Entries[IdA])
+
+			local SavedReg, SavedLog = horde.HordeRegistry, horde.Log
+
+			horde.HordeRegistry, horde.Log = Reg, function() end
+
+			local Reaped = horde:ReapDeadBots()
+			local Second = horde:ReapDeadBots()
+			local AliveBots = Reg:CountByKind("bot")
+			local AStill = Reg:Get(IdA)
+			local BStill = Reg:Get(IdB)
+			local CStill = Reg:Get(IdC)
+			local PlayerB = BotB:GetPlayer()
+
+			horde.HordeRegistry, horde.Log = SavedReg, SavedLog
+
+			BotB:Disconnect()
+
+			Assert.True( OkKill, "the player destruction ran" )
+			Assert.True( StateAfterKill ~= horde.Registry.Alive,
+				"a bot whose player is gone reads " .. tostring(StateAfterKill) )
+			Assert.NotNil( IdC, "the corpse fake registers with its carried id" )
+			Assert.Equal( 2, Reaped, "GONE and DEAD both reaped; the living bot was not" )
+			Assert.Equal( 0, Second, "and the next tick has nothing left to do" )
+			Assert.Nil( AStill, "the destroyed bot is off the books" )
+			Assert.Nil( CStill, "the corpse is off the books" )
+			Assert.NotNil( BStill, "the living bot was NOT touched" )
+			Assert.Equal( 1, AliveBots, "one living bot remains on the count" )
+			Assert.True( PlayerB and PlayerB:GetIsAlive(), "B's player is still alive" )
+		end )
+	end )
+
 	-- The victory screen a joining marine saw on frame one was not a wave bug: with no
 	-- hive and no aliens, vanilla's own loss check fires immediately
 	-- (ns2/lua/PlayingTeam.lua:536-546). What matters for the clean-slate promise is that

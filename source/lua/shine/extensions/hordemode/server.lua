@@ -822,6 +822,54 @@ function Plugin:SteerHordeBots()
 	return Steered
 end
 
+--- Death is release (Arian 2026-09-30): a killed bot's virtual client would otherwise sit
+--- on the team-2 roster until teardown - inflating the very headcounts
+--- force_even_teams_on_join balances against (a marine joining a late wave could be
+--- flipped to the aliens by an army of corpses), and revivable should a real alien ever
+--- build a spawn structure under a suppression the mode never expected. So the tick
+--- disconnects every NON-ALIVE bot (Bot:Disconnect releases client AND entity - the
+--- engine's own release, the same one DestroyEntries uses) and takes it off the books.
+--- DEAD is the corpse whose client still sits on the roster; GONE is the branch where
+--- the player entity is gone but a client may not be - and a Gone ref must never be
+--- dereferenced outside pcall (first field access throws on a destroyed object, which
+--- is exactly what the call is wrapped in). The id history keeps the record that the
+--- bot was ours - teardown's leak poll still asks about every id we ever made.
+function Plugin:ReapDeadBots()
+	local Reg = self.HordeRegistry
+
+	if not Reg then
+		return 0
+	end
+
+	local Reaped = 0
+
+	Reg:IterateKindAll("bot", function(Ref, Id, Kind, State)
+		if State == Plugin.Registry.Alive then
+			return
+		end
+
+		pcall(function()
+			if Ref.Disconnect then
+				Ref:Disconnect()
+			end
+		end)
+
+		-- Off the books whether or not the disconnect threw: a husk we cannot release is
+		-- still not a bot, and holding it leaves the roster lie we reaped to fix. The
+		-- failure is visible - the log line counts what came off, and the id history
+		-- still polls the entity at teardown.
+		Reg:Unregister(Id)
+		Reaped = Reaped + 1
+	end)
+
+	if Reaped > 0 then
+		self:Log(string.format("released %s dead bot client(s); the wave's living count is %s",
+			tostring(Reaped), tostring(Reg:CountByKind("bot"))))
+	end
+
+	return Reaped
+end
+
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
@@ -835,6 +883,10 @@ function Plugin:HordeTick()
 	--- empty map. One dead handle, three symptoms, and a green suite because no scenario had ever
 	--- killed a mouth mid-round.
 	if Reg then
+		-- Reap before the prune: a DEAD entry's entity still resolves (that is what Dead
+		-- means) and is the one the disconnect needs; the prune only ever sees Gone.
+		self:ReapDeadBots()
+
 		Reg:PruneDead()
 	end
 

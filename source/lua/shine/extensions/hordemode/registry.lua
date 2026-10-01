@@ -278,6 +278,37 @@ function Registry:IterateByKind(Kind, Callback)
 	return Count
 end
 
+--- Every entry of a kind, whatever its state, with the state handed to the callback.
+--- IterateByKind is the alive-only view every consumer wants; the death reaper is the
+--- one consumer that specifically needs the DEAD ones - and it must never touch a Gone
+--- ref (first field access throws), which is why the state travels as an argument
+--- rather than the callback re-asking.
+function Registry:IterateKindAll(Kind, Callback)
+	local List = self.ByKind[Kind]
+
+	if not List then
+		return 0
+	end
+
+	local Count = 0
+	local Ids = {}
+
+	for Index = 1, #List do
+		Ids[Index] = List[Index]
+	end
+
+	for _, Id in ipairs(Ids) do
+		local Entry = self.Entries[Id]
+
+		if Entry then
+			Callback(Entry.ref, Entry.id, Entry.kind, self.StateOf(Entry))
+			Count = Count + 1
+		end
+	end
+
+	return Count
+end
+
 --- How many of this kind are still STANDING, not how many were registered. A mouth the player
 --- killed is not a mouth even while its husk is still in the entity list, and a status line that
 --- counts it anyway is the difference between telling the admin the wave is over and telling him

@@ -97,7 +97,7 @@ loading path that exists).
 | `statemachine.lua` | Inactive → Wave → Intermission → Teardown, cooldown | Legal transitions only; `Stop` while inactive is refused, not ignored |
 | `triggers.lua` | the gate (seeding state, marine caller, MinPlayers, cooldown) + snapshots | `/horde` must be answerable from one status line |
 | `takeover.lua` | hold/release of `botTeamController` | Snapshot → lock → cap 0 on the way in; restore on the way out. Release only what you took (the engine asserts on a negative lock counter) |
-| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace, the t28 motion-waypoint steer), `BeginWave` (cull → place → deal the curve), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch. Every wave starts from a cleared board — the end drain keeps intermission peaceful; the start cull is the guarantee. Skulks neither roam nor take orders, so the tick writes their move target directly |
+| `server.lua` | commands, the 1 s tick (wave phases, loss latches, grace, the t28 motion-waypoint steer, the Q30 death reaper), `BeginWave` (cull → place → deal the curve), `EndWavePhase`, `ResetWorldForHorde`, `Teardown`, `HandBackWorld`, `ReportHumansKept`, game-end suppression | The order of the handback: destroy → release takeover → reset world → count (touch) no players → release the win switch. Every wave starts from a cleared board — the end drain keeps intermission peaceful; the start cull is the guarantee. Skulks neither roam nor take orders, so the tick writes their move target directly; and death is release (Q30) — no bot client outlives its corpse by more than a tick |
 | `waves.lua` | the wave math: `Composition.HordeSize` curve evaluation (bezier, `Enabled` normalised at the sanitizer), `WaveClearPayout`, `HordeSizeAt` | Pure functions; the machine owns timing, the registry owns counts — the three separations that let the loop be tested without a server |
 | `economy.lua`, `hud.lua` | stubs (i9a territory) | Not yet load-bearing — the wave payout currently credits the team resource directly (Q17); per-marine share + HUD announcement are i9a's |
 
@@ -280,7 +280,7 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 70 pass / 0 fail / 1 expected (the negative control) — 71 scenarios, plus `--handback` 2/0.
+- **Suite**: 72 pass / 0 fail / 1 expected (the negative control) — 73 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` places 3 mouths on buildable surfaces, revealed to marines;
   `/horde status` reports live counts; killing mouths updates them; `/horde stop` destroys our set,
   hands the bot controller back, resets the world to NotStarted, **leaves every human on the team
