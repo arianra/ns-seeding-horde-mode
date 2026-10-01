@@ -192,8 +192,17 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
     in** — hand-edits to `D:\games\horde\server\cfg\shine\plugins\HordeMode.json` are eaten by the
     next suite run's boot/stop cycle (three were, 2026-09-30, silently: the chair kept seeing
     intermission 60 after three "fixes"). Therefore `server-start.sh` DELETES the file on every
-    joinable dev boot: the config regenerates from the mod's `DefaultConfig`, and balance lives
+    joinable dev boot, and `Config.Resolve` (fact 20) supplies the defaults, so balance lives
     only in `config.lua`. A persisted file is runtime state, never a source of truth.
+20. **`Config.Resolve` deep-merges the loaded file OVER a copy of `DefaultConfig`** — the file
+    is an OVERRIDE layer, not the config. This was the fix for a full break: the old
+    `Plugin.Config or Plugin.DefaultConfig` used a *minimal* loaded file (a regenerated boot
+    writes just `{Debug.RevealMouths}`) as the whole config, and because Shine replaces rather
+    than merges and `Sanitize`'s `Section()` only fills keys inside an EXISTING section, the
+    result had no `Waves`/`Economy`/`Intermission`/`Start` at all — 1 alien, 0 res, 30 s, and
+    (no `Start.ResetRound`) a skipped world reset that left the game `Started` with no ownership
+    claimed, so stop could not hand it back and the seeding gate bricked every later command.
+    `countdown_claims_the_round` + `resolve_fills_missing_sections` pin both halves.
 
 ## 6. The dev loop
 
@@ -305,7 +314,7 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
   overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
   superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
   still shared with the live server) remain open.
-- **Suite**: 73 pass / 0 fail / 1 expected (the negative control) — 74 scenarios, plus `--handback` 2/0.
+- **Suite**: 75 pass / 0 fail / 1 expected (the negative control) — 76 scenarios, plus `--handback` 2/0.
 - **Playable today**: `/horde` runs the whole loop — mouths placed on validated surfaces
   (revealed to marines), waves of steered aliens emerge at the entrances, escalate by curve and
   ladder, pay 5→40 res, intermit 15/30 s; marines-wipe and station-destroyed end it; builds and
@@ -437,5 +446,10 @@ the suite killed wave_slice's third bot before this), Q33 pacing (first intermis
 later 30 s) and a deliberately mean economy (payout 5→40@w10 — useful upgrades should land
 wave 3-4), and `server-start.sh` now CLEARS the persisted HordeMode.json on every joinable
 dev boot (test boots persist what they load; three hand-edits were eaten before this was
-admitted — balance lives in DefaultConfig, not in a file). Suite 73/0/1, handback 2/0;
-the WALK itself is PLAYTEST step 14's verdict.
+admitted — balance lives in DefaultConfig, not in a file). Then a FOURTH pass: "the game loop is
+entirely broken, start/restart/stop all refused" — one root cause (fact 20): a minimal config
+file resolved to a gutted config (no sections), which both shrank the horde to 1 alien/0 res and
+skipped the world reset, leaving the game Started with no ownership so the seeding gate bricked
+every command. `Config.Resolve` now merges the file over `DefaultConfig`, and ownership is
+claimed at `BeginCountdown` (the true takeover) not only in the conditional reset. Suite 75/0/1,
+handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
