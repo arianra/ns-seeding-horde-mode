@@ -303,6 +303,28 @@ get replaced, and strand — but nothing moves anyone now.
 **Anti-patterns rejected** (WS2): interest on reserves (DG2 removed it —
 rewards hoarding), lives-based leak accounting, punishment of aggression.
 
+**Q34 — the horde owns its economy (SHIPPED 2026-10-01, Arian from the chair).** The team
+economy is deliberately CLOSED to two dials and one sink:
+- **Two team-income dials, kept separate on purpose** (Arian: "these are 2 variables that
+  should be configurable" — they may need different logic later): `Economy.StartingResources`
+  (applied to the marine team after the world reset, replacing whatever the seeding session
+  banked) and `Economy.WaveClearPayout` (the existing curve). Nothing else adds team res.
+- **The extractor is silenced for the round** when `Economy.ExtractorIncome=false` (the
+  default). Seam: `ResourceTower:CollectResources` (ResourceTower_Server.lua:11) is the ONE
+  method that pays an extractor — both the team pool (`AddTeamResources(kTeamResourcePerTick,
+  true)` :21) and each marine's personal trickle (`AddResources(kPlayerResPerInterval)` :15).
+  The horde borrows it like autobuild: swap the class method to a no-op at start, restore the
+  exact original at teardown (idempotent; a server that wants vanilla economy keeps it).
+- **Kill bounty** (`Economy.KillBounty`, default skulk/gorge 2, lerk 3, fade 4, onos 5) is
+  awarded to the marine who lands the killing blow. Build-344 fact that forced a custom hook:
+  vanilla has **no Lua kill→resource path** — `PlayingTeam:AwardPersonalResources` is defined
+  but never called (the reward is C++/score-side), so there is nothing to bend. The horde
+  awards it itself via the `OnEntityKilled(targetEntity, attacker, …)` hook that Shine
+  auto-wires for any `Plugin.<Event>` (extensions.lua:552). The hook fires on every kill in
+  every round, so its first line is a cheap `Machine:IsActive()` guard; the victim's lifeform
+  is read with `isa` (Skulk/Gorge/Lerk/Fade/Onos are distinct classes under `Alien`), and the
+  bounty table is cached on the plugin at start so a busy tick never re-resolves config.
+
 ## 6. Support comm (alien side)
 
 The alien "commander" is a **server-orchestrated support unit**, not a
