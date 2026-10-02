@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NS2 Power Taxonomy — every player option, and how to reduce it to one number</title>
+<style>
+  :root{--fg:#1a1a1a;--mut:#666;--line:#d8d8d8;--bg:#fbfbfa;--acc:#7a2e1d;--mar:#2b5f8a;--ali:#5a7a2e;--warn:#b8860b}
+  *{box-sizing:border-box}
+  body{font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:0 0 6rem}
+  main{max-width:1080px;margin:0 auto;padding:0 24px}
+  h1{font-size:1.9rem;line-height:1.2;margin:2.2rem 0 .3rem}
+  h2{font-size:1.4rem;margin:2.6rem 0 .6rem;padding-bottom:.3rem;border-bottom:2px solid var(--line)}
+  h3{font-size:1.08rem;margin:1.7rem 0 .4rem;color:var(--acc)}
+  h4{font-size:.96rem;margin:1.2rem 0 .3rem}
+  p{margin:.5rem 0}
+  .sub{color:var(--mut);font-size:.9rem;margin:0 0 1.4rem}
+  .tag{display:inline-block;font-size:.72rem;font-weight:600;letter-spacing:.03em;text-transform:uppercase;padding:.12rem .5rem;border-radius:3px;background:#eee;color:#444;vertical-align:middle}
+  .tag.mar{background:#e2edf5;color:var(--mar)} .tag.ali{background:#eaf0de;color:var(--ali)}
+  .tag.v{background:#e5f0e5;color:#2c6e2c} .tag.s{background:#f3ece0;color:#8a6d1a} .tag.tbd{background:#f3dede;color:#a33}
+  .status{background:#fff6e6;border:1px solid #e8c987;border-radius:6px;padding:.8rem 1rem;margin:1.2rem 0;font-size:.92rem}
+  .note{background:#eef4fa;border-left:3px solid var(--mar);padding:.6rem .9rem;margin:.9rem 0;font-size:.9rem}
+  .warn{background:#faf3e0;border-left:3px solid var(--warn);padding:.6rem .9rem;margin:.9rem 0;font-size:.9rem}
+  .key{background:#f0eee7;border-left:3px solid var(--acc);padding:.7rem 1rem;margin:1rem 0;font-size:.92rem}
+  table{border-collapse:collapse;width:100%;margin:.7rem 0 1.2rem;font-size:.86rem;background:#fff}
+  th,td{border:1px solid var(--line);padding:.34rem .5rem;text-align:left;vertical-align:top}
+  th{background:#f1f0ec;font-weight:600}
+  tbody tr:nth-child(even){background:#fafaf8}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  code{background:#eee;padding:.05rem .3rem;border-radius:3px;font-size:.85em;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .cite{color:var(--mut);font-size:.78em;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .grp th{background:#e7e5df}
+  ul{margin:.4rem 0 .8rem 1.2rem;padding:0} li{margin:.2rem 0}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem} @media(max-width:760px){.cols{grid-template-columns:1fr}}
+  .eq{background:#f5f5f2;border:1px solid var(--line);border-radius:5px;padding:.6rem .8rem;margin:.6rem 0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem;overflow-x:auto}
+  nav{position:sticky;top:0;background:var(--bg)ee;border-bottom:1px solid var(--line);padding:.5rem 24px;font-size:.82rem;z-index:5;backdrop-filter:blur(4px)}
+  nav a{color:var(--mar);text-decoration:none;margin-right:.9rem;white-space:nowrap}
+  nav a:hover{text-decoration:underline}
+  .math{font-style:italic}
+  hr{border:none;border-top:1px solid var(--line);margin:2rem 0}
+  .small{font-size:.82rem;color:var(--mut)}
+</style>
+</head>
+<body>
+<nav>
+  <a href="#how">How to read</a>
+  <a href="#dmg">Damage model</a>
+  <a href="#marine">Marine</a>
+  <a href="#alien">Alien</a>
+  <a href="#pv">PointValue</a>
+  <a href="#power">Power stat</a>
+  <a href="#open">Open questions</a>
+</nav>
+<main>
+
+<h1>NS2 Power Taxonomy</h1>
+<p class="sub">Every option a player has to project force, categorized and measured against the shipped game — and a first pass at collapsing it into one number we can size waves against.<br>
+Source of truth: <code>D:\games\ns2-server\ns2\lua</code>, build 344 (14.13.x). Snapshot: <code>D:\projects\ns2-lua-workspace\ns2-lua</code>.</p>
+
+<div class="status">
+<strong>Status: draft for brainstorm, not a decision.</strong> §1–§4 are the taxonomy (the deliverable you asked to start with). §5 is the power-stat design — deliberately framed as options with a recommendation, because that is the part we have to think through together. Numbers are tagged: <span class="tag v">read</span> = pulled directly from the shipped tables this session; <span class="tag s">scout</span> = from the cited extraction (verify before it drives balance); <span class="tag tbd">TBD</span> = gap to fill.
+</div>
+
+<h2 id="how">0. How to read this</h2>
+<p>The goal is a <em>single power number</em> per unit/loadout/wave so we can say “a wave needs to be ≈&nbsp;<span class="math">X</span> power” and then pick a composition (skulk + lerk + carapace…) that lands there. Before any such number is trustworthy, three things must be true, and they shape every table below:</p>
+<ul>
+  <li><strong>Every stat is cited to shipped Lua, not memory.</strong> This project has been burned repeatedly by facts that were true of an older build (e.g. <code>Vector:GetRangeTo</code> does not exist in 344). Each row carries a <code>file:line</code>.</li>
+  <li><strong>“Damage” and “health” are not scalars.</strong> NS2 damage has a <em>type</em> and the defender has <em>armor that absorbs by type</em>. The same bite does very different work against a rifle marine and an L3+carapace marine. So power is <em>matchup-dependent</em> — §1 makes that precise, and it is the central difficulty of the whole exercise.</li>
+  <li><strong>Power is also time- and economy-dependent.</strong> A marine with 90 research done is a different animal than one with 0, and <em>when</em> they get there is set by cost + build/research time + income. So a wave’s power must be read against the marine state <em>at that wave</em>, not a fixed reference. §3.2 (biomass) and §2.5 (research) are the clocks.</li>
+</ul>
+
+<h2 id="dmg">1. The damage &amp; armor model <span class="small">(the foundation for any power number)</span></h2>
+<p>Damage lands through one pipeline: <code>DamageTypes.lua</code>. Armor is a second health pool that absorbs a fraction of incoming damage at a per-type rate. To compare units we must convert everything to <strong>effective health (EHP)</strong> and <strong>effective DPS</strong> against a stated target.</p>
+
+<table>
+<thead><tr><th>Damage type</th><th>Armor absorption (hp of armor consumed per point)</th><th>Special</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td><strong>Normal</strong></td><td class="num">2 hp / armor-pt</td><td>baseline (skulk bite, gorge spit, lerk bite)</td><td class="cite">DamageTypes.lua:231-246</td></tr>
+<tr><td><strong>Light</strong></td><td class="num">4 hp / armor-pt</td><td>armor is <em>less</em> useful vs it (spikes, some)</td><td class="cite">DamageTypes.lua</td></tr>
+<tr><td><strong>Heavy</strong></td><td class="num">1 hp / armor-pt</td><td>armor half as efficient (Onos stomp)</td><td class="cite">DamageTypes.lua</td></tr>
+<tr><td><strong>Puncture</strong></td><td class="num">2 hp / armor-pt</td><td><strong>×2 vs players</strong> (fade swipe, heavy rifle)</td><td class="cite">DamageTypes.lua:234,362</td></tr>
+<tr><td><strong>Structural</strong></td><td class="num">—</td><td><strong>×2 vs structures</strong> (fade stab, onos gore)</td><td class="cite">DamageTypes.lua</td></tr>
+<tr><td><strong>Corrode</strong></td><td class="num">armor-only</td><td>drains armor pool (0.12 marine / 0.40 exo scalar) — gorge bile</td><td class="cite">DamageTypes.lua:242-243</td></tr>
+<tr><td><strong>Gas</strong></td><td class="num">ignores armor</td><td>hits health flat (lerk spores)</td><td class="cite">DamageTypes.lua</td></tr>
+<tr><td><strong>MachineGun</strong></td><td class="num">—</td><td><strong>×1.5 vs players</strong> (HMG, minigun)</td><td class="cite">DamageTypes.lua:451-453</td></tr>
+</tbody>
+</table>
+
+<div class="eq">
+<strong>EHP vs a given damage type</strong> = health + armor × (absorption-rate of that type)<br>
+&nbsp;&nbsp;e.g. L2 marine (100 hp / 70 armor) vs <em>Normal</em>: EHP = 100 + 70×2 = <strong>240</strong>; vs <em>Gas</em>: EHP = 100 + 70×0 = <strong>100</strong>; vs <em>Heavy</em>: 100 + 70×1 = <strong>170</strong>.<br>
+<strong>DPS</strong> = damage-per-hit × hits-per-second, then × the type multiplier against the target class. <em>Hit rate is the weak link: several alien attacks and the rifle/HMG/minigun cadences are animation-driven (C++/asset), not in Lua</em> — see <a href="#caveat">caveat</a>.
+</div>
+
+<div class="key"><strong>Consequence for the power stat:</strong> a unit’s power is not one number, it is a <em>row of a matchup matrix</em> (unit × opposing-state → effective output). Any single scalar must be taken <em>against a named reference state</em>. §5 builds on this.</div>
+
+<h2 id="marine">2. Marine taxonomy <span class="tag mar">team 1</span></h2>
+
+<h3>2.1 Frames &amp; the armor ladder</h3>
+<table>
+<thead><tr><th>State</th><th class="num">HP</th><th class="num">Armor</th><th class="num">EHP vs Normal</th><th class="num">PointValue</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Rifle marine (L0)</td><td class="num">100</td><td class="num">30</td><td class="num">160</td><td class="num">5</td><td class="cite">BalanceHealth.lua:15</td></tr>
+<tr><td>+ Armor 1 (L1)</td><td class="num">100</td><td class="num">50</td><td class="num">200</td><td class="num">—</td><td class="cite">kArmorPerUpgradeLevel=20</td></tr>
+<tr><td>+ Armor 2 (L2)</td><td class="num">100</td><td class="num">70</td><td class="num">240</td><td class="num">—</td><td class="cite">BalanceHealth.lua</td></tr>
+<tr><td>+ Armor 3 (L3)</td><td class="num">100</td><td class="num">90</td><td class="num">280</td><td class="num">—</td><td class="cite">BalanceHealth.lua</td></tr>
+<tr><td>Jetpack marine</td><td class="num">100</td><td class="num">30</td><td class="num">160</td><td class="num">10</td><td class="cite">BalanceHealth.lua:16</td></tr>
+<tr><td>Exosuit (base)</td><td class="num">100</td><td class="num">320</td><td class="num">~740</td><td class="num">20</td><td class="cite">BalanceHealth.lua:17</td></tr>
+<tr><td>Exosuit upgrade</td><td class="num">—</td><td class="num">+30 / lvl</td><td class="num">—</td><td class="num">—</td><td class="cite">kExosuitArmorPerUpgradeLevel=30</td></tr>
+</tbody>
+</table>
+<p class="small">Exosuit armor absorbs at <code>armorFraction=1</code> (its whole pool is armor; health is near-irrelevant), so its EHP is dominated by the armor number — a different shape from a marine. Nano Armor adds +0.5 hp/s out-of-combat regen <span class="cite">BalanceMisc.lua:35</span>.</p>
+
+<h3>2.2 Weapons <span class="small">(damage · type · cadence · unlock)</span></h3>
+<table>
+<thead><tr><th>Weapon</th><th>Damage</th><th>Type</th><th>Cadence</th><th>Unlock (research → buy cost)</th><th class="tag s">scout</th></tr></thead>
+<tbody>
+<tr><td>Rifle</td><td class="num">10 / shot · clip 50</td><td>Normal</td><td class="num">[asset]</td><td>default</td><td class="cite">Balance.lua:241+</td></tr>
+<tr><td>Pistol</td><td class="num">20 (alt 40)</td><td>Normal</td><td class="num">0.1/s</td><td>default</td><td class="cite">Balance.lua:266</td></tr>
+<tr><td>Shotgun</td><td class="num">11.33×13 ≈ 147 full hit</td><td>Pellet</td><td class="num">0.847 s</td><td>ShotgunTech 20/30s → buy 20</td><td class="cite">Balance.lua:294</td></tr>
+<tr><td>Heavy Machine Gun</td><td class="num">7×100</td><td>MachineGun ×1.5 vs players</td><td class="num">[asset]</td><td>AdvancedWeaponry → buy 20</td><td class="cite">Balance.lua:451</td></tr>
+<tr><td>Heavy Rifle</td><td class="num">10×75</td><td>Puncture ×2 vs players</td><td class="num">[asset]</td><td>HeavyRifleTech 30/60 → buy 30</td><td class="cite">Balance.lua</td></tr>
+<tr><td>Grenade Launcher</td><td class="num">74.4 direct; ×4 vs structures</td><td>Explosive</td><td class="num">clip 4</td><td>GLTech 15/20 + AdvWep 10/35 → buy 20</td><td class="cite">Balance.lua:287</td></tr>
+<tr><td>Flamethrower</td><td class="num">9.92/pulse + 8/s burn</td><td>Fire</td><td class="num">[asset]</td><td>FlameTech 20/60 → buy 20</td><td class="cite">Balance.lua:305</td></tr>
+<tr><td>Railgun (exo)</td><td class="num">10 + up to 140 charged</td><td>Structural</td><td class="num">charge 2.0 s</td><td>ExosuitTech → Dual/Claw railgun</td><td class="cite">Balance.lua:328</td></tr>
+<tr><td>Minigun (exo)</td><td class="num">6 / bullet ×1.5</td><td>Heavy→MachineGun</td><td class="num">[asset]</td><td>DualMinigunTech 30/60</td><td class="cite">Balance.lua:322</td></tr>
+<tr><td>Mines</td><td class="num">130</td><td>Explosive</td><td class="num">placed</td><td>MinesTech 10/20 → buy 5</td><td class="cite">Balance.lua:337</td></tr>
+<tr><td>Welder</td><td class="num">30/s dmg · 30 hp/s ally · 90/s structure</td><td>—</td><td class="num">0.2 s</td><td>free → buy 2</td><td class="cite">Balance.lua:276</td></tr>
+</tbody>
+</table>
+
+<h3>2.3 Research &amp; upgrade nodes <span class="small">(the marine power clock — cost · time · gate)</span></h3>
+<table>
+<thead><tr><th>Node</th><th class="num">Cost</th><th class="num">Research time</th><th>Requires structure</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Armor 1 / 2 / 3</td><td class="num">20 / 30 / 40</td><td class="num">75 / 90 / 120 s</td><td>Arms Lab</td><td class="cite">Balance.lua:147-149,613-615 <span class="tag v">read</span></td></tr>
+<tr><td>Weapons 1 / 2 / 3</td><td class="num">20 / 30 / 40</td><td class="num">75 / 90 / 120 s</td><td>Arms Lab</td><td class="cite">Balance.lua:143-145 <span class="tag v">read</span></td></tr>
+<tr><td>Advanced Weaponry</td><td class="num">10</td><td class="num">35 s</td><td>Advanced Armory</td><td class="cite">Balance.lua:86 <span class="tag v">read</span></td></tr>
+<tr><td>Shotgun Tech</td><td class="num">20</td><td class="num">30 s</td><td>Armory</td><td class="cite">Balance.lua:565</td></tr>
+<tr><td>Jetpack</td><td class="num">25</td><td class="num">90 s</td><td>Prototype Lab</td><td class="cite">Balance.lua:592</td></tr>
+<tr><td>Exosuit</td><td class="num">20</td><td class="num">90 s</td><td>Prototype Lab</td><td class="cite">Balance.lua:595</td></tr>
+<tr><td>Nano Armor</td><td class="num">20</td><td class="num">60 s</td><td>—</td><td class="cite">Balance.lua:617</td></tr>
+<tr><td>Weapons 1/2/3 effect</td><td colspan="2">+10%/lvl on most weapons; shotgun/GL/flame +7%/+7%/+7.84% per lvl</td><td class="cite">DamageTypes.lua:62-106</td></tr>
+</tbody>
+</table>
+
+<h3>2.4 Structures <span class="small">(build time · cost · HP/armor · what they gate)</span></h3>
+<table>
+<thead><tr><th>Structure</th><th class="num">Build s</th><th class="num">HP / Armor</th><th class="num">PV</th><th>Unlocks / does</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Command Station</td><td class="num">15</td><td class="num">3000 / 1500</td><td class="num">20</td><td>the win condition; gates RTP/Armory/ArmsLab</td><td class="cite">Balance.lua:571 · BH.lua <span class="tag v">read</span></td></tr>
+<tr><td>Extractor</td><td class="num">11</td><td class="num">2400 / 1050</td><td class="num">15</td><td>+1 resource / 6 s (the economy engine)</td><td class="cite">Balance.lua:561</td></tr>
+<tr><td>Infantry Portal (RTP)</td><td class="num">7</td><td class="num">1525 / 500</td><td class="num">10</td><td>forward spawn; gates Observatory, Robotics</td><td class="cite">Balance.lua:563</td></tr>
+<tr><td>Armory</td><td class="num">12</td><td class="num">1500 / 200</td><td class="num">5</td><td>resupply; gates shotgun/grenade/mine/welder tech</td><td class="cite">Balance.lua:554</td></tr>
+<tr><td>Advanced Armory</td><td class="num">12</td><td class="num">3000 / 500</td><td class="num">10</td><td>gates Advanced Weaponry (HMG/GL/flame)</td><td class="cite">BH.lua:49</td></tr>
+<tr><td>Arms Lab</td><td class="num">17</td><td class="num">1650 / 500</td><td class="num">15</td><td>gates Armor 1-3, Weapons 1-3</td><td class="cite">Balance.lua:558</td></tr>
+<tr><td>Robotics Factory</td><td class="num">8</td><td class="num">2500 / 400</td><td class="num">5</td><td>manufactures MAC; Sentry line</td><td class="cite">Balance.lua:576</td></tr>
+<tr><td>Prototype Lab</td><td class="num">20</td><td class="num">3000 / 500</td><td class="num">20</td><td>gates Jetpack, Exosuit</td><td class="cite">Balance.lua:557</td></tr>
+<tr><td>Observatory</td><td class="num">10</td><td class="num">700 / 500</td><td class="num">10</td><td>Phase Gate chain (teleport reinforcement)</td><td class="cite">Balance.lua:606</td></tr>
+<tr><td>Phase Gate</td><td class="num">12</td><td class="num">1500 / 800</td><td class="num">10</td><td>map-wide instant redeploy</td><td class="cite">Balance.lua:608</td></tr>
+<tr><td>Sentry / Sentry Battery</td><td class="num">3</td><td class="num">500/100 · 600/200</td><td class="num">2/5</td><td>auto-turret (5 dmg @0.15s)</td><td class="cite">Balance.lua:583</td></tr>
+<tr><td>ARC</td><td class="num">—</td><td class="num">2600 / 400</td><td class="num">5</td><td>deployable flak (530 splash)</td><td class="cite">Balance.lua:348</td></tr>
+<tr><td>Power Point / Door</td><td class="num">—</td><td class="num">2000 / 1000</td><td class="num">10/0</td><td>power grid; map control</td><td class="cite">BH.lua</td></tr>
+</tbody>
+</table>
+<p class="small">HP/Armor/PV from <code>BalanceHealth.lua:49-69</code> <span class="tag v">read</span>; build times from <code>Balance.lua:554-608</code> <span class="tag v">read</span>. Structures spawn at 30% health until complete (<code>kStartHealthScalar=0.3</code>).</p>
+
+<h3>2.5 Economy &amp; sustain</h3>
+<div class="cols">
+<div>
+<h4>Economy</h4>
+<ul>
+<li>Team start <strong>60</strong>, cap <strong>200</strong> <span class="cite">Balance.lua:225-236</span></li>
+<li>Income: <strong>1 resource / 6 s per Extractor</strong>; no passive income without one <span class="cite">ResourceTower_Server.lua:21</span></li>
+<li>Personal (commander buy) pool: start 20, cap 100</li>
+<li>Costs are paid at order; research refunds on cancel</li>
+</ul>
+</div>
+<div>
+<h4>Sustain (effective HP over time)</h4>
+<ul>
+<li>Armory/Proto resupply: <strong>+25 hp (armor-ignoring) + 1 clip / 0.8 s</strong> ≈ 31 hp/s standing <span class="cite">Armory_Server.lua:132-186</span></li>
+<li>Welder: 30 hp/s to a marine; self-weld armor 5/s</li>
+<li>Medpack: +25 hp on use <span class="cite">BalanceHealth.lua:20</span></li>
+<li>Respawn: ~7 s → a marine is a <em>renewable</em> resource; only CC loss is permanent</li>
+</ul>
+</div>
+</div>
+
+<h2 id="alien">3. Alien taxonomy <span class="tag ali">team 2</span></h2>
+<p>The alien side is a <em>tree</em>, not a shop: lifeforms are gated by <strong>BioMass</strong>, shared upgrades by <strong>hive-lineage veils</strong>. This is the progression spine a wave composition has to respect.</p>
+
+<h3>3.1 Lifeforms <span class="small">(the horde’s units)</span></h3>
+<table>
+<thead><tr><th>Lifeform</th><th class="num">HP</th><th class="num">Armor</th><th class="num">EHP vs Normal</th><th class="num">+HP / BioMass</th><th class="num">PV</th><th>Role</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Skulk</td><td class="num">75</td><td class="num">10</td><td class="num">95</td><td class="num">+3</td><td class="num">5</td><td>chaff / harass</td><td class="cite">BalanceHealth.lua:26 <span class="tag v">read</span></td></tr>
+<tr><td>Gorge</td><td class="num">160</td><td class="num">50</td><td class="num">260</td><td class="num">+2</td><td class="num">7</td><td>builder / ranged support</td><td class="cite">BalanceHealth.lua:27 <span class="tag v">read</span></td></tr>
+<tr><td>Lerk</td><td class="num">180</td><td class="num">30</td><td class="num">240</td><td class="num">+2</td><td class="num">15</td><td>mobile / AoE</td><td class="cite">BalanceHealth.lua:28 <span class="tag v">read</span></td></tr>
+<tr><td>Fade</td><td class="num">250</td><td class="num">80</td><td class="num">410</td><td class="num">+5</td><td class="num">20</td><td>assassin / structure-killer</td><td class="cite">BalanceHealth.lua:29 <span class="tag v">read</span></td></tr>
+<tr><td>Onos</td><td class="num">700</td><td class="num">450</td><td class="num">1600</td><td class="num">+50</td><td class="num">30</td><td>tank / siege</td><td class="cite">BalanceHealth.lua:30 <span class="tag v">read</span></td></tr>
+</tbody>
+</table>
+<p class="small">Fully-upgraded armor (carapace maxed): skulk 25 · gorge 75 · lerk 50 · fade 120 · onos 650 <span class="cite">BalanceHealth.lua <span class="tag v">read</span></span>. Aliens share <code>kAbilityMaxEnergy=100</code> <span class="cite">BalanceMisc.lua:305</span>; abilities spend energy that regenerates (faster with Adrenaline).</p>
+
+<h3>3.2 BioMass tiers <span class="small">(the alien power clock — what each level unlocks)</span></h3>
+<table>
+<thead><tr><th class="num">BioMass</th><th>Unlocks</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td>Skulk (base)</td><td class="cite">AlienTeam.lua:889</td></tr>
+<tr><td class="num">2</td><td>Gorge egg · BileBomb research · Rupture</td><td class="cite">AlienTeam.lua:919,1030</td></tr>
+<tr><td class="num">3</td><td>Metabolize(Energy) · BoneWall</td><td class="cite">AlienTeam.lua:1037,852</td></tr>
+<tr><td class="num">4</td><td>Lerk egg · Leap · Metabolize(Health @5)</td><td class="cite">AlienTeam.lua:920,1021</td></tr>
+<tr><td class="num">6</td><td>Spores · Umbra · BoneShield</td><td class="cite">AlienTeam.lua:1034,1043</td></tr>
+<tr><td class="num">7</td><td>Stab (fade)</td><td class="cite">AlienTeam.lua:1039</td></tr>
+<tr><td class="num">8</td><td>Fade egg · Stomp (onos)</td><td class="cite">AlienTeam.lua:921,1044</td></tr>
+<tr><td class="num">9</td><td>Onos egg · Xenocide (skulk)</td><td class="cite">AlienTeam.lua:922,1022</td></tr>
+<tr><td class="num">12</td><td>Contamination</td><td class="cite">AlienTeam.lua:853</td></tr>
+</tbody>
+</table>
+<div class="note"><strong>For waves:</strong> in normal play BioMass is earned by holding marines off hive/RT upgrades — it is <em>the</em> pacing mechanism. Our horde does not build a hive, so <strong>we must set the effective BioMass per wave directly</strong> (it gates which lifeforms and abilities a wave may contain). This is the alien analogue of the marine research clock, and it is the lever the wave-designer pulls.</div>
+
+<h3>3.3 Hives &amp; upgrade veils <span class="small">(where the shared upgrades come from)</span></h3>
+<table>
+<thead><tr><th>Structure</th><th class="num">HP / Armor</th><th class="num">PV</th><th>Grants</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Hive</td><td class="num">4000 / 750</td><td class="num">30</td><td>spawn point; base of all three lineages</td><td class="cite">BalanceHealth.lua <span class="tag v">read</span></td></tr>
+<tr><td>Crag Hive</td><td class="num">(mature 560/272)</td><td class="num">+5</td><td>Heal Wave; → Crag, Shell/Veil/Spur veils</td><td class="cite">AlienTeam.lua:881,959</td></tr>
+<tr><td>Shade Hive</td><td class="num">mature 1200/0</td><td class="num">+5</td><td>Ink (vision denial); stealth line</td><td class="cite">AlienTeam.lua:882,981</td></tr>
+<tr><td>Shift Hive</td><td class="num">—</td><td class="num">+5</td><td>Shift (mobility); → Veil, Spur</td><td class="cite">AlienTeam.lua:883</td></tr>
+<tr><td>Shell <span class="small">(defensive veil)</span></td><td class="num">600 / 150</td><td class="num">12</td><td>Vampirism · Carapace · Regeneration</td><td class="cite">AlienTeam.lua:930,944-946</td></tr>
+<tr><td>Veil <span class="small">(utility veil)</span></td><td class="num">900 / 0</td><td class="num">12</td><td>Focus · Aura · Camouflage</td><td class="cite">AlienTeam.lua:934,948-950</td></tr>
+<tr><td>Spur <span class="small">(offensive veil)</span></td><td class="num">800 / 50</td><td class="num">12</td><td>Crush · Celerity · Adrenaline</td><td class="cite">AlienTeam.lua:938,952-954</td></tr>
+</tbody>
+</table>
+
+<h3>3.4 Shared upgrades <span class="small">(buy from a veil; level = number of that veil)</span></h3>
+<table>
+<thead><tr><th>Upgrade</th><th>Effect</th><th class="cite">src</th></tr></thead>
+<tbody>
+<tr><td>Carapace</td><td>+armor (skulk +5/+1·bm … onos +50/+20·bm); replaces armor, no speed penalty</td><td class="cite">BalanceHealth.lua:151-165</td></tr>
+<tr><td>Celerity</td><td>+1.5 m/s max speed ×(spurLvl/3)</td><td class="cite">BalanceMisc.lua:56</td></tr>
+<tr><td>Adrenaline</td><td>energy regen 10 → 13-27/s</td><td class="cite">Balance.lua:199-204</td></tr>
+<tr><td>Crush</td><td>+7% armor-used per level (max 21%)</td><td class="cite">BalanceMisc.lua:59</td></tr>
+<tr><td>Vampirism</td><td>overshield leech on hit</td><td class="cite">DamageTypes.lua:119-160</td></tr>
+<tr><td>Regeneration</td><td>out-of-combat health regen</td><td class="cite">AlienTeam.lua:946</td></tr>
+<tr><td>Focus / Aura / Camouflage</td><td>ability-cost cut / energy aura / stealth</td><td class="cite">AlienTeam.lua:948-950</td></tr>
+</tbody>
+</table>
+
+<h3>3.5 Abilities per lifeform <span class="small">(damage · type · energy)</span></h3>
+<table>
+<thead><tr><th>Lifeform</th><th>Ability</th><th>Damage</th><th>Type</th><th class="num">Energy</th><th class="tag s">scout</th></tr></thead>
+<tbody>
+<tr><td>Skulk</td><td>Bite</td><td class="num">75</td><td>Normal</td><td class="num">5.85</td><td class="cite">Balance.lua:383 · BiteLeap.lua:142</td></tr>
+<tr><td>Skulk</td><td>Leap</td><td class="num">0 (movement)</td><td>—</td><td class="num">45</td><td class="cite">Skulk.lua:244</td></tr>
+<tr><td>Skulk</td><td>Xenocide (leap-bomb)</td><td class="num">200</td><td>Normal</td><td class="num">30</td><td class="cite">Balance.lua:394</td></tr>
+<tr><td>Gorge</td><td>Spit</td><td class="num">30</td><td>Normal</td><td class="num">7</td><td class="cite">Balance.lua:401</td></tr>
+<tr><td>Gorge</td><td>Bile Bomb</td><td class="num">55/s ×5 s</td><td>Corrode</td><td class="num">20</td><td class="cite">Balance.lua:428</td></tr>
+<tr><td>Gorge</td><td>Build / Spray</td><td>heals/constructs</td><td>—</td><td class="num">10</td><td class="cite">Balance.lua:422</td></tr>
+<tr><td>Lerk</td><td>Bite + Poison</td><td class="num">60 + 6/s×6s</td><td>Normal</td><td class="num">5</td><td class="cite">Balance.lua:451</td></tr>
+<tr><td>Lerk</td><td>Spores</td><td class="num">15/s cloud r4 4s</td><td>Gas (ignores armor)</td><td class="num">27</td><td class="cite">Balance.lua:477</td></tr>
+<tr><td>Fade</td><td>Swipe</td><td class="num">37.5 → 75 eff vs players</td><td>Puncture ×2</td><td class="num">7</td><td class="cite">Balance.lua:485</td></tr>
+<tr><td>Fade</td><td>Stab (Breach)</td><td class="num">120</td><td>Structural</td><td class="num">30</td><td class="cite">Balance.lua:490</td></tr>
+<tr><td>Onos</td><td>Gore</td><td class="num">90</td><td>Structural</td><td class="num">10</td><td class="cite">Balance.lua:498</td></tr>
+<tr><td>Onos</td><td>Stomp</td><td class="num">40 + disrupt</td><td>Heavy (armor ×0.5)</td><td class="num">30</td><td class="cite">Balance.lua:513</td></tr>
+<tr><td>Onos</td><td>Bone Shield</td><td class="num">blocks 1000</td><td>—</td><td class="num">regen-gated</td><td class="cite">BalanceMisc.lua:354</td></tr>
+</tbody>
+</table>
+<p class="small"><span id="caveat"></span><strong>Cadence caveat:</strong> alien attack cooldowns are derived from attack-animation length (<code>Ability.lua:212-243</code>), which lives in <em>asset data, not Lua</em>. So per-hit damage is known but <strong>DPS must be calibrated from observed time-to-kill</strong> (chair telemetry / a Decoda/measure pass), not read from a constant. This is the single biggest accuracy risk in the power model — flagged in §5.</p>
+
+<h3>3.6 Alien structures &amp; economy</h3>
+<ul>
+<li><strong>Economy:</strong> aliens have no Extractor analogue for <em>team resources</em> in the same shape — energy is per-alien (<code>kAbilityMaxEnergy=100</code>, regen, Adrenaline-boosted); structures/upgrades spend team resources from the commander pool. <span class="tag tbd">TBD</span> — confirm the alien resource income path before it drives balance.</li>
+<li><strong>Key structures</strong> <span class="cite">BalanceHealth.lua <span class="tag v">read</span></span>: Harvester 2000/200 (income), Spore Colony, Crag 480/160 (offensive), Shade 600/0 (stealth), Shift 600/60 (mobility), Whip 650/175 (ranged siege, bombard 250 corrode), Hydra 125/5 (turret, 5 dmg @0.8s), Tunnel/Entrance 1000/100 (mobility network — <em>our mouths</em>).</li>
+<li><strong>Sustain:</strong> Regeneration (Shell), Metabolize (Fade, converts structures → hp/energy), Heal Wave (Crag ability), Nutrient Mist, infestation speed.</li>
+</ul>
+
+<h2 id="pv">4. The engine’s own power prior: <code>PointValue</code></h2>
+<p>NS2 already ships a per-entity worth number — <code>kTechDataPointValue</code>, summed by <code>PointGiverMixin:GetPointValue()</code> (used for kill/build score). It is UWE’s own implicit balance weighting, so it is a legitimate <em>starting prior</em> for our power stat:</p>
+<table>
+<thead><tr><th>Unit / structure</th><th class="num">PV</th><th>Reading</th></tr></thead>
+<tbody>
+<tr><td>Skulk / Gorge / Lerk / Fade / Onos</td><td class="num">5 / 7 / 15 / 20 / 30</td><td>the lifeform ladder is ~6× from chaff to tank</td></tr>
+<tr><td>Rifle marine / Jetpack / Exosuit</td><td class="num">5 / 10 / 20</td><td>a marine is worth a skulk; an exo is worth an Onos</td></tr>
+<tr><td>Hive / Command Station</td><td class="num">30 / 20</td><td>aliens value their command structure higher</td></tr>
+<tr><td>Weapons (shotgun 10 · HMG 15 · rail/minigun 10 · mines 2)</td><td class="num">—</td><td>the buy-cost ladder roughly tracks it</td></tr>
+</tbody>
+</table>
+<div class="warn"><strong>Why PV alone is not enough:</strong> it is a <em>static kill-score</em>, blind to the matchup (an Onos is “30” whether it faces a rifle marine or an exo with railguns), to sustain, and to the fact that our horde has no economy. PV is a great <em>shape prior</em> — we should sanity-check any power formula against it — but not the answer.</div>
+
+<h2 id="power">5. Toward a single power stat <span class="small">(the brainstorm)</span></h2>
+
+<h3>5.1 What one number has to survive</h3>
+<p>Any scalar we pick must not lose these five things, or it will mis-rank waves:</p>
+<ol>
+<li><strong>Type effectiveness</strong> — fade stab (Structural) vs an armor-heavy marine ≠ vs a structure; spores (Gas) ignore armor entirely. → damage must be <em>effective vs a stated defender</em>.</li>
+<li><strong>Durability vs the same threat</strong> — EHP, not HP. Onos 700/450 is 1600 EHP vs Normal but only ~700 vs Gas.</li>
+<li><strong>Rate</strong> — DPS, not per-hit. The asset-cooldown gap (§3.5) bites here.</li>
+<li><strong>Reachability</strong> — range/mobility decides whether a unit can <em>engage at all</em> (a melee unit vs a kiting exo contributes ~0). Lerk flight, skulk leap, jetpack.</li>
+<li><strong>Sustain &amp; numbers</strong> — a renewable marine vs a spent alien; a wave of 15 chaff vs 1 tank of equal PV.</li>
+</ol>
+
+<h3>5.2 The honest shape: power is a <em>row</em>, not a number</h3>
+<p>Because of (1)-(2), a unit’s true contribution is a function of <em>who it is fighting</em>. So we define power <strong>relative to a reference state</strong> — the marine loadout we expect at wave <span class="math">N</span> — and get a scalar that is honest as long as we name the reference. Concretely, for unit <span class="math">u</span> against marine-state <span class="math">M</span>:</p>
+<div class="eq">
+<strong>Offense(u→M)</strong> = effective DPS of u vs M’s EHP<br>
+<strong>Defense(u←M)</strong> = M’s time-to-kill u = u’s EHP-vs-M-DPS ÷ M’s DPS<br>
+<strong>Strength(u vs M)</strong> = Offense × Defense&nbsp;&nbsp;<span class="small">(the classic Lanchester “worth” — a unit that kills twice as fast and dies twice as slowly is 4× the strength)</span>
+</div>
+<p>Wave power = the <em>Lanchester-corrected</em> sum of its units’ strengths (not a flat sum — concentrated fire beats equal numbers, which is exactly why “15 skulks” and “1 onos” must not score the same unless we say so).</p>
+
+<h3>5.3 Four candidate formulations, ranked</h3>
+<table>
+<thead><tr><th>Approach</th><th>Single number?</th><th>Matchup-aware?</th><th>Data we already have?</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><strong>A. PointValue sum</strong> (§4)</td><td>yes</td><td>no</td><td>yes</td><td>baseline sanity check only</td></tr>
+<tr><td><strong>B. Lanchester strength</strong> (Offense×Defense vs a reference marine state)</td><td>yes, per reference</td><td>yes</td><td>mostly — <em>except DPS cooldowns</em></td><td><strong>recommended core</strong></td></tr>
+<tr><td><strong>C. Cost-normalized efficiency</strong> (strength ÷ resource cost)</td><td>yes</td><td>partly</td><td>yes</td><td>for the <em>marine buy</em> side, not wave sizing</td></tr>
+<tr><td><strong>D. Weighted normalized index</strong> (Σ wᵢ·statᵢ over HP/DPS/mobility/range/sustain/utility)</td><td>yes</td><td>only if we re-weight per matchup</td><td>yes</td><td>the pragmatic fallback while cooldown data is thin</td></tr>
+</tbody>
+</table>
+
+<h3>5.4 A concrete first cut to react to</h3>
+<p>Define a <strong>Threat Index (TI)</strong> per unit against the <em>expected marine state at that wave</em>, then size a wave to a target TI:</p>
+<div class="eq">
+TI(u, N) = [ <em>dps</em>ₙ(u) × <em>ehp</em>ₙ(u) ]<sup>½</sup> × <em>reach</em>(u) × <em>sustain</em>(u)<br>
+<span class="small">geometric mean of offense &amp; defense (so neither alone dominates); <em>reach</em>,<em>sustain</em> are 0.5–1.5 multipliers; everything normalized so a <strong>base rifle marine = TI 1.0</strong></span><br><br>
+Wave threat = Σ TI(u) over the wave, optionally ÷ (number of marines) to keep it per-player.<br>
+Wave design target: match the marine team’s TI-at-wave-N × a difficulty band (DESIGN §4 says 1.0–1.25).
+</div>
+<p><strong>Worked sketch</strong> (illustrative — <span class="tag tbd">TBD</span> the DPS cooldowns before trusting the numbers):</p>
+<ul>
+<li>Skulk vs rifle-marine-L0: dps ~ (75 bite / ~1.1 s) ≈ 68; ehp 95; → TI ≈ √(68 × 95/ (marine dps×ehp)) … normalizing to marine=1 → a skulk ≈ <strong>1.2 TI</strong> (slightly above a rifle marine — matches the “2.1 hits to kill a marine, marine out-dps slowly” feel).</li>
+<li>Lerk vs L0: dps ~ (60+poison)/~1 s ≈ 80; ehp 240; reach 1.2 (flight) → TI ≈ <strong>2.6</strong>.</li>
+<li>“Skulk + Lerk, both carapace” ≈ 1.2 + 2.6 (+carapace ehp bump) ≈ <strong>~4.2 TI</strong> → that composition is a wave aimed at a 2-3-marine L1 team. <em>This is the arithmetic the user wants; it needs the cooldown calibration and the carapace EHP delta to be real, not illustrative.</em></li>
+</ul>
+
+<h3>5.5 What we should decide together next</h3>
+<ol>
+<li><strong>Reference state per wave.</strong> Power is only meaningful vs a named marine loadout — do we compute the expected marine state from the economy model (start 60 + Σ payout + extractor income → what they can have bought by wave N), which we largely have from DESIGN §4?</li>
+<li><strong>The cooldown gap.</strong> Alien DPS is animation-bound and not in Lua. Options: (a) measure TTK empirically from the chair / a scripted duel in Decoda; (b) accept per-hit × assumed-rate and calibrate later. Which?</li>
+<li><strong>Sum or Lanchester.</strong> Do 15 skulks beat 1 onos? A flat sum says yes; square-law says the onos holds up better than that. Pick the aggregation.</li>
+<li><strong>Utility/CC pricing.</strong> Stomp disrupt, gas, camouflage, web — force multipliers with no clean stat. Weight them, or fold into the reach/sustain multipliers?</li>
+<li><strong>Where the horde’s knobs live.</strong> If waves are sized in TI, then the config ladder (Composition size, biomass gate, type mix) should be <em>expressed</em> as TI targets, and RD3 becomes “pick TI(wave), let the solver pick composition.” That reframes the whole balance task — worth a decision.</li>
+</ol>
+
+<h2 id="open">6. Open gaps to fill before this is load-bearing</h2>
+<ul>
+<li><span class="tag tbd">TBD</span> Alien &amp; marine <strong>attack rates</strong> (DPS) — asset-driven; needs measurement, not grep.</li>
+<li><span class="tag tbd">TBD</span> Alien <strong>resource income</strong> path (team resources vs energy) — confirm before it gates wave composition affordability.</li>
+<li><span class="tag tbd">TBD</span> <strong>Ability cooldowns</strong> (Leap, Stomp, Bile, etc.) — energy cost is known, cooldown is not.</li>
+<li><span class="tag tbd">TBD</span> <strong>Move speeds</strong> per lifeform/frame (skulk run, lerk fly, exo, celerity) — feeds the reach/mobility multiplier.</li>
+<li>Verify every <span class="tag s">scout</span> number against <code>Balance.lua</code>/<code>DamageTypes.lua</code> before it drives a wave (this session’s standing rule — scouts have been wrong in both directions).</li>
+</ul>
+
+<hr>
+<p class="small"><strong>Appendix — primary sources (build 344).</strong>
+Health/armor/point-value: <code>BalanceHealth.lua:15-165</code> (read directly).
+Marine tech tree: <code>MarineTeam.lua:446-589</code>. Alien tech tree &amp; biomass gates: <code>AlienTeam.lua:849-1048</code>.
+Marine build times: <code>Balance.lua:554-608</code> (read directly). Research costs: <code>Balance.lua:86,143-149</code> (read directly).
+Damage &amp; armor model: <code>DamageTypes.lua:30-721</code>. Alien damage/energy: <code>Balance.lua:383-520</code>, <code>BalanceMisc.lua:305</code>.
+Energy: <code>Alien.lua:511</code>. PointValue mechanism: <code>PointGiverMixin.lua:36-172</code>.
+Snapshot repo: <code>D:\projects\ns2-lua-workspace</code>; live LSP over the engine via the mod’s <code>.luarc.json</code>.</p>
+
+</main>
+</body>
+</html>
