@@ -378,19 +378,23 @@ function Plugin:StartWave(Client, Now)
 	--- curve mean something survives untouched); only the clock goes away.
 	self:SetHordeBuildSpeed(true)
 
-	-- Q34: the horde closes the team economy. Extractor income is suppressed for the round
-	-- (restored at teardown) only when the config asks, and the marine team's pool is set to
-	-- the configured start — so wave payout + this number are the only team resources in play.
+	--- Q34/Q35: the horde owns a CLOSED economy. Cache the bounty table first (the borrowed
+	--- OnEntityKilled wrapper reads it live), then borrow the class methods. Passive team income
+	--- (extractor + min-res) is silenced only when the config asks; the kill bounty and the
+	--- starting-IP clear are unconditional horde behaviour. Every borrow is given back wholesale
+	--- by RestoreBorrowedMethods at teardown.
+	self.HordeKillBounty = Config.Economy and Config.Economy.KillBounty
+	self.HordeIPsCleared = nil
+
 	if Config.Economy and Config.Economy.ExtractorIncome == false then
-		self:SetHordeExtractorIncome(true)
+		self:SuppressHordePassiveIncome()
+	end
+
+	if type(self.HordeKillBounty) == "table" then
+		self:InstallHordeKillBounty()
 	end
 
 	self:ApplyHordeStartingResources(Config)
-
-	--- Cache the bounty table for the round so the OnEntityKilled hook never re-resolves
-	--- config on a busy kill tick. Cleared implicitly: the hook's IsActive guard makes it dead
-	--- weight the moment the horde is not running.
-	self.HordeKillBounty = Config.Economy and Config.Economy.KillBounty
 
 	local Seconds = self:BeginCountdown(Config.Start and Config.Start.CountdownSeconds)
 
@@ -571,61 +575,113 @@ function Plugin:SetHordeBuildSpeed(On)
 	return true
 end
 
---- Turn the resource tower's income off for the duration of a horde, and only for its
---- duration — the same "borrow a lever, give it back" discipline as autobuild.
----
---- Why this seam: `ResourceTower:CollectResources` (ResourceTower_Server.lua:11) is the ONE
---- method that pays an extractor — both the team pool (`team:AddTeamResources(kTeamResourcePerTick,
---- true)` at :21) and each marine's personal trickle (`player:AddResources(kPlayerResPerInterval)`
---- at :15). Silencing it kills both at once, which is exactly "no resources from the res tower".
---- The node-depletion recursion (:35) and the collect sound go with it; both are cosmetic for a
---- short horde round, and re-implementing the method minus two lines would couple us to vanilla
---- internals we must not silently fork.
----
---- The patch is on the global class table, so it is process-local: a crash takes it down with the
---- VM, and teardown restores the saved original. It engages ONLY when the config asks (ExtractorIncome
---- false); a server that wants vanilla economy keeps it.
-function Plugin:SetHordeExtractorIncome(On)
-	if On then
-		if self.HordeExtractorSaved ~= nil then
-			return true
-		end
+--- Borrow a game class method for the duration of a horde, replacing it with Func and
+--- restoring the exact original at teardown. Uses Shine's `ReplaceClassMethod`, which — unlike
+--- a raw `Class[Method] = Func` — walks the derived-class chain (`Extractor` under `ResourceTower`,
+--- `MarineTeam`/`AlienTeam` under `PlayingTeam`) because NS2 copies inherited methods into each
+--- class table at load. The first economy attempt patched only the base table and, worse, leaned
+--- on Shine's `Gamerules:OnEntityKilled` event — which never fires, because `NS2Gamerules`
+--- overrides that method without calling the base. This helper is the mechanism both fixes share.
+function Plugin:BorrowClassMethod(Class, Method, Func)
+	self.HordeBorrows = self.HordeBorrows or {}
+	local Key = Class .. ":" .. Method
 
-		if type(ResourceTower) ~= "table" or type(ResourceTower.CollectResources) ~= "function" then
-			self:Log("horde economy: no ResourceTower.CollectResources - extractor income stays vanilla")
-
-			return false
-		end
-
-		self.HordeExtractorSaved = ResourceTower.CollectResources
-
-		ResourceTower.CollectResources = function() end
-		self:Log("horde economy: extractor income suppressed (team + personal) for the round")
-
+	if self.HordeBorrows[Key] then
 		return true
 	end
 
-	if self.HordeExtractorSaved == nil then
+	local Original = Shine.ReplaceClassMethod(Class, Method, Func)
+
+	if Original == nil then
+		self:Log("horde: could not borrow " .. Key .. " (class method missing)")
+
 		return false
 	end
 
-	local Saved = self.HordeExtractorSaved
-
-	self.HordeExtractorSaved = nil
-	ResourceTower.CollectResources = Saved
-	self:Log("horde economy: extractor income restored to vanilla")
+	self.HordeBorrows[Key] = { Class = Class, Method = Method, Original = Original }
 
 	return true
 end
 
+--- Give back every borrowed class method. Idempotent; a no-op when nothing was borrowed.
+function Plugin:RestoreBorrowedMethods()
+	if not self.HordeBorrows then
+		return false
+	end
+
+	local Count = 0
+
+	for Key, B in pairs(self.HordeBorrows) do
+		Shine.ReplaceClassMethod(B.Class, B.Method, B.Original)
+		self.HordeBorrows[Key] = nil
+		Count = Count + 1
+	end
+
+	return Count > 0
+end
+
+--- Close the horde's team economy for the round by silencing BOTH passive sources:
+--- `ResourceTower:CollectResources` (the one method that pays an extractor — team pool AND each
+--- marine's personal trickle) and `PlayingTeam:UpdateMinResTick` (vanilla's safety net: a team
+--- with zero collecting extractors gets 1 free res every 12 s). The second is the one the first
+--- playtest missed — suppressing extractors alone *triggers* min-res, so resources kept creeping
+--- up anyway. Engaged only when Economy.ExtractorIncome=false; a server that wants vanilla
+--- economy keeps it. Restored wholesale by RestoreBorrowedMethods at teardown.
+function Plugin:SuppressHordePassiveIncome()
+	local function Noop() end
+
+	local Ok1 = self:BorrowClassMethod("ResourceTower", "CollectResources", Noop)
+	local Ok2 = self:BorrowClassMethod("PlayingTeam", "UpdateMinResTick", Noop)
+
+	if Ok1 or Ok2 then
+		self:Log("horde economy: closed for the round (extractor + min-res suppressed)")
+	else
+		self:Log("horde economy: could not suppress passive income - economy stays vanilla")
+	end
+
+	return Ok1 or Ok2
+end
+
+--- Arm the kill bounty by wrapping `NS2Gamerules:OnEntityKilled` — the class method that ACTUALLY
+--- runs on a kill (Shine's `Gamerules` hook is bypassed by the override). The wrapper awards the
+--- bounty, then calls the pristine original so vanilla's own kill handling (team updates, records)
+--- is untouched. The bounty call is pcall'd: a bug here must never break a kill.
+function Plugin:InstallHordeKillBounty()
+	if self.HordeBorrows and self.HordeBorrows["NS2Gamerules:OnEntityKilled"] then
+		return true
+	end
+
+	local Original = Shine.GetClassMethod("NS2Gamerules", "OnEntityKilled")
+
+	if type(Original) ~= "function" then
+		self:Log("horde economy: no NS2Gamerules:OnEntityKilled - kill bounty stays off")
+
+		return false
+	end
+
+	local horde = self
+
+	local Ok = self:BorrowClassMethod("NS2Gamerules", "OnEntityKilled", function(self_, target, attacker, doer, point, direction)
+		pcall(function() horde:AwardKillBounty(target, attacker) end)
+
+		return Original(self_, target, attacker, doer, point, direction)
+	end)
+
+	if Ok then
+		self:Log("horde economy: kill bounty armed on NS2Gamerules:OnEntityKilled")
+	end
+
+	return Ok
+end
+
 --- Set the marine team's resources to the horde's configured start, once, after the world
---- reset (ResetGame zeroes them, so this must come after it). The horde's team economy is
---- deliberately closed: this number plus the per-wave payout are the ONLY team income, and
---- it replaces whatever the seeding session had banked so every horde starts on equal footing.
+--- reset (ResetGame zeroes them, so this must come after it). This is `SetTeamResources` (an
+--- absolute write), not `AddTeamResources`, so it is unaffected by the income suppression.
 function Plugin:ApplyHordeStartingResources(Config)
 	local Rules = GetGamerules()
 	local Start = Config and Config.Economy and Config.Economy.StartingResources
 	local MarineTeam = Rules and Rules.GetTeam and Rules:GetTeam(kTeam1Index)
+
 	if type(Start) ~= "number" or not MarineTeam or not MarineTeam.SetTeamResources then
 		return false
 	end
@@ -636,22 +692,12 @@ function Plugin:ApplyHordeStartingResources(Config)
 	return true
 end
 
-
---- Personal-resource bounty for the marine who lands the killing blow on a horde bot (Q34:
---- "the last kill gets the money" — 2 skulk/gorge, 3 lerk, 4 fade, 5 onos). Vanilla build 344
---- has NO Lua kill->resource path (`PlayingTeam:AwardPersonalResources` is defined but never
---- called), so the horde awards it itself rather than trying to bend a dead function.
----
---- Shine auto-hooks this because the plugin defines the method (extensions.lua:552 wires any
---- `Plugin.<Event>` for a hooked event), and it fires for EVERY kill in ANY round — so the
---- first line is a cheap not-running guard and nothing world-facing runs unless a horde is up.
----
---- The victim's lifeform selects the bounty: Skulk/Gorge/Lerk/Fade/Onos are distinct classes
---- all under `isa("Alien")`, so `isa` reads the type with no extra lookup. During a horde the
---- takeover has cleared vanilla bots and a real alien joining ends the mode, so every alien
---- that dies while the machine is active is one of ours — the invariant this relies on. The
---- bounty table is cached at start (`HordeKillBounty`) so a busy tick never re-resolves config.
-function Plugin:OnEntityKilled(targetEntity, attacker, doer, point, direction)
+--- The bounty decision (Q34: 2 skulk/gorge, 3 lerk, 4 fade, 5 onos, last hit gets it). Called
+--- from the borrowed OnEntityKilled wrapper. The victim's lifeform is read with `isa` (Skulk/
+--- Gorge/Lerk/Fade/Onos are distinct classes under `Alien`); during a horde the takeover has
+--- cleared vanilla bots and a real alien joining ends the mode, so every alien that dies while
+--- the machine is active is one of ours. The bounty table is cached at start (HordeKillBounty).
+function Plugin:AwardKillBounty(targetEntity, attacker)
 	local Machine = self.Machine
 
 	if not Machine or not Machine:IsActive() then
@@ -951,8 +997,18 @@ end
 --- is exact), else this wave's base anchor, ground-snapped once (the infestation centroid
 --- is a table at y=0 and the fallback of a fallback is no waypoint at all). Nil means
 --- this map gave us nothing to walk to, said once per wave, not every tick.
-function Plugin:ResolveHordeTarget()
-	for Ent in ientitylist(Shared.GetEntitiesWithClassname("CommandStructure")) do
+function Plugin:ResolveHordeTarget(StationSource)
+	-- `for _, Ent in` — ientitylist yields (index, entity); the single-variable form bound Ent to
+	-- the numeric index, so Ent:GetTeamNumber() threw, the pcall below swallowed it, and the live
+	-- command station was NEVER found: the horde always steered to the stale base-anchor fallback
+	-- instead of the actual base. A real cause of "bots never reach base," hidden by the pcall.
+	-- The station query is injectable so the anchor-fallback and no-base branches stay testable on
+	-- a live map that (correctly) has a station.
+	local Source = StationSource or function()
+		return ientitylist(Shared.GetEntitiesWithClassname("CommandStructure"))
+	end
+
+	for _, Ent in Source() do
 		local Ok, Origin = pcall(function()
 			if Ent:GetTeamNumber() == kTeam1Index and Ent:GetIsAlive() then
 				return Ent:GetOrigin()
@@ -1174,6 +1230,46 @@ function Plugin:ReapDeadBots()
 	return Reaped
 end
 
+--- Remove the starting infantry portal the horde does not want (Q35, Arian: "not necessary").
+--- Vanilla spawns it at round start (`MarineTeam:SpawnInitialStructures` → `SpawnInfantryPortal`),
+--- which is AFTER the countdown, so this is a one-shot from the tick once `GetGameStarted()`. It
+--- retries each tick through wave 1 until it finds and clears the marine portal(s), then latches
+--- so a portal a marine builds on a later wave is never touched. `DestroyEntity` (not `:Kill()`)
+--- so it leaves no wreck or death effect.
+function Plugin:ClearStartingInfantryPortal()
+	if self.HordeIPsCleared then
+		return
+	end
+
+	local Rules = GetGamerules()
+
+	if not Rules or not Rules.GetGameStarted or not Rules:GetGameStarted() then
+		return
+	end
+
+	-- Past wave 1, any marine infantry portal is the player's own — stop looking.
+	if self.Machine and self.Machine.WaveNumber and self.Machine.WaveNumber > 1 then
+		self.HordeIPsCleared = true
+
+		return
+	end
+
+	local Cleared = 0
+
+	for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("InfantryPortal")) do
+		if Ent:GetTeamNumber() == kTeam1Index then
+			pcall(DestroyEntity, Ent)
+
+			Cleared = Cleared + 1
+		end
+	end
+
+	if Cleared > 0 then
+		self.HordeIPsCleared = true
+		self:Log(string.format("horde: removed %s starting infantry portal(s)", Cleared))
+	end
+end
+
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
@@ -1208,6 +1304,11 @@ function Plugin:HordeTick()
 	-- back in under a live horde.
 	if self.Machine and self.Machine:IsActive() then
 		self:SuppressGameEnd()
+
+		-- Q35: vanilla's round-start hands the marines a free infantry portal; the horde does
+		-- not want it (not necessary, and unearned economy). The tick clears it once the round
+		-- is live. One-shot — a marine who later builds one keeps it.
+		self:ClearStartingInfantryPortal()
 	end
 
 	-- Measured after the prune and the pump, so the status line reports what the engine has
@@ -1740,9 +1841,10 @@ function Plugin:Teardown(Now)
 	--- every engine lever the horde borrowed (autobuild, suppression, controller, cap).
 	self:SetHordeBuildSpeed(false)
 
-	--- Give the extractor back too: the class patch is idempotent (returns false if we never
-	--- borrowed it), so a horde that ran with vanilla economy restores nothing and says nothing.
-	self:SetHordeExtractorIncome(false)
+	--- Give back every borrowed class method (extractor + min-res suppression, the kill-bounty
+	--- OnEntityKilled wrapper). Idempotent: a horde that ran with vanilla economy borrowed
+	--- nothing, so this restores nothing and stays silent.
+	self:RestoreBorrowedMethods()
 
 	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",

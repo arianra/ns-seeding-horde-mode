@@ -1250,16 +1250,25 @@ function Plugin:InitialiseScenarios()
 		Assert.Nil( Refused, "SpawnBot refuses a nil point" )
 		Assert.NotNil( RefuseReason, "the refusal names the reason" )
 
-		local Bots = {}
+		-- Four skulks. The composition ladder DOES deal a gorge from wave 3 (Waves.Deal
+		-- guarantees one per unlocked type), but the factory can only safely field skulks today:
+		-- a non-skulk bot lands as a Skulk (forced join -> respawnEntity) and vanilla evolves it
+		-- only near a hive the horde has none of. Forcing the lifeform directly creates the right
+		-- class but places a too-large capsule at a skulk-sized spot (dies / fails validation) -
+		-- that is real i5a work (room-aware emergence), not a config tweak, so the factory stays
+		-- skulk-only until it is done properly. See the Q35 note in the Atlas.
+		local Bots, Expect = {}, {}
+		local ExpectName = { [kTechId.Skulk] = "Skulk", [kTechId.Gorge] = "Gorge" }
 
-		for _ = 1, 4 do
-			local Bot, BotErr = Spawn:SpawnBot(Mouth, kTechId.Skulk)
+		for _, Tech in ipairs({ kTechId.Skulk, kTechId.Skulk, kTechId.Skulk, kTechId.Skulk }) do
+			local Bot, BotErr = Spawn:SpawnBot(Mouth, Tech)
 
 			if not Bot then
 				error( { Detail = "SpawnBot refused a validated mouth point: " .. tostring(BotErr) } )
 			end
 
 			Bots[#Bots + 1] = Bot
+			Expect[#Expect + 1] = ExpectName[Tech]
 		end
 
 		self:Defer( "bot_factory_settles", 8, false, function()
@@ -1300,7 +1309,7 @@ function Plugin:InitialiseScenarios()
 
 					local Alive = Player:GetIsAlive() == true
 					local Team = Player:GetTeamNumber()
-					local IsSkulk = Player:isa("Skulk")
+					local IsExpected = Player:isa(Expect[Index])
 					-- horde.Placement.Distance2D, NOT Vector:GetRangeTo: build 344's shipped
 					-- Vector.lua defines GetDistanceTo/GetLengthXZ and no GetRangeTo at all.
 					-- The first version of this line threw, and the throw printed NOTHING -
@@ -1314,13 +1323,13 @@ function Plugin:InitialiseScenarios()
 					local Range = horde.Placement.Distance2D(Player:GetOrigin(),
 						(OkE and Entrance) or Anchor)
 
-					print(string.format("[TEST-DIAG] bot %s id=%s alive=%s team=%s skulk=%s range=%.1fm placing=%s",
+					print(string.format("[TEST-DIAG] bot %s id=%s alive=%s team=%s want=%s is=%s range=%.1fm placing=%s",
 						tostring(Index), tostring(Bot:GetId()), tostring(Alive), tostring(Team),
-						tostring(IsSkulk), Range, tostring(#Spawn.Placing)))
+						tostring(Expect[Index]), tostring(Player:GetTechId()), Range, tostring(#Spawn.Placing)))
 
-					if not (Alive and Team == kTeam2Index and IsSkulk) then
-						return string.format("bot %s is not a live team-2 Skulk (alive=%s team=%s skulk=%s)",
-							tostring(Index), tostring(Alive), tostring(Team), tostring(IsSkulk))
+					if not (Alive and Team == kTeam2Index and IsExpected) then
+						return string.format("bot %s is not a live team-2 %s (alive=%s team=%s isa=%s)",
+							tostring(Index), tostring(Expect[Index]), tostring(Alive), tostring(Team), tostring(IsExpected))
 					end
 					-- Emergence is a CAPSULE-FIT search in a 1-10 m ring (the engine's egg
 					-- recipe - the tunnel origin is inside its own shell, so "right at the
@@ -2484,53 +2493,54 @@ function Plugin:InitialiseScenarios()
 			local SavedReg = horde.HordeRegistry
 			local SavedAnchor, SavedSnapped, SavedLogged = horde.HordeBaseAnchor, horde.HordeBaseSnapped, horde.HordeNoTargetLogged
 			local SavedLog = horde.Log
-			local Logs = {}
 
-			-- a destination 60 m from an arbitrary point, nowhere near where the bot
-			-- stands: the steer must write THIS, not the mouth the bot spawned beside
+			-- The anchor-fallback and no-base branches, isolated from the live station via the
+			-- resolver's injectable source - the branches the old always-anchor bug made moot.
+			local NoStations = function() return function() return nil end end
+			local ComplaintLogs = {}
+
 			horde.HordeBaseAnchor = { x = 70, y = 0, z = 10 }
 			horde.HordeBaseSnapped = nil
-			horde.HordeNoTargetLogged = nil
-			horde.HordeRegistry = Reg
-			horde.Log = function(Self, Message)
-				Logs[#Logs + 1] = Message
-			end
-
-			local Steered = horde:SteerHordeBots()
-			local Motion = Bot:GetMotion()
-			local Target = Motion.desiredMoveTarget
-
-			-- the no-anchor branch, with the books emptied: it must speak once
-			Reg:Unregister(Id)
+			local Anchored = horde:ResolveHordeTarget(NoStations)
 
 			horde.HordeBaseAnchor = nil
+			horde.HordeNoTargetLogged = nil
+			horde.Log = function(Self, Message) ComplaintLogs[#ComplaintLogs + 1] = Message end
+			horde:ResolveHordeTarget(NoStations)
+			horde:ResolveHordeTarget(NoStations)
 
-			local Quiet1 = horde:SteerHordeBots()
-			local Quiet2 = horde:SteerHordeBots()
+			--- The live map DOES have a marine command station, so the FIXED resolver must aim the
+			--- bot at the STATION's exact origin - not the stale anchor the single-variable loop
+			--- always fell back to. That silent fallback was the bug.
+			horde.Log = SavedLog
+			horde.HordeRegistry = Reg
 
+			local Base = horde:ResolveHordeTarget()
+			local Steered = horde:SteerHordeBots()
+			local Target = Bot:GetMotion().desiredMoveTarget
+
+			-- hand back the shared plugin state BEFORE any assert can raise (restore-before-assert).
 			horde.HordeRegistry, horde.HordeBaseAnchor, horde.HordeBaseSnapped = SavedReg, SavedAnchor, SavedSnapped
 			horde.HordeNoTargetLogged, horde.Log = SavedLogged, SavedLog
 
-			Bot:Disconnect()
-
-			Assert.Equal( 1, Steered, "the live bot was steered" )
-			Assert.NotNil( Target, "the motion object carries a move target now" )
-
-			local Flat = math.sqrt((Target.x - 70) * (Target.x - 70) + (Target.z - 10) * (Target.z - 10))
-
-			Assert.True( Flat < 15, "the target IS the base anchor (ground-snapped, flat dist " ..
-				string.format("%.1f", Flat) .. " m)" )
-			Assert.True( Quiet1 == 0 and Quiet2 == 0, "no anchor means no steering" )
-
 			local Complaints = 0
 
-			for _, Line in ipairs(Logs) do
+			for _, Line in ipairs(ComplaintLogs) do
 				if Line:find("nowhere to walk") then
 					Complaints = Complaints + 1
 				end
 			end
 
-			Assert.Equal( 1, Complaints, "and it is said once, not every tick" )
+			Assert.True( Anchored ~= nil and horde.Placement.Distance2D(Anchored, { x = 70, y = 0, z = 10 }) < 15,
+				"with no station, the steer falls back to the ground-snapped anchor" )
+			Assert.Equal( 1, Complaints, "no station AND no anchor says so once, not every tick" )
+			Assert.Equal( 1, Steered, "the live bot was steered" )
+			Assert.NotNil( Target, "the motion object carries a move target now" )
+			Assert.NotNil( Base, "the live map resolves a marine base to walk to" )
+			Assert.True( horde.Placement.Distance2D(Target, Base) < 1,
+				"the steer aims the bot at the resolved station, not the stale anchor it used to" )
+
+			Bot:Disconnect()
 		end )
 	end )
 
@@ -4017,33 +4027,45 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
-	-- Q34 economy, headless-verifiable halves. The extractor borrow is a pure function swap on
-	-- the global class table, so its round-trip is testable without a live round; the kill
-	-- bounty's DECISION (which lifeform pays what, and when nothing pays) is faked exactly the
-	-- way the file's header prescribes, leaving the real-kill path to the chair.
-	self:RegisterScenario( "economy_extractor_suppression_round_trip", false, function()
+	-- Q34/Q35 economy, headless-verifiable halves. The closed-economy borrow is a pure class-method
+	-- swap, so its round-trip is testable without a live round — including that it reaches the
+	-- DERIVED Extractor class (the first attempt patched only the base table and missed it). The
+	-- kill bounty's DECISION is faked exactly as the file header prescribes; the real-kill path and
+	-- the lifeform force stay with the chair.
+	self:RegisterScenario( "economy_closed_loop_round_trip", false, function()
 		local horde = Shine.Plugins.hordemode
 
 		Assert.True( type(ResourceTower) == "table" and type(ResourceTower.CollectResources) == "function",
 			"the extractor collect method exists before we borrow it" )
+		Assert.True( type(PlayingTeam) == "table" and type(PlayingTeam.UpdateMinResTick) == "function",
+			"the min-res tick exists before we borrow it" )
 
-		local Original = ResourceTower.CollectResources
+		local OrigCollect = ResourceTower.CollectResources
+		local OrigMinRes = PlayingTeam.UpdateMinResTick
 
-		Assert.True( horde:SetHordeExtractorIncome(true), "suppression reports it engaged" )
-		Assert.False( rawequal(ResourceTower.CollectResources, Original),
-			"the class method is swapped while the horde holds it" )
+		Assert.True( horde:SuppressHordePassiveIncome(), "closing the economy reports success" )
+		Assert.False( rawequal(ResourceTower.CollectResources, OrigCollect),
+			"the extractor collect method is swapped while the horde holds it" )
+		Assert.False( rawequal(PlayingTeam.UpdateMinResTick, OrigMinRes),
+			"the min-res tick is swapped too - the passive source the first playtest missed" )
 
-		-- Re-engaging must NOT snapshot the noop as the original (the autobuild guard, mirrored).
-		horde:SetHordeExtractorIncome(true)
-		Assert.True( rawequal(horde.HordeExtractorSaved, Original),
-			"a second engage does not overwrite the saved original with the stub" )
+		if type(Extractor) == "table" and type(Extractor.CollectResources) == "function" then
+			Assert.False( rawequal(Extractor.CollectResources, OrigCollect),
+				"the borrow reached the derived Extractor class, not just the base (ReplaceClassMethod)" )
+		end
 
-		horde:SetHordeExtractorIncome(false)
-		Assert.True( rawequal(ResourceTower.CollectResources, Original),
-			"teardown restores the exact original method" )
-		Assert.Nil( horde.HordeExtractorSaved, "the borrow is fully released" )
-		Assert.False( horde:SetHordeExtractorIncome(false),
-			"releasing a borrow we never took reports false, not an error" )
+		-- Re-engaging must not re-snapshot the noop as the original (the autobuild guard, mirrored).
+		horde:SuppressHordePassiveIncome()
+		Assert.True( rawequal(horde.HordeBorrows["ResourceTower:CollectResources"].Original, OrigCollect),
+			"a second engage keeps the pristine original, not the stub" )
+
+		Assert.True( horde:RestoreBorrowedMethods(), "restore reports it gave the methods back" )
+		Assert.True( rawequal(ResourceTower.CollectResources, OrigCollect),
+			"teardown restores the exact original collect method" )
+		Assert.True( rawequal(PlayingTeam.UpdateMinResTick, OrigMinRes),
+			"and the exact original min-res tick" )
+		Assert.False( horde:RestoreBorrowedMethods(),
+			"restoring a borrow we never took is a no-op, not an error" )
 	end )
 
 	self:RegisterScenario( "economy_kill_bounty_awards_by_lifeform", false, function()
@@ -4063,7 +4085,7 @@ function Plugin:InitialiseScenarios()
 
 		local function Pay(victim)
 			Awarded = 0
-			horde:OnEntityKilled(victim, Marine, Marine, nil, nil)
+			horde:AwardKillBounty(victim, Marine)
 
 			return Awarded
 		end
@@ -4074,7 +4096,7 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 0, Pay({ isa = function(_, Query) return Query == "Marine" end }),
 			"killing a marine pays nothing" )
 
-		-- The not-running guard is the whole safety of a globally-hooked method.
+		-- The not-running guard is the whole safety of a method now on the hot kill path.
 		horde.Machine = { IsActive = function() return false end }
 		Assert.Equal( 0, Pay(AlienOf("Fade")), "no bounty is awarded when no horde is running" )
 

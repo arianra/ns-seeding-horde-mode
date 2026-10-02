@@ -137,21 +137,26 @@ Plugin.DefaultConfig = {
 		},
 	},
 	Economy = {
-		--- Q34 (chair 2026-10-01): the horde owns its economy. Team resources come from
-		--- exactly TWO dials — a fixed start and the per-wave payout — and NOT from the
-		--- resource tower. `ExtractorIncome=false` makes the horde suppress the extractor's
-		--- team income for its duration (restored on teardown, like autobuild). These two
-		--- dials (StartingResources, WaveClearPayout) are deliberately SEPARATE from the
-		--- difficulty curve — the user flagged they may need different logic later.
-		StartingResources = 100,       -- applied to the marine team at horde start (was a dead knob)
-		ExtractorIncome = false,       -- false: extractors add nothing to team res while a horde runs
+		--- Q34/Q35 (chair 2026-10-01/02): the horde owns a CLOSED team economy. Team resources
+		--- come from exactly TWO dials — a fixed start and the per-wave payout — and from
+		--- NOTHING else. The suppression is broader than "extractor": with no collecting
+		--- extractor, vanilla's `PlayingTeam:UpdateMinResTick` hands the team 1 res every 12 s
+		--- for free, so the horde silences BOTH the extractor (`ResourceTower:CollectResources`)
+		--- and that min-res trickle for its duration (restored on teardown, like autobuild).
+		--- `ExtractorIncome=false` is the switch for the whole closed-economy borrow.
+		--- Q35: the chair found 100 (reaching 108 by wave 2 once min-res was counted) too high;
+		--- vanilla's own team start is 60, and a horde with instant builds should feel tight.
+		StartingResources = 50,        -- applied to the marine team at horde start (RD3 dial)
+		ExtractorIncome = false,       -- false: no extractor income AND no min-res trickle while a horde runs
 		WaveClearPayout = NewCurve(5, 40, true),   -- per-wave team res; 5→40 by PayoutReferenceWave
 		PayoutReferenceWave = 10,
 		PayoutPerPlayer = NewCurve(10, 2),    -- Q24: payout per head shrinks as players join
 		--- Personal resources to the marine who lands the killing blow, by victim lifeform
 		--- (Q34: "2 for a skulk or gorge, 3 for lerk, 4 for fade, 5 for onos, last kill gets
 		--- the money"). Vanilla build 344 has NO Lua kill→resource path (AwardPersonalResources
-		--- is uncalled), so the horde awards this itself via the OnEntityKilled hook.
+		--- is uncalled), so the horde awards it itself by borrowing `NS2Gamerules:OnEntityKilled`
+		--- — the class method that actually runs (Shine's `Gamerules` event hook is bypassed
+		--- because NS2Gamerules overrides it without calling the base). See server.lua.
 		KillBounty = {
 			Skulk = 2, Gorge = 2, Lerk = 3, Fade = 4, Onos = 5,
 		},
