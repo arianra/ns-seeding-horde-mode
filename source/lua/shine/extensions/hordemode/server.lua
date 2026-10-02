@@ -378,6 +378,20 @@ function Plugin:StartWave(Client, Now)
 	--- curve mean something survives untouched); only the clock goes away.
 	self:SetHordeBuildSpeed(true)
 
+	-- Q34: the horde closes the team economy. Extractor income is suppressed for the round
+	-- (restored at teardown) only when the config asks, and the marine team's pool is set to
+	-- the configured start — so wave payout + this number are the only team resources in play.
+	if Config.Economy and Config.Economy.ExtractorIncome == false then
+		self:SetHordeExtractorIncome(true)
+	end
+
+	self:ApplyHordeStartingResources(Config)
+
+	--- Cache the bounty table for the round so the OnEntityKilled hook never re-resolves
+	--- config on a busy kill tick. Cleared implicitly: the hook's IsActive guard makes it dead
+	--- weight the moment the horde is not running.
+	self.HordeKillBounty = Config.Economy and Config.Economy.KillBounty
+
 	local Seconds = self:BeginCountdown(Config.Start and Config.Start.CountdownSeconds)
 
 	-- Order matters to the person reading chat. The first version announced "WAVE 1 - 3
@@ -555,6 +569,118 @@ function Plugin:SetHordeBuildSpeed(On)
 	self:Log("horde build: autobuild restored to " .. tostring(Saved))
 
 	return true
+end
+
+--- Turn the resource tower's income off for the duration of a horde, and only for its
+--- duration — the same "borrow a lever, give it back" discipline as autobuild.
+---
+--- Why this seam: `ResourceTower:CollectResources` (ResourceTower_Server.lua:11) is the ONE
+--- method that pays an extractor — both the team pool (`team:AddTeamResources(kTeamResourcePerTick,
+--- true)` at :21) and each marine's personal trickle (`player:AddResources(kPlayerResPerInterval)`
+--- at :15). Silencing it kills both at once, which is exactly "no resources from the res tower".
+--- The node-depletion recursion (:35) and the collect sound go with it; both are cosmetic for a
+--- short horde round, and re-implementing the method minus two lines would couple us to vanilla
+--- internals we must not silently fork.
+---
+--- The patch is on the global class table, so it is process-local: a crash takes it down with the
+--- VM, and teardown restores the saved original. It engages ONLY when the config asks (ExtractorIncome
+--- false); a server that wants vanilla economy keeps it.
+function Plugin:SetHordeExtractorIncome(On)
+	if On then
+		if self.HordeExtractorSaved ~= nil then
+			return true
+		end
+
+		if type(ResourceTower) ~= "table" or type(ResourceTower.CollectResources) ~= "function" then
+			self:Log("horde economy: no ResourceTower.CollectResources - extractor income stays vanilla")
+
+			return false
+		end
+
+		self.HordeExtractorSaved = ResourceTower.CollectResources
+
+		ResourceTower.CollectResources = function() end
+		self:Log("horde economy: extractor income suppressed (team + personal) for the round")
+
+		return true
+	end
+
+	if self.HordeExtractorSaved == nil then
+		return false
+	end
+
+	local Saved = self.HordeExtractorSaved
+
+	self.HordeExtractorSaved = nil
+	ResourceTower.CollectResources = Saved
+	self:Log("horde economy: extractor income restored to vanilla")
+
+	return true
+end
+
+--- Set the marine team's resources to the horde's configured start, once, after the world
+--- reset (ResetGame zeroes them, so this must come after it). The horde's team economy is
+--- deliberately closed: this number plus the per-wave payout are the ONLY team income, and
+--- it replaces whatever the seeding session had banked so every horde starts on equal footing.
+function Plugin:ApplyHordeStartingResources(Config)
+	local Rules = GetGamerules()
+	local Start = Config and Config.Economy and Config.Economy.StartingResources
+	local MarineTeam = Rules and Rules.GetTeam and Rules:GetTeam(kTeam1Index)
+	if type(Start) ~= "number" or not MarineTeam or not MarineTeam.SetTeamResources then
+		return false
+	end
+
+	MarineTeam:SetTeamResources(math.floor(Start + 0.5))
+	self:Log(string.format("horde economy: marine team starts at %d resources", math.floor(Start + 0.5)))
+
+	return true
+end
+
+
+--- Personal-resource bounty for the marine who lands the killing blow on a horde bot (Q34:
+--- "the last kill gets the money" — 2 skulk/gorge, 3 lerk, 4 fade, 5 onos). Vanilla build 344
+--- has NO Lua kill->resource path (`PlayingTeam:AwardPersonalResources` is defined but never
+--- called), so the horde awards it itself rather than trying to bend a dead function.
+---
+--- Shine auto-hooks this because the plugin defines the method (extensions.lua:552 wires any
+--- `Plugin.<Event>` for a hooked event), and it fires for EVERY kill in ANY round — so the
+--- first line is a cheap not-running guard and nothing world-facing runs unless a horde is up.
+---
+--- The victim's lifeform selects the bounty: Skulk/Gorge/Lerk/Fade/Onos are distinct classes
+--- all under `isa("Alien")`, so `isa` reads the type with no extra lookup. During a horde the
+--- takeover has cleared vanilla bots and a real alien joining ends the mode, so every alien
+--- that dies while the machine is active is one of ours — the invariant this relies on. The
+--- bounty table is cached at start (`HordeKillBounty`) so a busy tick never re-resolves config.
+function Plugin:OnEntityKilled(targetEntity, attacker, doer, point, direction)
+	local Machine = self.Machine
+
+	if not Machine or not Machine:IsActive() then
+		return
+	end
+
+	local Bounty = self.HordeKillBounty
+
+	if type(Bounty) ~= "table" or not targetEntity or not targetEntity.isa or not targetEntity:isa("Alien") then
+		return
+	end
+
+	if not attacker or not attacker.AddResources or not attacker.isa or not attacker:isa("Marine") then
+		return
+	end
+
+	local Amount = 0
+
+	for _, Name in ipairs({ "Onos", "Fade", "Lerk", "Gorge", "Skulk" }) do
+		if targetEntity:isa(Name) then
+			Amount = tonumber(Bounty[Name]) or 0
+
+			break
+		end
+	end
+
+	if Amount > 0 then
+		attacker:AddResources(Amount)
+	end
 end
 
 --- Hand the round to vanilla's countdown. Returns the seconds the client will see.
@@ -1613,6 +1739,10 @@ function Plugin:Teardown(Now)
 	--- Give the build clock back with the win switch: the ordered handback now restores
 	--- every engine lever the horde borrowed (autobuild, suppression, controller, cap).
 	self:SetHordeBuildSpeed(false)
+
+	--- Give the extractor back too: the class patch is idempotent (returns false if we never
+	--- borrowed it), so a horde that ran with vanilla economy restores nothing and says nothing.
+	self:SetHordeExtractorIncome(false)
 
 	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",

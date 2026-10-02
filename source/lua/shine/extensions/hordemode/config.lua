@@ -89,11 +89,12 @@ Plugin.DefaultConfig = {
 		MinPlayers = 1,          -- real humans only; bot clients never count (verified, i0f)
 	},
 	Intermission = {
-		Seconds = 30,
-		--- Q33 (chair 2026-09-30): the gap after WAVE 1 is 15 s, every later one 30.
-		--- Wave 1 is a scout wave; doubling the first pause just stalls the session
-		--- before the mode has said anything. EndWavePhase stores the chosen wait on
-		--- the machine so the clock and the announcement can never disagree.
+		--- Chair 2026-10-01: "reduce intermission to 15 seconds for now." Flat 15 for
+		--- both first and later while the loop is being tested; the first/later split
+		--- (Q33) stays as a knob — set Seconds back above 15 to re-enable a longer
+		--- steady-state gap. EndWavePhase stores the chosen wait on the machine so the
+		--- clock and the announcement can never disagree.
+		Seconds = 15,
 		FirstSeconds = 15,
 		SkipCost = 0,            -- Q17 paid skip; 0 disables the charge
 	},
@@ -136,16 +137,24 @@ Plugin.DefaultConfig = {
 		},
 	},
 	Economy = {
-		--- Q33 (chair 2026-09-30): 25/wave was "too much res" - marines hit useful
-		--- upgrades (L1 armor 20, arms lab 20, shotgun 20) before the mode had
-		--- threatened them. Start 5: wave 1 pays nothing you can spend a plan on;
-		--- the first real purchase lands around wave 3-4 of cumulative payouts.
-		--- End 40 at PayoutReferenceWave 10 is the cap. Vanilla's own 60 start and
-		--- extractor income are not ours to change (and not touched).
-		WaveClearPayout = NewCurve(5, 40, true),
+		--- Q34 (chair 2026-10-01): the horde owns its economy. Team resources come from
+		--- exactly TWO dials — a fixed start and the per-wave payout — and NOT from the
+		--- resource tower. `ExtractorIncome=false` makes the horde suppress the extractor's
+		--- team income for its duration (restored on teardown, like autobuild). These two
+		--- dials (StartingResources, WaveClearPayout) are deliberately SEPARATE from the
+		--- difficulty curve — the user flagged they may need different logic later.
+		StartingResources = 100,       -- applied to the marine team at horde start (was a dead knob)
+		ExtractorIncome = false,       -- false: extractors add nothing to team res while a horde runs
+		WaveClearPayout = NewCurve(5, 40, true),   -- per-wave team res; 5→40 by PayoutReferenceWave
 		PayoutReferenceWave = 10,
 		PayoutPerPlayer = NewCurve(10, 2),    -- Q24: payout per head shrinks as players join
-		StartingResources = 1000,
+		--- Personal resources to the marine who lands the killing blow, by victim lifeform
+		--- (Q34: "2 for a skulk or gorge, 3 for lerk, 4 for fade, 5 for onos, last kill gets
+		--- the money"). Vanilla build 344 has NO Lua kill→resource path (AwardPersonalResources
+		--- is uncalled), so the horde awards this itself via the OnEntityKilled hook.
+		KillBounty = {
+			Skulk = 2, Gorge = 2, Lerk = 3, Fade = 4, Onos = 5,
+		},
 	},
 	Difficulty = {
 		Accuracy = NewCurve(0.1, 0.9),       -- RD2 -> PlayerBot.aimAbility, read live by BotAim
@@ -315,6 +324,28 @@ function Config.Sanitize(In)
 	Section("Waves", "BandMax", Config.BandFloor, Config.BandCeiling)
 	Section("Economy", "PayoutReferenceWave", 2, 200, true)
 	Section("Economy", "StartingResources", 0, 100000, true)
+	Flag("Economy", "ExtractorIncome")
+
+	--- KillBounty is a fixed set of lifeform keys; clamp each to a sane personal-resource
+	--- reward and drop anything that is not a number (a typo'd bounty must not silently
+	--- award 0 or a string). Unknown keys are left alone - the lookup ignores them.
+	local Bounty = In and In.Economy and In.Economy.KillBounty
+
+	if type(Bounty) == "table" then
+		for _, Name in ipairs({ "Skulk", "Gorge", "Lerk", "Fade", "Onos" }) do
+			if not IsNumber(Bounty[Name]) then
+				Bounty[Name] = 0
+				Changed = true
+			else
+				local Fixed = Clamp(math.floor(Bounty[Name] + 0.5), 0, 100)
+
+				if Fixed ~= Bounty[Name] then
+					Bounty[Name] = Fixed
+					Changed = true
+				end
+			end
+		end
+	end
 
 	Flag("Debug", "RevealMouths")
 

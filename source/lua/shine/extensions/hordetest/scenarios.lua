@@ -202,6 +202,8 @@ function Plugin:InitialiseScenarios()
 		Copy.Waves.Health = "not a curve"
 		Copy.Difficulty.Accuracy.Bezier = { 5, 0, 0.5, 0 }
 		Copy.Debug.RevealMouths = "false"
+		Copy.Economy.ExtractorIncome = "false"
+		Copy.Economy.KillBounty = { Skulk = -3, Gorge = "x", Lerk = 2.7, Fade = 4, Onos = 5 }
 
 		-- Keys newer than the config file on disk. A file written before `BandLineFactor`
 		-- existed arrives without it, and the sanitizer filled it from the CLAMP FLOOR (0)
@@ -212,6 +214,7 @@ function Plugin:InitialiseScenarios()
 
 		Missing.Waves.BandLineFactor = nil
 		Missing.Waves.PoolSize = nil
+		Missing.Economy.ExtractorIncome = nil
 
 		Assert.True( Config.Sanitize(Copy), "dirty config reports that it was corrected" )
 		Assert.Equal( 0, Copy.Start.Cooldown, "negative cooldown clamps to zero" )
@@ -222,6 +225,12 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Copy.Difficulty.Accuracy.Bezier[1] <= 1, "x control point kept inside [0,1] so difficulty stays monotonic" )
 		Assert.Equal( false, Copy.Debug.RevealMouths,
 			'a switch reads as a boolean: "false" in JSON must not become a truthy string' )
+		Assert.Equal( false, Copy.Economy.ExtractorIncome,
+			"the extractor switch normalizes to a boolean like every other flag" )
+		Assert.Equal( 0, Copy.Economy.KillBounty.Skulk, "a negative bounty clamps to zero" )
+		Assert.Equal( 0, Copy.Economy.KillBounty.Gorge, "a non-number bounty becomes zero, not a crash" )
+		Assert.Equal( 3, Copy.Economy.KillBounty.Lerk, "a fractional bounty rounds to a whole reward" )
+		Assert.Equal( 4, Copy.Economy.KillBounty.Fade, "a valid bounty passes through untouched" )
 
 		Assert.True( Config.Sanitize(Missing), "a config missing new keys reports the repair" )
 		Assert.Equal( 0.5, Missing.Waves.BandLineFactor, "a missing key takes the shipped default, not the clamp floor" )
@@ -4006,6 +4015,71 @@ function Plugin:InitialiseScenarios()
 				error( { Detail = "handback: " .. table.concat(Problems, "; ") } )
 			end
 		end )
+	end )
+
+	-- Q34 economy, headless-verifiable halves. The extractor borrow is a pure function swap on
+	-- the global class table, so its round-trip is testable without a live round; the kill
+	-- bounty's DECISION (which lifeform pays what, and when nothing pays) is faked exactly the
+	-- way the file's header prescribes, leaving the real-kill path to the chair.
+	self:RegisterScenario( "economy_extractor_suppression_round_trip", false, function()
+		local horde = Shine.Plugins.hordemode
+
+		Assert.True( type(ResourceTower) == "table" and type(ResourceTower.CollectResources) == "function",
+			"the extractor collect method exists before we borrow it" )
+
+		local Original = ResourceTower.CollectResources
+
+		Assert.True( horde:SetHordeExtractorIncome(true), "suppression reports it engaged" )
+		Assert.False( rawequal(ResourceTower.CollectResources, Original),
+			"the class method is swapped while the horde holds it" )
+
+		-- Re-engaging must NOT snapshot the noop as the original (the autobuild guard, mirrored).
+		horde:SetHordeExtractorIncome(true)
+		Assert.True( rawequal(horde.HordeExtractorSaved, Original),
+			"a second engage does not overwrite the saved original with the stub" )
+
+		horde:SetHordeExtractorIncome(false)
+		Assert.True( rawequal(ResourceTower.CollectResources, Original),
+			"teardown restores the exact original method" )
+		Assert.Nil( horde.HordeExtractorSaved, "the borrow is fully released" )
+		Assert.False( horde:SetHordeExtractorIncome(false),
+			"releasing a borrow we never took reports false, not an error" )
+	end )
+
+	self:RegisterScenario( "economy_kill_bounty_awards_by_lifeform", false, function()
+		local horde = Shine.Plugins.hordemode
+		local RealMachine = horde.Machine
+
+		horde.Machine = { IsActive = function() return true end }
+		horde.HordeKillBounty = { Skulk = 2, Gorge = 2, Lerk = 3, Fade = 4, Onos = 5 }
+
+		local function AlienOf(Name)
+			return { isa = function(_, Query) return Query == "Alien" or Query == Name end }
+		end
+
+		local Awarded = 0
+		local Marine = { isa = function(_, Query) return Query == "Marine" end,
+			AddResources = function(_, Amount) Awarded = Awarded + Amount end }
+
+		local function Pay(victim)
+			Awarded = 0
+			horde:OnEntityKilled(victim, Marine, Marine, nil, nil)
+
+			return Awarded
+		end
+
+		Assert.Equal( 2, Pay(AlienOf("Skulk")), "a skulk kill pays 2" )
+		Assert.Equal( 3, Pay(AlienOf("Lerk")), "a lerk kill pays 3" )
+		Assert.Equal( 5, Pay(AlienOf("Onos")), "an onos kill pays 5" )
+		Assert.Equal( 0, Pay({ isa = function(_, Query) return Query == "Marine" end }),
+			"killing a marine pays nothing" )
+
+		-- The not-running guard is the whole safety of a globally-hooked method.
+		horde.Machine = { IsActive = function() return false end }
+		Assert.Equal( 0, Pay(AlienOf("Fade")), "no bounty is awarded when no horde is running" )
+
+		horde.Machine = RealMachine
+		horde.HordeKillBounty = nil
 	end )
 
 	self:RegisterScenario( "negative_control", true, function()
