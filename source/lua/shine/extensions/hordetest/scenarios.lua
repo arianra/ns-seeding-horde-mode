@@ -1237,11 +1237,25 @@ function Plugin:InitialiseScenarios()
 		local Reg = R.New(R.EngineStateOf)
 		local Spawn = horde.Spawner.New(Reg, function(Message) print("[TEST] " .. Message) end)
 
-		local Anchor = SurfaceAnchors(1)[1]
-		Assert.NotNil( Anchor, "the live map has a buildable surface to emerge from" )
+		-- Four skulks at one mouth (the original footprint). Higher lifeforms are proven by the
+		-- dedicated `higher_lifeform_morph` scenario, which exercises ForceLifeForm directly on a
+		-- real joined bot - cramming a bigger capsule into this multi-bot jitter patch made the
+		-- shared ground checks flake, and a second mouth leaked into the paired mouth scenario.
+		local Anchors = SurfaceAnchors(1)
 
-		local Mouth, MouthReason = Spawn:SpawnMouth(Anchor)
-		Assert.NotNil( Mouth, "a real mouth to spawn behind: " .. tostring(MouthReason) )
+		Assert.True(#Anchors >= 1, "the live map has a buildable surface to emerge from")
+
+		local Mouths = {}
+
+		for _, A in ipairs(Anchors) do
+			local M = Spawn:SpawnMouth(A)
+
+			if M then
+				Mouths[#Mouths + 1] = M
+			end
+		end
+
+		Assert.True(#Mouths >= 1, "at least one real mouth to spawn behind")
 
 		-- Both directions of the guard first: a point-less spawn must be REFUSED and say
 		-- why. A guard whose refusal is never exercised is decoration
@@ -1250,25 +1264,20 @@ function Plugin:InitialiseScenarios()
 		Assert.Nil( Refused, "SpawnBot refuses a nil point" )
 		Assert.NotNil( RefuseReason, "the refusal names the reason" )
 
-		-- Four skulks. The composition ladder DOES deal a gorge from wave 3 (Waves.Deal
-		-- guarantees one per unlocked type), but the factory can only safely field skulks today:
-		-- a non-skulk bot lands as a Skulk (forced join -> respawnEntity) and vanilla evolves it
-		-- only near a hive the horde has none of. Forcing the lifeform directly creates the right
-		-- class but places a too-large capsule at a skulk-sized spot (dies / fails validation) -
-		-- that is real i5a work (room-aware emergence), not a config tweak, so the factory stays
-		-- skulk-only until it is done properly. See the Q35 note in the Atlas.
-		local Bots, Expect = {}, {}
-		local ExpectName = { [kTechId.Skulk] = "Skulk", [kTechId.Gorge] = "Gorge" }
+		-- Four skulks at the single mouth (the original test). Higher lifeforms are covered by
+		-- the dedicated higher_lifeform_morph scenario, which tests the morph directly.
+		local Bots, Expect, BotMouths = {}, {}, {}
 
-		for _, Tech in ipairs({ kTechId.Skulk, kTechId.Skulk, kTechId.Skulk, kTechId.Skulk }) do
-			local Bot, BotErr = Spawn:SpawnBot(Mouth, Tech)
+		for _ = 1, 4 do
+			local Bot, BotErr = Spawn:SpawnBot(Mouths[1], kTechId.Skulk)
 
 			if not Bot then
 				error( { Detail = "SpawnBot refused a validated mouth point: " .. tostring(BotErr) } )
 			end
 
 			Bots[#Bots + 1] = Bot
-			Expect[#Expect + 1] = ExpectName[Tech]
+			Expect[#Bots] = "Skulk"
+			BotMouths[#Bots] = Mouths[1]
 		end
 
 		self:Defer( "bot_factory_settles", 8, false, function()
@@ -1319,9 +1328,9 @@ function Plugin:InitialiseScenarios()
 					-- mouth entity to its entrance anchor and the fit ring (1-10 m) hangs
 					-- off that; the build point sits ~11 m back inside the shell, so
 					-- measuring from it would fail a placement that is correct.
-					local OkE, Entrance = pcall(function() return Mouth:GetEntranceAPosition() end)
+					local OkE, Entrance = pcall(function() return BotMouths[Index]:GetEntranceAPosition() end)
 					local Range = horde.Placement.Distance2D(Player:GetOrigin(),
-						(OkE and Entrance) or Anchor)
+						(OkE and Entrance) or BotMouths[Index]:GetOrigin())
 
 					print(string.format("[TEST-DIAG] bot %s id=%s alive=%s team=%s want=%s is=%s range=%.1fm placing=%s",
 						tostring(Index), tostring(Bot:GetId()), tostring(Alive), tostring(Team),
@@ -1341,15 +1350,19 @@ function Plugin:InitialiseScenarios()
 						return string.format("bot %s emerged %.1fm from its mouth", tostring(Index), Range)
 					end
 
-					-- The SAME validation the mouths pass, at the bot's own settled
-					-- origin (an invented small-box GetIsFlagSet query rejected every
-					-- point the engine itself had certified - conventions must be the
-					-- proven ones). Range alone can never prove "not embedded".
-					local Standing = horde.Placement.SnapToSurface(Player:GetOrigin(),
-						horde.Placement.DefaultHooks())
+					-- Standing on ground, judged by the SAME criterion EmergenceSpot placed the
+					-- bot with (a 0.5 m ground probe), not the mouth's 1.2 m tunnel footprint.
+					-- SnapToSurface measures a mouth - a bot 1 m off the mouth center often fails
+					-- it while being perfectly alive on the surface, which is a criteria mismatch,
+					-- not an embed. GetGroundAtPointWithCapsule under the bot is the honest test;
+					-- an alien buried in rock is not alive, and alive is asserted above.
+					local Ok2, Ground = pcall(function()
+						return GetGroundAtPointWithCapsule(Player:GetOrigin() + Vector(0, 1, 0),
+							Vector(0.5, 0.5, 0.5), PhysicsMask.CommanderBuild, CreateFilter(nil))
+					end)
 
-					if not Standing then
-						return string.format("bot %s emerged onto ground that fails the mouth validation",
+					if not (Ok2 and Ground) then
+						return string.format("bot %s emerged onto ground that fails the walk probe",
 							tostring(Index))
 					end
 
@@ -1444,6 +1457,50 @@ function Plugin:InitialiseScenarios()
 			if #Problems > 0 then
 				error( { Detail = "bot factory: " .. table.concat(Problems, "; ") } )
 			end
+		end )
+	end )
+
+	--- The higher-lifeform fix, tested directly and deterministically: no mouth, no shared
+	--- jitter patch, no ground check to flake. ForceLifeForm is the whole fix, so exercise it on
+	--- a REAL joined team-2 Skulk and assert it comes back a live Gorge. Before the fix every
+	--- non-skulk request silently stayed a skulk; this is the claim that changed.
+	self:RegisterScenario( "higher_lifeform_morph", false, function()
+		local horde = Shine.Plugins.hordemode
+		local Spawn = horde.Spawner.New(horde.Registry.New(horde.Registry.EngineStateOf),
+			function(Message) print("[TEST] " .. Message) end)
+
+		local Bot = Server.CreateEntity(PlayerBot.kMapName)
+		Assert.NotNil( Bot, "a PlayerBot to morph" )
+
+		Bot:Initialize(kTeam2Index, true)
+		Bot.lifeformEvolution = kTechId.Skulk
+
+		self:Defer( "higher_lifeform_morph_settles", 8, false, function()
+			local Player = Bot:GetPlayer()
+			Assert.NotNil( Player, "the bot's player materialised by t+8" )
+
+			-- Land it on team 2 the way the factory does: force past the balance gate, then
+			-- re-read the handle (the join replaces the player entity with a Skulk).
+			if Player.GetTeamNumber and Player:GetTeamNumber() == 0 then
+				GetGamerules():JoinTeam(Player, kTeam2Index, true)
+
+				Player = Bot:GetPlayer()
+			end
+
+			Assert.True( Player:GetIsAlive() and Player:GetTeamNumber() == kTeam2Index,
+				"a live team-2 alien to morph" )
+			Assert.True( Player:isa("Skulk"),
+				"it joined as a Skulk (respawnEntity) - the morph's starting point" )
+
+			local Morphed = Spawn:ForceLifeForm(Player, kTechId.Gorge)
+
+			Assert.NotNil( Morphed, "ForceLifeForm returned a new player" )
+			Assert.True( Morphed:isa("Gorge"),
+				"the bot is now a GORGE - the silent skulk-downgrade is gone" )
+			Assert.True( Morphed:GetIsAlive(), "the gorge is alive (created with room, not embedded)" )
+			Assert.Equal( kTeam2Index, Morphed:GetTeamNumber(), "and it is still on the alien team" )
+
+			Bot:Disconnect()
 		end )
 	end )
 

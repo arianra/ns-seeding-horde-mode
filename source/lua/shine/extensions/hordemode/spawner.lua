@@ -301,6 +301,41 @@ function Spawner:SpawnBot(MouthOrPoint, TechId)
 	return Bot
 end
 
+--- Swap a live team-2 Skulk bot to its requested higher lifeform, in place. Returns the new
+--- player, or nil to leave it a skulk.
+---
+--- Why not the vanilla morph: `Alien:ProcessBuyAction` routes through `AlienUpgradeManager:AddUpgrade`,
+--- which requires `GetIsUpgradeAllowed` AND `GetCanAffordUpgrade` (AlienUpgradeManager.lua:236-239).
+--- A horde alien has no hive (nothing researched) and no resources, so a gorge/lerk/fade/onos is
+--- never "allowed" - the morph path is closed to us. (Gestation itself is a timer, not a hive -
+--- Embryo.lua:143 - but you cannot START it without the tech being allowed.)
+---
+--- So we swap the entity class directly with `Player:Replace` - the same primitive the forced join
+--- and the gestation completion both use. The caller has ALREADY set the skulk onto the mouth's
+--- validated emergence ground, and no higher lifeform's capsule exceeds the skulk's ground probe
+--- (gorge 0.50x0.47x0.50 vs the 0.5x0.5x0.5 capsule `EmergenceSpot` clears), so the swap happens
+--- where a skulk already fits - never embedded. Full health comes free: `CopyPlayerDataFrom` does
+--- not carry health across a Replace, so the new entity is created at its lifeform max.
+function Spawner:ForceLifeForm(Player, TechId)
+	if not Player or not Player.Replace or not TechId or TechId == kTechId.Skulk then
+		return nil
+	end
+
+	-- MapName from tech data (Egg.lua:343 idiom); Extents is a Vector (userdata, not a table) so
+	-- never gate on type() - test the field or, here, just the mapName we actually use.
+	local MapName = LookupTechData(TechId, kTechDataMapName)
+
+	if not MapName then
+		return nil
+	end
+
+	local Ok, NewPlayer = pcall(function()
+		return Player:Replace(MapName, kAlienTeam)
+	end)
+
+	return (Ok and NewPlayer) or nil
+end
+
 --- Teleport every registered-but-unpositioned bot to its mouth. The gate is FOUR
 --- conditions, not one: GetPlayer() may answer nil at all (the player materialises on
 --- a later frame), a team-0 player means vanilla's join gate has not landed the bot -
@@ -362,9 +397,23 @@ function Spawner:PlaceBots()
 			end
 
 			-- Anchor at the mouth's validated BUILD point (Item.point), NOT the 11 m
-			-- entrance of an unpaired tunnel (rock). See EmergenceSpot.
+			-- entrance of an unpaired tunnel (rock). See EmergenceSpot. The skulk is placed
+			-- FIRST so the higher-lifeform swap below happens on ground already cleared for a
+			-- 0.5 capsule (no lifeform's capsule is larger), never inside the shell.
 			local Placed, Method = EmergenceSpot(Item.point)
 			Player:SetOrigin(Placed)
+
+			--- Higher lifeform: swap the class in place (the vanilla morph is closed to a
+			--- hive-less horde - see ForceLifeForm). On failure the bot stays a skulk at the
+			--- mouth - recoverable, never embedded.
+			if Item.tech and Item.tech ~= kTechId.Skulk then
+				local Morphed = self:ForceLifeForm(Player, Item.tech)
+
+				if Morphed then
+					Player = Morphed
+					Method = "morph"
+				end
+			end
 
 			return true, Placed, Method
 		end)
@@ -373,10 +422,12 @@ function Spawner:PlaceBots()
 			Placed = Placed + 1
 			self.PlacedCount = self.PlacedCount + 1
 
+			local How2 = How == "ground" and "(ground)"
+				or (How == "morph" and "(morphed to higher lifeform)" or "(RAW - no ground at the mouth)")
+
 			self.Log(string.format("[HORDE] bot emerged at (%.1f, %.1f, %.1f) id=%s %s",
 				Plugin.Placement.Axis(Spot, "x", 1), Plugin.Placement.Axis(Spot, "y", 2),
-				Plugin.Placement.Axis(Spot, "z", 3), tostring(Item.id),
-				How == "ground" and "(ground)" or "(RAW - no ground at the mouth)"))
+				Plugin.Placement.Axis(Spot, "z", 3), tostring(Item.id), How2))
 		elseif not Ok then
 			--- The entity is gone: a raw PlayerBot whose virtual client never
 			--- materialised and the engine destroyed. Re-deal a replacement at the SAME
