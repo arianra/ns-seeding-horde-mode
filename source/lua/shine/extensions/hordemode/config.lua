@@ -100,7 +100,8 @@ Plugin.DefaultConfig = {
 	},
 	Waves = {
 		PoolSize = 6,            -- Q28 pool, decision allows 5-8
-		ActivePerWave = 3,
+		ActivePerWave = 4,       -- Q36: wider simultaneous pressure than the old 3 (summit's band
+		                         -- may cap the real number it can place - see the 5ss placement call)
 		BandMin = 56,            -- spike tby: summit's reachable near-base band is 56-80m
 		BandMax = 90,            -- the pre-spike 20m guess selects nothing on vanilla maps
 		--- The band is measured in WALKING metres, so a route could still leave a mouth 5 m
@@ -116,7 +117,9 @@ Plugin.DefaultConfig = {
 		--- "evaluate to Start", which for those is multiplier 1 / flat HP: honest nothing.
 		ReferenceWave = 20,          -- untuned, placeholder 2026-09-30
 		WipeGraceSeconds = 3,        -- D4: every real marine dead CONTINUOUSLY this long is the wipe
-		Composition = NewCurve(3, 15, true),   -- the only curve that ships ENABLED: weak but REAL
+		Composition = NewCurve(4, 20, true),   -- Q36: slightly higher difficulty - more aliens from
+		                                     -- wave 1 and a steeper ramp (was 3->15); the only curve
+		                                     -- that ships ENABLED until the stat multipliers are wired
 		Health = NewCurve(1, 3),
 		Armor = NewCurve(0, 2),
 		Damage = NewCurve(1, 2),

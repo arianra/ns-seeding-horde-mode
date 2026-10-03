@@ -342,8 +342,8 @@ function Plugin:InitialiseScenarios()
 
 		Assert.True( type(Resolved.Waves) == "table", "a minimal file still resolves a Waves section" )
 		Assert.Equal( "table", type(Resolved.Waves.Composition), "with the composition curve, not nil" )
-		Assert.Equal( 3, horde.Waves.HordeSize(Resolved.Waves, Config.EvaluateCurve, 1),
-			"which is 3 aliens at wave 1, not the floor of 1" )
+		Assert.Equal( 4, horde.Waves.HordeSize(Resolved.Waves, Config.EvaluateCurve, 1),
+			"which is the shipped wave-1 size (Q36: 4), not the floor of 1" )
 		Assert.Equal( "table", type(Resolved.Economy.WaveClearPayout), "the payout curve too" )
 		Assert.Equal( 15, Resolved.Intermission.FirstSeconds, "and the first intermission" )
 		Assert.NotNil( Resolved.Start, "the Start section whose absence skipped the world reset" )
