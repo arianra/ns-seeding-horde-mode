@@ -385,6 +385,11 @@ function Plugin:StartWave(Client, Now)
 	--- by RestoreBorrowedMethods at teardown.
 	self.HordeKillBounty = Config.Economy and Config.Economy.KillBounty
 	self.HordeIPsCleared = nil
+	self.HordeHivesBuilt = nil
+
+	-- Q18: hives are invincible for the whole round; engaged here (before the tick builds them)
+	-- and given back at teardown.
+	self:SetHordeHiveInvincible(true)
 
 	if Config.Economy and Config.Economy.ExtractorIncome == false then
 		self:SuppressHordePassiveIncome()
@@ -1270,6 +1275,116 @@ function Plugin:ClearStartingInfantryPortal()
 	end
 end
 
+--- Build one invincible alien hive at a TechPoint, through the engine's own spawn path, and
+--- return it (or nil). Public seam so the headless suite can exercise a single hive without a
+--- started round; `PrebuildHiveNests` is the round-level one-shot that calls it per point.
+function Plugin:BuildHiveAtTechPoint(TP)
+	if not TP then
+		return nil
+	end
+
+	local Ok, Hive = pcall(function()
+		local h = TP:SpawnCommandStructure(kTeam2Index)
+
+		if h then
+			h:SetConstructionComplete()
+
+			local Coords = TP:GetCoords()
+			Coords.origin = h:GetOrigin()
+			h:SetCoords(Coords)
+
+			pcall(function() h:SetInfestationFullyGrown() end)
+		end
+
+		return h
+	end)
+
+	if Ok and Hive then
+		if self.HordeRegistry then
+			self.HordeRegistry:Register(Hive, Plugin.Registry.Kind.Entity)
+		end
+
+		return Hive
+	end
+
+	return nil
+end
+
+--- Q18 map frame: prebuild an invincible hive at EVERY authored TechPoint except the marine
+--- base (DESIGN.md §3: "ALL authored hive spots (except marine base) prebuilt with invincible
+--- hives"). One-shot from the tick once the round has started — the exclusion (the marine team's
+--- chosen startTechPoint) is only known after vanilla spawns the marine command station, and
+--- building on top of it would be wrong. Every hive is registered so teardown destroys exactly
+--- what we made (the isolation promise). Invincibility is the borrowed AlienHive damage override.
+function Plugin:PrebuildHiveNests()
+	if self.HordeHivesBuilt then
+		return
+	end
+
+	local Rules = GetGamerules()
+
+	if not Rules or not Rules.GetGameStarted or not Rules:GetGameStarted() then
+		return
+	end
+
+	local MarineTeam = Rules.GetTeam and Rules:GetTeam(kTeam1Index)
+	local MarineTech = MarineTeam and MarineTeam.startTechPoint
+
+	if not MarineTech then
+		return
+	end
+
+	local Built = 0
+
+	for _, TP in ientitylist(Shared.GetEntitiesWithClassname("TechPoint")) do
+		if TP ~= MarineTech and self:BuildHiveAtTechPoint(TP) then
+			Built = Built + 1
+		end
+	end
+
+	self.HordeHivesBuilt = true
+	self:Log(string.format("horde map frame: %s invincible hive(s) prebuilt at the alien tech points", Built))
+end
+
+--- Make alien hives invincible for the horde (Q18). The command-hive class is `Hive`
+--- (Hive.kMapName = "hive"; kTechId.Hive), NOT "AlienHive". `LiveMixin:GetCanTakeDamage` consults
+--- `GetCanTakeDamageOverride`, so we ADD one on `Hive` that returns false. It is a brand-new method
+--- (Hive defines none), so this is add/remove, not the ReplaceClassMethod borrow (which only swaps
+--- an existing method). Teardown's Kill() still destroys the hives: that path consults GetCanDie,
+--- which we leave alone.
+function Plugin:SetHordeHiveInvincible(On)
+	if On then
+		if self.HordeHiveInvincibleApplied then
+			return true
+		end
+
+		if type(Hive) ~= "table" then
+			self:Log("horde map frame: no Hive class - hives not invincible")
+
+			return false
+		end
+
+		self.HordeHiveInvincibleOriginal = rawget(Hive, "GetCanTakeDamageOverride")
+
+		Hive.GetCanTakeDamageOverride = function() return false end
+		self.HordeHiveInvincibleApplied = true
+		self:Log("horde map frame: alien hives invincible for the round")
+
+		return true
+	end
+
+	if not self.HordeHiveInvincibleApplied then
+		return false
+	end
+
+	Hive.GetCanTakeDamageOverride = self.HordeHiveInvincibleOriginal
+	self.HordeHiveInvincibleOriginal = nil
+	self.HordeHiveInvincibleApplied = nil
+	self:Log("horde map frame: hive invincibility restored")
+
+	return true
+end
+
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
@@ -1309,6 +1424,10 @@ function Plugin:HordeTick()
 		-- not want it (not necessary, and unearned economy). The tick clears it once the round
 		-- is live. One-shot — a marine who later builds one keeps it.
 		self:ClearStartingInfantryPortal()
+
+		-- Q18 map frame: once the round is live (marine tech point chosen), prebuild the
+		-- invincible hive nests at every other tech point. One-shot; see PrebuildHiveNests.
+		self:PrebuildHiveNests()
 	end
 
 	-- Measured after the prune and the pump, so the status line reports what the engine has
@@ -1845,6 +1964,12 @@ function Plugin:Teardown(Now)
 	--- OnEntityKilled wrapper). Idempotent: a horde that ran with vanilla economy borrowed
 	--- nothing, so this restores nothing and stays silent.
 	self:RestoreBorrowedMethods()
+
+	--- Hive invincibility is a separate add/remove (not a ReplaceClassMethod borrow), so it is
+	--- restored explicitly. The hives themselves were registered, so the DestroyAll above already
+	--- removed them; this only gives the AlienHive class back its vanilla damage behaviour.
+	self:SetHordeHiveInvincible(false)
+	self.HordeHivesBuilt = nil
 
 	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
 		(#Leaked == 0 and #Failed == 0) and "PASS" or "FAIL",

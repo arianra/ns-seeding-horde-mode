@@ -304,11 +304,13 @@ end
 --- Swap a live team-2 Skulk bot to its requested higher lifeform, in place. Returns the new
 --- player, or nil to leave it a skulk.
 ---
---- Why not the vanilla morph: `Alien:ProcessBuyAction` routes through `AlienUpgradeManager:AddUpgrade`,
---- which requires `GetIsUpgradeAllowed` AND `GetCanAffordUpgrade` (AlienUpgradeManager.lua:236-239).
---- A horde alien has no hive (nothing researched) and no resources, so a gorge/lerk/fade/onos is
---- never "allowed" - the morph path is closed to us. (Gestation itself is a timer, not a hive -
---- Embryo.lua:143 - but you cannot START it without the tech being allowed.)
+--- Why not the vanilla morph (two independent blockers, even now that Q18 prebuilds hives):
+---   (1) the brain only evolves near a hive (`distanceToNearestHive < 8`, CommonAlienActions.lua:741)
+---   and bots spawn at the MOUTHS by the marine base - far from the scattered hive nests; and
+---   (2) `Alien:ProcessBuyAction` routes through `AlienUpgradeManager:AddUpgrade`, which needs
+---   `GetIsUpgradeAllowed` AND `GetCanAffordUpgrade` (:236-239) - a hive does not instantly research
+---   a lifeform, so the tech is not "allowed" at spawn. (Gestation is a timer, not a hive -
+---   Embryo.lua:143 - but you cannot START it without the tech being allowed.)
 ---
 --- So we swap the entity class directly with `Player:Replace` - the same primitive the forced join
 --- and the gestation completion both use. The caller has ALREADY set the skulk onto the mouth's

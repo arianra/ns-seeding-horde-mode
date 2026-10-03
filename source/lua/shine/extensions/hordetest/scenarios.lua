@@ -1504,6 +1504,56 @@ function Plugin:InitialiseScenarios()
 		end )
 	end )
 
+	--- Q18 map frame: a hive built at a TechPoint is a live, invincible, registered team-2 nest,
+	--- and teardown removes it. Uses the real TechPoint entities (map data, present in warmup) and
+	--- the production BuildHiveAtTechPoint seam. The round-level PrebuildHiveNests one-shot (its
+	--- GetGameStarted + marine-techpoint gate) is chair-verified; this proves the per-hive build.
+	self:RegisterScenario( "hive_nest_prebuild", false, function()
+		local horde = Shine.Plugins.hordemode
+
+		local TP
+
+		for _, Ent in ientitylist(Shared.GetEntitiesWithClassname("TechPoint")) do
+			TP = Ent
+
+			break
+		end
+
+		Assert.NotNil( TP, "the live map has a TechPoint to nest a hive on" )
+
+		-- Isolate: swap in a fresh registry so the hive is tracked and torn down here, not on the
+		-- plugin's real books (restore-before-assert).
+		local SavedReg = horde.HordeRegistry
+		horde.HordeRegistry = horde.Registry.New(horde.Registry.EngineStateOf)
+
+		Assert.True( horde:SetHordeHiveInvincible(true), "hive invincibility engages" )
+
+		local Nest = horde:BuildHiveAtTechPoint(TP)
+		local Built = Nest ~= nil
+		local IsHive, OnTeam, CanDamage, Registered = false, false, true, 0
+
+		if Built then
+			IsHive = Nest:isa("Hive")
+			OnTeam = Nest:GetTeamNumber() == kTeam2Index
+			CanDamage = Nest:GetCanTakeDamage()
+			Registered = horde.HordeRegistry:CountByKind("entity")
+		end
+
+		-- restore + tear down BEFORE asserting, so a failed assert cannot leak an invincible hive
+		horde.DestroyAll(horde.HordeRegistry, nil, nil)
+		local AfterCount = horde.HordeRegistry:CountByKind("entity")
+		horde.HordeRegistry = SavedReg
+		horde:SetHordeHiveInvincible(false)
+
+		Assert.True( Built, "BuildHiveAtTechPoint created a hive" )
+		Assert.True( IsHive, "it is a Hive (the command structure class)" )
+		Assert.True( OnTeam, "on the alien team" )
+		Assert.False( CanDamage, "and invincible (GetCanTakeDamage is false)" )
+		Assert.True( Registered >= 1, "the hive is on the books for teardown" )
+		Assert.Equal( 0, AfterCount, "DestroyAll removed it" )
+		Assert.Nil( rawget(Hive, "GetCanTakeDamageOverride"), "the class damage override is restored to none" )
+	end )
+
 	-- i4a: the band, the dedupe and the sector rules ARE the design decisions (Q28,
 	-- spike tby), so they are asserted as pure geometry over injected tables. No map,
 	-- no entities, no engine - which is the only reason these are cheap to keep honest.
