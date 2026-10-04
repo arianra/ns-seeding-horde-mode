@@ -54,8 +54,48 @@ function Spawner.New(Registry, Log, Reveal)
 		BotCount = 0,
 		PlacedCount = 0,
 		FailedCount = 0,
-		Reveal = Reveal == true
+		Reveal = Reveal == true,
+		-- The current wave's per-alien stat multipliers, set by BeginWave from the Health/Armor
+		-- curves and applied by PlaceBots as each bot lands. { Health = ×maxHealth, Armor = +armor }.
+		-- Defaults are honest no-ops (×1, +0) so a disabled curve never touches a bot.
+		WaveScale = { Health = 1, Armor = 0 }
 	}, Spawner)
+end
+
+--- Scale a live bot's survivability to the wave's difficulty (Q37). Health is a multiplier on
+--- maxHealth (SetHealth clamps to max, so raise max first); Armor is a flat add. Both are the
+--- EHP axis of the Threat Index - the per-alien "tougher, not just more" lever the count curve
+--- alone cannot express. Every read/write is pcall'd (the bot can die between placement and
+--- this), and a no-op scale (×1/+0) touches nothing.
+function Spawner:ApplyBotScale(Player)
+	local scale = self.WaveScale or {}
+	local healthMult = tonumber(scale.Health) or 1
+	local armorAdd = tonumber(scale.Armor) or 0
+
+	if healthMult ~= 1 then
+		pcall(function()
+			local max = Player:GetMaxHealth()
+
+			if max and max > 0 then
+				Player:SetMaxHealth(math.floor(max * healthMult))
+
+				Player:SetHealth(Player:GetMaxHealth())
+			end
+		end)
+	end
+
+	if armorAdd > 0 then
+		pcall(function()
+			local max = Player:GetMaxArmor() or 0
+			local armor = Player:GetArmor() or 0
+
+			-- Raise the cap first (SetArmor clamps to maxArmor, exactly like SetHealth clamps to
+			-- maxHealth), then fill - otherwise the add is silently lost to the class ceiling.
+			Player:SetMaxArmor(max + armorAdd)
+
+			Player:SetArmor(armor + armorAdd)
+		end)
+	end
 end
 
 --- HP scaling hook. v0 ships curves disabled (RD3: balance numbers are Arian's and
@@ -416,6 +456,10 @@ function Spawner:PlaceBots()
 					Method = "morph"
 				end
 			end
+
+			--- Scale the (possibly morphed) bot to this wave's difficulty. After the swap so the
+			--- target lifeform's max health/armor is what gets multiplied.
+			self:ApplyBotScale(Player)
 
 			return true, Placed, Method
 		end)

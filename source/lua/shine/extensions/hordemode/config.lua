@@ -118,9 +118,11 @@ Plugin.DefaultConfig = {
 		ReferenceWave = 20,          -- untuned, placeholder 2026-09-30
 		WipeGraceSeconds = 3,        -- D4: every real marine dead CONTINUOUSLY this long is the wipe
 		Composition = NewCurve(4, 20, true),   -- Q36: slightly higher difficulty - more aliens from
-		                                     -- wave 1 and a steeper ramp (was 3->15); the only curve
-		                                     -- that ships ENABLED until the stat multipliers are wired
-		Health = NewCurve(1, 3),
+		                                     -- wave 1 and a steeper ramp (was 3->15). Count is the
+		                                     -- "more" axis; Health (below) is the "tougher" axis.
+		Health = NewCurve(1, 1.5, true),   -- Q37: wired + enabled modestly - aliens ramp to 1.5x max
+		                                   -- HP by ReferenceWave (the "tougher, not just more" lever).
+		                                   -- Applied by Spawner:ApplyBotScale. RD3 dial.
 		Armor = NewCurve(0, 2),
 		Damage = NewCurve(1, 2),
 		MouthHealth = NewCurve(1000, 4000),   -- Q29: wave-1 mouths near-indestructible
@@ -181,6 +183,11 @@ Plugin.DefaultConfig = {
 		-- commented out, which is what makes it visible through rock). We create no entity
 		-- and fake nothing, and the blip dies with the mouth (DetectableMixin.lua:117-126).
 		RevealMouths = false,
+		-- Dev aid, off by default. When on, every damage event a horde bot takes is logged
+		-- (time, victim, lifeform, damage, type, weapon) and its death closes the record. A
+		-- playtest with this on yields real time-to-kill and implied fire rates - the asset-
+		-- driven numbers the Threat Index cannot read from Lua (see POWER-TAXONOMY §3.5 caveat).
+		CombatTelemetry = false,
 	},
 	Maps = {},
 }
@@ -356,6 +363,7 @@ function Config.Sanitize(In)
 	end
 
 	Flag("Debug", "RevealMouths")
+	Flag("Debug", "CombatTelemetry")
 
 	Section("Waves", "BandLineFactor", 0, 1)
 

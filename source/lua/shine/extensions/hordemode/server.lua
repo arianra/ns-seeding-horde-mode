@@ -391,6 +391,11 @@ function Plugin:StartWave(Client, Now)
 	-- and given back at teardown.
 	self:SetHordeHiveInvincible(true)
 
+	-- Q38: opt-in combat telemetry for TTK/fire-rate calibration (off by default).
+	if Config.Debug and Config.Debug.CombatTelemetry then
+		self:SetHordeCombatTelemetry(true)
+	end
+
 	if Config.Economy and Config.Economy.ExtractorIncome == false then
 		self:SuppressHordePassiveIncome()
 	end
@@ -668,6 +673,7 @@ function Plugin:InstallHordeKillBounty()
 
 	local Ok = self:BorrowClassMethod("NS2Gamerules", "OnEntityKilled", function(self_, target, attacker, doer, point, direction)
 		pcall(function() horde:AwardKillBounty(target, attacker) end)
+		pcall(function() horde:LogCombatDeath(target) end)
 
 		return Original(self_, target, attacker, doer, point, direction)
 	end)
@@ -896,6 +902,17 @@ function Plugin:BeginWave(Config)
 	-- this call returns while they are still pending, and the clear predicate knows that
 	-- because Outstanding() says so.
 	local WaveSize = Plugin.Waves.HordeSize(Config.Waves, Plugin.HordeConfig.EvaluateCurve, WaveNumber)
+
+	--- Q37: this wave's per-alien stat multipliers, from the Health/Armor curves at the wave's
+	--- progress. A disabled curve evaluates to its Start (Health 1, Armor 0) = an honest no-op;
+	--- the spawner applies them to each bot as it lands. This is the "tougher, not just more"
+	--- lever the count curve alone cannot express.
+	local Progress = Plugin.HordeConfig.WaveProgress(WaveNumber, Config.Waves and Config.Waves.ReferenceWave)
+
+	self.HordeSpawner.WaveScale = {
+		Health = Plugin.HordeConfig.EvaluateCurve(Config.Waves and Config.Waves.Health, Progress),
+		Armor = Plugin.HordeConfig.EvaluateCurve(Config.Waves and Config.Waves.Armor, Progress),
+	}
 	local BotsSpawned = 0
 
 	--- The wave's roster: type names dealt by the composition ladder (Waves.Deal -
@@ -1385,6 +1402,98 @@ function Plugin:SetHordeHiveInvincible(On)
 	return true
 end
 
+--- Q38 combat telemetry (Debug.CombatTelemetry): the Threat Index needs fire rates that are
+--- animation-bound and NOT in Lua (POWER-TAXONOMY §3.5). So we MEASURE. When the flag is on for a
+--- horde, the tick watches each tracked bot's health; the first tick it finds a bot below full
+--- records its "first-hit" time, and its death (via the OnEntityKilled path) closes the record
+--- with a time-to-kill. A playtest's log yields real per-alien TTK - the durability half of the
+--- power model - with no damage hook. (We first tried wrapping `LiveMixin:TakeDamage` and the
+--- `OnTakeDamage` callback; the engine dispatches damage through its own per-class/C++ path, so
+--- neither reached instances - measured this session. Health-polling is the reliable seam. It is
+--- 1 s coarse, so it measures TTK, not per-shot fire rate - the latter stays a chair measurement.)
+function Plugin:SetHordeCombatTelemetry(On)
+	if On then
+		if self.HordeTelemetryApplied then
+			return true
+		end
+
+		self.HordeDamageLog = {}
+		self.HordeTelemetryApplied = true
+		self:Log("horde telemetry: combat logging ON (Debug.CombatTelemetry)")
+
+		return true
+	end
+
+	if not self.HordeTelemetryApplied then
+		return false
+	end
+
+	self.HordeTelemetryApplied = nil
+	self.HordeDamageLog = nil
+	self:Log("horde telemetry: combat logging OFF")
+
+	return true
+end
+
+--- Once per tick while telemetry is on: for each tracked bot whose player has dropped below full
+--- health, record the first time we saw it hurt - the start of its TTK.
+function Plugin:PollCombatDamage()
+	if not self.HordeTelemetryApplied or not self.HordeRegistry then
+		return
+	end
+
+	local Machine = self.Machine
+
+	if not Machine or not Machine:IsActive() then
+		return
+	end
+
+	local Now = Shared.GetTime()
+
+	self.HordeRegistry:IterateKindAll("bot", function(ref)
+		local Ok, Player = pcall(function() return ref and ref.GetPlayer and ref:GetPlayer() end)
+
+		if Ok and Player and Player.GetIsAlive and Player:GetIsAlive() then
+			local id = Player:GetId()
+
+			if not self.HordeDamageLog[id] then
+				local max = Player.GetMaxHealth and Player:GetMaxHealth() or 0
+				local hp = Player.GetHealth and Player:GetHealth() or 0
+
+				if max > 0 and hp < max then
+					local lf = Player.GetTechId and Player:GetTechId() or "?"
+
+					self.HordeDamageLog[id] = { first = Now, lf = lf }
+
+					self:Log(string.format("[TELEMETRY] first-hit t=%.2f victim=%s lf=%s hp=%.0f/%.0f",
+						Now, tostring(id), tostring(lf), hp, max))
+
+				end
+			end
+		end
+	end)
+end
+
+--- The victim's last line. TTK = death time minus the first-hit stamp ("n/a" if it died to
+--- something the 1 s poll never caught - a world death, or faster than a tick).
+function Plugin:LogCombatDeath(target)
+	if not self.HordeTelemetryApplied or not target or not target.GetTeamNumber
+		or target:GetTeamNumber() ~= kTeam2Index then
+		return
+	end
+
+	local Now = Shared.GetTime()
+	local rec = self.HordeDamageLog and self.HordeDamageLog[target:GetId()]
+
+	self:Log(string.format("[TELEMETRY] death t=%.2f victim=%s lf=%s ttk=%s",
+		Now, tostring(target:GetId()), tostring(target.GetTechId and target:GetTechId() or "?"),
+		rec and string.format("%.2fs", Now - rec.first) or "n/a"))
+
+	if rec then
+		self.HordeDamageLog[target:GetId()] = nil
+	end
+end
+
 --- Registry upkeep once per second. Kept separate from the wave logic so a wave can
 --- never leave dead refs behind just because it stopped early.
 function Plugin:HordeTick()
@@ -1428,6 +1537,10 @@ function Plugin:HordeTick()
 		-- Q18 map frame: once the round is live (marine tech point chosen), prebuild the
 		-- invincible hive nests at every other tech point. One-shot; see PrebuildHiveNests.
 		self:PrebuildHiveNests()
+
+		-- Q38: TTK telemetry - watch each bot's health for its first-hit stamp (no-op unless
+		-- Debug.CombatTelemetry is on).
+		self:PollCombatDamage()
 	end
 
 	-- Measured after the prune and the pump, so the status line reports what the engine has
@@ -1969,6 +2082,9 @@ function Plugin:Teardown(Now)
 	--- restored explicitly. The hives themselves were registered, so the DestroyAll above already
 	--- removed them; this only gives the AlienHive class back its vanilla damage behaviour.
 	self:SetHordeHiveInvincible(false)
+
+	--- Remove the combat-telemetry callback if it was ever added (idempotent when off).
+	self:SetHordeCombatTelemetry(false)
 	self.HordeHivesBuilt = nil
 
 	self:Log(string.format("teardown %s: %s destroyed (%s husks cleaned), %s already gone, %s failed of %s tracked (%s), controller released=%s, refill nudged=%s, world=%s, humans kept: %s marine(s) %s alien(s)%s, %s id(s) still live",
