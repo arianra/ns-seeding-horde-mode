@@ -31,9 +31,6 @@ local Config = {}
 
 local CURVE_KEYS = {
 	{ Owner = "Waves", Key = "Composition" },
-	{ Owner = "Waves", Key = "Health" },
-	{ Owner = "Waves", Key = "Armor" },
-	{ Owner = "Waves", Key = "Damage" },
 	{ Owner = "Waves", Key = "MouthHealth" },
 	{ Owner = "Economy", Key = "PayoutPerPlayer" },
 	{ Owner = "Economy", Key = "WaveClearPayout" },
@@ -110,21 +107,16 @@ Plugin.DefaultConfig = {
 		--- derived instead of tuned. 0.5 keeps it well clear of any base room while never
 		--- rejecting a point the walking ring would want.
 		BandLineFactor = 0.5,
-		--- STEP A's flat knob is superseded by the wave loop (61a): the per-wave bot count
-		--- is `Composition` evaluated at Waves.Progress(wave, ReferenceWave). Wave 1 sits at
-		--- the curve's Start = 3 aliens; the End is reached at ReferenceWave and clamped
-		--- after. Health/Armor/Damage/MouthHealth stay DISABLED until RD3 - disabled means
-		--- "evaluate to Start", which for those is multiplier 1 / flat HP: honest nothing.
+		--- The per-wave bot count is `Composition` evaluated at Waves.Progress(wave,
+		--- ReferenceWave): wave 1 sits at the curve's Start, the End is reached at ReferenceWave
+		--- and clamped after. Difficulty is COUNT and COMPOSITION (which lifeforms) ONLY. We
+		--- never scale a lifeform's own HP/armor/damage - this is a training mode, and a skulk
+		--- must be a vanilla 75-HP skulk or the marine learns the wrong time-to-kill and the mode
+		--- stops training anything. Tougher pressure comes from higher lifeforms (gorge/onos),
+		--- more of them, and (if ever needed) the game's own carapace upgrade - never a stat hack.
 		ReferenceWave = 20,          -- untuned, placeholder 2026-09-30
 		WipeGraceSeconds = 3,        -- D4: every real marine dead CONTINUOUSLY this long is the wipe
-		Composition = NewCurve(4, 20, true),   -- Q36: slightly higher difficulty - more aliens from
-		                                     -- wave 1 and a steeper ramp (was 3->15). Count is the
-		                                     -- "more" axis; Health (below) is the "tougher" axis.
-		Health = NewCurve(1, 1.5, true),   -- Q37: wired + enabled modestly - aliens ramp to 1.5x max
-		                                   -- HP by ReferenceWave (the "tougher, not just more" lever).
-		                                   -- Applied by Spawner:ApplyBotScale. RD3 dial.
-		Armor = NewCurve(0, 2),
-		Damage = NewCurve(1, 2),
+		Composition = NewCurve(4, 20, true),   -- Q36: more aliens from wave 1, steeper ramp (was 3->15)
 		MouthHealth = NewCurve(1000, 4000),   -- Q29: wave-1 mouths near-indestructible
 		--- The composition ladder (Q31, Arian 2026-09-30): a type joins at Unlock and
 		--- ramps to full Weight over Ramp waves; Waves.Deal splits the curve's wave size

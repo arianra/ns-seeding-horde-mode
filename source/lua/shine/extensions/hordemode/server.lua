@@ -903,16 +903,6 @@ function Plugin:BeginWave(Config)
 	-- because Outstanding() says so.
 	local WaveSize = Plugin.Waves.HordeSize(Config.Waves, Plugin.HordeConfig.EvaluateCurve, WaveNumber)
 
-	--- Q37: this wave's per-alien stat multipliers, from the Health/Armor curves at the wave's
-	--- progress. A disabled curve evaluates to its Start (Health 1, Armor 0) = an honest no-op;
-	--- the spawner applies them to each bot as it lands. This is the "tougher, not just more"
-	--- lever the count curve alone cannot express.
-	local Progress = Plugin.HordeConfig.WaveProgress(WaveNumber, Config.Waves and Config.Waves.ReferenceWave)
-
-	self.HordeSpawner.WaveScale = {
-		Health = Plugin.HordeConfig.EvaluateCurve(Config.Waves and Config.Waves.Health, Progress),
-		Armor = Plugin.HordeConfig.EvaluateCurve(Config.Waves and Config.Waves.Armor, Progress),
-	}
 	local BotsSpawned = 0
 
 	--- The wave's roster: type names dealt by the composition ladder (Waves.Deal -

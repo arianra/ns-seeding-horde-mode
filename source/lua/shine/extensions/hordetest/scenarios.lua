@@ -199,7 +199,7 @@ function Plugin:InitialiseScenarios()
 		Copy.Waves.PoolSize = 99
 		Copy.Waves.BandMin = 300
 		Copy.Waves.BandMax = 10
-		Copy.Waves.Armor = "not a curve"
+		Copy.Waves.MouthHealth = "not a curve"
 		Copy.Difficulty.Accuracy.Bezier = { 5, 0, 0.5, 0 }
 		Copy.Debug.RevealMouths = "false"
 		Copy.Economy.ExtractorIncome = "false"
@@ -220,8 +220,8 @@ function Plugin:InitialiseScenarios()
 		Assert.Equal( 0, Copy.Start.Cooldown, "negative cooldown clamps to zero" )
 		Assert.Equal( 12, Copy.Waves.PoolSize, "absurd pool size clamps to the ceiling" )
 		Assert.True( Copy.Waves.BandMin < Copy.Waves.BandMax, "inverted band is repaired, not clamped flat" )
-		Assert.Equal( "table", type(Copy.Waves.Armor), "clobbered curve is replaced by a curve" )
-		Assert.True( Copy.Waves.Armor.Enabled == false, "replacement curve is flat" )
+		Assert.Equal( "table", type(Copy.Waves.MouthHealth), "clobbered curve is replaced by a curve" )
+		Assert.True( Copy.Waves.MouthHealth.Enabled == false, "replacement curve is flat" )
 		Assert.True( Copy.Difficulty.Accuracy.Bezier[1] <= 1, "x control point kept inside [0,1] so difficulty stays monotonic" )
 		Assert.Equal( false, Copy.Debug.RevealMouths,
 			'a switch reads as a boolean: "false" in JSON must not become a truthy string' )
@@ -1552,51 +1552,6 @@ function Plugin:InitialiseScenarios()
 		Assert.True( Registered >= 1, "the hive is on the books for teardown" )
 		Assert.Equal( 0, AfterCount, "DestroyAll removed it" )
 		Assert.Nil( rawget(Hive, "GetCanTakeDamageOverride"), "the class damage override is restored to none" )
-	end )
-
-	--- Q37: the per-alien stat multiplier is real. ApplyBotScale raises a live bot's max health
-	--- (SetMaxHealth then SetHealth, since SetHealth clamps to max) and adds armor; the disabled
-	--- default (x1/+0) must touch nothing. Direct on a joined team-2 Skulk - the same "tougher,
-	--- not just more" lever BeginWave sets from the Health curve each wave.
-	self:RegisterScenario( "bot_stat_scaling", false, function()
-		local horde = Shine.Plugins.hordemode
-		local Spawn = horde.Spawner.New(horde.Registry.New(horde.Registry.EngineStateOf),
-			function(Message) print("[TEST] " .. Message) end)
-
-		local Bot = Server.CreateEntity(PlayerBot.kMapName)
-		Assert.NotNil( Bot, "a PlayerBot to scale" )
-
-		Bot:Initialize(kTeam2Index, true)
-		Bot.lifeformEvolution = kTechId.Skulk
-
-		self:Defer( "bot_stat_scaling_settles", 8, false, function()
-			local Player = Bot:GetPlayer()
-			Assert.NotNil( Player, "the bot's player materialised" )
-
-			if Player.GetTeamNumber and Player:GetTeamNumber() == 0 then
-				GetGamerules():JoinTeam(Player, kTeam2Index, true)
-
-				Player = Bot:GetPlayer()
-			end
-
-			Assert.True( Player:GetIsAlive() and Player:GetTeamNumber() == kTeam2Index, "a live team-2 Skulk" )
-
-			local baseMax, baseArmor = Player:GetMaxHealth(), Player:GetArmor() or 0
-
-			-- the honest no-op: a disabled wave scale must not touch the bot
-			Spawn.WaveScale = { Health = 1, Armor = 0 }
-			Spawn:ApplyBotScale(Player)
-			Assert.Equal( baseMax, Player:GetMaxHealth(), "x1/+0 leaves max health alone" )
-
-			-- the real scale: x2 health, +10 armor
-			Spawn.WaveScale = { Health = 2, Armor = 10 }
-			Spawn:ApplyBotScale(Player)
-			Assert.Equal( baseMax * 2, Player:GetMaxHealth(), "x2 doubles max health" )
-			Assert.Equal( baseMax * 2, Player:GetHealth(), "and the bot is filled to the new max" )
-			Assert.Equal( baseArmor + 10, Player:GetArmor(), "armor add lands" )
-
-			Bot:Disconnect()
-		end )
 	end )
 
 	--- Q38 combat telemetry: the health-poll records a first-hit for a hurt bot and the death
