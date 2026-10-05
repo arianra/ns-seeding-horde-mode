@@ -378,9 +378,17 @@ JSON the server loads.
 `config.lua` (keys there differ: tunnels live under `Waves.*`, payout under `Economy.*`, the
 segments model above is M6 design, not loaded config; drift below is historical):
 
-*Shipped since this draft (2026-09-30):* `Waves.Types` (the Q31 ladder), `Economy.WaveClearPayout`
-as a curve with `Economy.PayoutReferenceWave`, and `Intermission` **15 s first / 30 s later** (Q33;
-Arian's pacing call). `DefaultConfig` remains the only normative shape.
+*Shipped since this draft:* `Waves.Types` (the Q31 ladder), `Economy.WaveClearPayout` as a curve
+with `PayoutReferenceWave`, and `Intermission` **15 s first / 30 s later** (Q33). Then 2026-10-01→04:
+the **closed economy** (Q34/Q35 — team res = start + wave payout ONLY, extractor AND vanilla's
+`UpdateMinResTick` free trickle both suppressed, per-lifeform kill bounty via the
+`NS2Gamerules:OnEntityKilled` hook); **higher lifeforms actually spawn** (`ForceLifeForm` — the
+factory had been silently skulk-only); the **Q18 hive frame** (invincible `Hive` nests prebuilt at
+every TechPoint except the marine base); **Q38 TTK telemetry** (measures time-to-kill by polling
+health — the damage pipeline can't be hooked from Lua); and the **training-mode rule** (Q37 per-alien
+HP/armor scaling wired then REVERTED — a skulk must stay a vanilla 75-HP skulk or the mode teaches
+the wrong time-to-kill; difficulty is count + species only, armour via carapace if ever). `DefaultConfig`
+remains the only normative shape.
 ```jsonc
 {
   "__Version": "1.0",

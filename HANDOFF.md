@@ -62,6 +62,16 @@ Arian the ability to play the game.
    "entity id vanishes on Disconnect" claim that turned out to be an artifact of our own registry
    inventing negative ids). Verify against the shipped Lua before acting.
 
+7. **This is a marine aiming TRAINING mode — never mutate a base lifeform's stats.** A skulk
+   must be a vanilla 75-HP / 10-armor skulk in every wave, or the marine learns the wrong
+   time-to-kill and the mode stops training anything. Difficulty comes from **count** and **which
+   lifeforms** (both vanilla units) and from pacing — never a `SetMaxHealth`/`SetMaxArmor`
+   multiplier. If armored aliens are ever wanted, use the game's own **carapace** upgrade (fed by
+   Shell veils off the prebuilt hives), not a stat hack. A per-alien HP/armor scaler (Q37) was
+   wired and reverted the same day for exactly this reason (`3254809`; vault
+   `decisions/td-training-mode-no-stat-scaling`). Bot *aim* (accuracy/aggro) is a separate,
+   still-unwired lever and is fair game — that is not a base stat.
+
 ## 3. Environment map
 
 | Thing | Value |
@@ -203,6 +213,38 @@ Citations are `ns2/lua` unless noted. Build 14.13.x, verified 2026-09-26/27.
     (no `Start.ResetRound`) a skipped world reset that left the game `Started` with no ownership
     claimed, so stop could not hand it back and the seeding gate bricked every later command.
     `countdown_claims_the_round` + `resolve_fills_missing_sections` pin both halves.
+21. **`ientitylist` yields `(index, entity)`** (`Entity.lua:97`) — `for Ent in ientitylist(...)`
+    binds `Ent` to a NUMBER; the idiom is `for _, Ent in`. A `pcall` around the loop body turns the
+    resulting "index a number" throw into a **silent no-op**: this killed `ResolveHordeTarget` for
+    weeks — bots steered to the stale base-anchor, never the live command station (a real cause of
+    "bots never reach base"), with a green suite. Lesson: `Shared/lessons/ientitylist-yields-index-first`.
+22. **The damage pipeline cannot be hooked from Lua.** `LiveMixin:TakeDamage` calls
+    `self:OnTakeDamage`, but the entity resolves that call through its own C++ path — adding
+    `Alien.OnTakeDamage` never fires (yet `type(entity.OnTakeDamage)` reads as a function), and
+    `ReplaceClassMethod("LiveMixin","TakeDamage")` misses instances (a mixin — instances dispatch
+    the copied method). To observe damage, **poll health in the tick** (Q38 telemetry) or hook a
+    real class's `OnEntityKilled`.
+23. **`NS2Gamerules:OnEntityKilled` overrides the base without calling it** (`:416`), so Shine's
+    `SetupClassHook(Gamerules,"OnEntityKilled")` is bypassed — wrap `NS2Gamerules` directly. And
+    build 344 has **no Lua kill→resource path** (`AwardPersonalResources` uncalled; `kKillTeamReward=0`).
+    Free team res comes from `PlayingTeam:UpdateMinResTick` (`:847`, 1 res/12 s when a team has no
+    collecting extractor) — suppressing extractors *triggers* it, so a closed economy must silence BOTH.
+24. **Higher lifeforms need a direct class swap.** Bots join as Skulk (`respawnEntity`, fact 16);
+    vanilla evolves only near a hive (`canEvolve`, `distanceToNearestHive<8`) and `ProcessBuyAction`
+    needs `GetIsUpgradeAllowed`+`GetCanAffordUpgrade` (a hive does not instantly research; gestation
+    itself is a timer, `Embryo.lua:143`). So `ForceLifeForm` swaps the class via `Player:Replace` on
+    the mouth's validated ground (no higher lifeform's capsule exceeds the skulk's 0.5 ground probe;
+    `CopyPlayerDataFrom` carries no health, so the swap lands at full lifeform HP).
+    `LookupTechData(techId, kTechDataMapName)` gives the class; `kTechDataMaxExtents` is a **Vector =
+    C++ userdata, not a Lua "table"** — never `type()`-check one.
+25. **The command hive class is `Hive`** (`Hive.kMapName="hive"`, `kTechId.Hive`), NOT `AlienHive`.
+    `TechPoint:SpawnCommandStructure(team)` is public; the marine base's point is
+    `marineTeam.startTechPoint` (known only after round start). Invincibility = add
+    `Hive:GetCanTakeDamageOverride → false` (add/remove — `ReplaceClassMethod` can't add a
+    non-existent method); teardown's `Kill()` still destroys them (that path is `GetCanDie`).
+26. `SetHealth` clamps to `GetMaxHealth()` and `SetArmor` to `GetMaxArmor()` — a raise needs
+    `SetMaxHealth`/`SetMaxArmor` first. (Moot for us now — stat scaling is banned by rule 7 — but the
+    trap is real if anything ever touches a bot's health.)
 
 ## 6. The dev loop
 
@@ -295,39 +337,36 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
 
 ## 8. Current state
 
-- **Milestones**: M0 harness + static gate · M1 config + curves · M2 commands/gate · M3 registry +
-  takeover + live integration · M4 placement (surface-gated, seeded) · M7 teardown + handback ·
-  **M5 landed: i5a bot factory 2026-09-28** (`Spawner:SpawnBot` + the join/place stage);
-  **the wave loop shipped 2026-09-30** (`61a`): `BeginWave` culls the carry-over, places the
-  mouth set, and DEALS the `Composition` curve (ships ENABLED, placeholder 3→15/w20 — RD3
-  tunes); waves clear by bot-wipe or mouth-kill (Q29), pay the flat `WaveClear` curve (Q17),
-  intermission, next wave. **M8 partly (`cwo`)**: marines-wipe (3 s grace, D4) and
-  station-destroyed (must-have-stood) end the horde; real alien joins + seed-max remain (`7x3`).
-  t28 ANSWERED the same day: bots stood at the mouths — skulk brains have no roam action and
-  never read the order queue — so the tick writes a standing motion-waypoint to the base
-  (`SteerHordeBots`), and the third chair pass added the rescue-watch for pathing dead-ends.
-  Emergence fixed to the mouth's ENTRANCE on capsule-fit walkable ground (fact 17); plus
-  **Q30** death-is-release reaper (facts: in-flight exception), **Q31** type ladder
-  (gorge w3 / lerk w5 / fade w7 / onos w10), **Q32** instant builds (fact 18), **Q33** mean
-  economy + 15/30 s pacing (DESIGN §4 wave model v1).
-- **Gates**: G1 (`-game` mounts) and G1d (dev owns `-modstorage`) passed; the loop now needs **no
-  overlay at all** — it runs from the published artifact. G1b, G1c (overlay-era questions, largely
-  superseded by publishing), G2 (graceful stop) and S4 (`-instance_id`; engine log and `dumps/` are
-  still shared with the live server) remain open.
-- **Suite**: 75 pass / 0 fail / 1 expected (the negative control) — 76 scenarios, plus `--handback` 2/0.
-- **Playable today**: `/horde` runs the whole loop — mouths placed on validated surfaces
-  (revealed to marines), waves of steered aliens emerge at the entrances, escalate by curve and
-  ladder, pay 5→40 res, intermit 15/30 s; marines-wipe and station-destroyed end it; builds and
-  research are instant during the horde only; `/horde status` reports live truth; `/horde stop`
-  destroys our set (dead bots' clients released too), hands the bot controller back, resets the
-  world to NotStarted, **leaves every human on the team they chose**, restores the build clock,
-  and does **not** declare a winner or change the map.
-- **Still not true**: a REAL alien joining and seed-max still do not end the horde (`7x3`),
-  per-type HP/damage scaling is disabled (RD3 reads the ladder's numbers, not stats), and the
-  score is logged, not persisted (i16).
-  Vanilla win/loss stays suppressed for the whole round by one engine field - the two live
-  triggers are ours now, and every remaining exit (alien join, seed max, `7x3`) must go through them.
-- Tracker: 50 closed / 22 open beads (chair acceptance = PLAYTEST 13-19).
+- **Milestones**: M0–M5 + M7 complete and shipped as the published mod; **M8 partial** —
+  marines-wipe and station-destroyed end the horde; a real alien joining + seed-max remain (`7x3`).
+  This session's arc (chair passes 4–6 + the design work):
+  - **Economy closed and correct** (Q34/Q35, `99981cb`/`8394b09`): team res = start(50) + wave
+    payout ONLY; the extractor AND vanilla's `UpdateMinResTick` free trickle both suppressed via
+    `Shine.ReplaceClassMethod`; per-lifeform kill bounty via the `NS2Gamerules:OnEntityKilled` hook.
+    (The first cut was silently broken — facts 22/23 explain why.)
+  - **Higher lifeforms spawn** (`ForceLifeForm`, `9014bbb`): gorge/lerk/fade/onos from their unlock
+    waves, vanilla stats. The factory had been silently skulk-only (fact 24).
+  - **Q18 map frame** (`3c4eabe`): invincible `Hive` nests prebuilt at every TechPoint except the
+    marine base (fact 25) — the spec required it and we had never built it.
+  - **Bots now steer to the live command station** (`8394b09`): the `ientitylist` index bug (fact 21)
+    had them walking to a stale anchor — a genuine cause of "never reach base."
+  - Starting infantry portal removed; **Q38 TTK telemetry** (`Debug.CombatTelemetry`) added — measures
+    time-to-kill by polling health (the damage pipeline can't be hooked, fact 22).
+  - **Q37 per-alien stat multipliers REVERTED** (`3254809`) — rule 7: a training mode needs
+    vanilla-consistent aliens; difficulty is count + species only.
+- **Gates**: the loop runs from the published artifact, no overlay. G2 (graceful stop) and S4
+  (engine log/dumps shared with the live server) remain open.
+- **Suite**: 82 pass / 0 fail / 1 expected, plus `--handback` 2/0 (a real round prebuilds 4 hives on
+  summit and tears them down with 0 leaked).
+- **Playable today**: `/horde` runs the whole loop — validated mouths, waves of steered aliens
+  (higher lifeforms from wave 3), invincible hive nests, a closed economy (flat between waves, kills
+  pay a bounty), instant builds during the horde only, `/horde status` live truth, `/horde stop`
+  hands the world back with no winner declared and humans on their chosen teams.
+- **Still not true**: a real alien joining / seed-max don't end the horde (`7x3`); score logged not
+  persisted (i16); no HUD/banner (i9a); alien RTs + building bounties (rest of §3) unbuilt; TTK fire
+  rates are still estimates (telemetry not yet run in the chair); sub-wave pacing unbuilt. Vanilla
+  win/loss stays suppressed by `preventGameEnd`; every remaining exit goes through our triggers.
+- Tracker: 51 closed / 22 open beads (chair acceptance = PLAYTEST 13-19 + the new economy/lifeform/hive checks).
 
 ## 9. Known gaps and risks
 
@@ -336,7 +375,9 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
    itself is proven at `steer_pins_the_base_waypoint`, the walking is chair physics. Either fix
    the runner or make those human-watched playtests.
 2. **Balance numbers are placeholders** (RD3, Arian's). The composition curve ships ENABLED at
-   3→15/w20 (`untuned, placeholder 2026-09-30`); per-type counts are not read by anything yet.
+   4→20/w20 (Q36 first-cut bump from 3→15) and the type ladder unlocks are read by `Waves.Deal`;
+   none are tuned against measured TTK yet. Per rule 7 there is NO stat scaling — difficulty is
+   count + species only.
 3. **`votesurrender` bypasses suppression** — undecided: disable during a horde, or keep as an
    escape hatch.
 4. **Vanilla draws a round when neither side has players** (measured), so i8a cannot be modelled as
@@ -350,25 +391,41 @@ Start-Process 'D:\games\ns2-server\x64\Server.exe' -WorkingDirectory 'D:\games\n
    answers "Symbol not found" for a shipped function — the nodes are files + FTS, not symbols).
    Use the `lsp` tool (lua-language-server over `D:\projects\ns2-lua-workspace`, fact 17's note)
    or `grep`/`read` on the shipped Lua.
+8. **TTK fire rates are unmeasured.** The Threat Index (POWER-TAXONOMY §5) and the whole curve
+   rest on DPS, and DPS needs animation-bound fire rates not in Lua. `Debug.CombatTelemetry`
+   measures TTK (health-poll) but not per-shot rate. Until a playtest harvests real numbers, every
+   power figure is an estimate.
+9. **Sub-wave pacing is unbuilt** — the parked design: a wave currently dumps its whole roster at
+   t=0 and ends only when all are dead (`Waves.Cleared`), so there is no drip and a straggler
+   stretches the wave. The plan (decouple WHAT/WHERE/WHEN, mouths as lanes/timed windows, a
+   schedule + clock/pressure wave-end) is in the frontier; it is the biggest gameplay-feel win left.
+10. **The rest of §3 map frame is unbuilt**: alien RTs/harvesters prebuilt and the building-bounty
+    economy. Bounties now become possible (structures exist) but collide with the Q34 closed economy —
+    needs a decision on what is killable (harvesters?) vs invincible (hives) and whether bounty res
+    reopens the "team res = start + payout only" rule.
 
 ## 10. Next actions, in order
 
-1. **Chair gate — PLAYTEST 13-19** (the wave loop, the loss triggers, the emptied roster, the
-   ladder from wave 3, instant builds both directions) — Arian runs it; findings become beads.
-   Step 14 is the walk verdict on steer+emergence; a bot standing through TWO rescue windows
-   means the fit itself is trapped — report the mouth and the log's fit/jitter tag.
-2. **i8a remainder** (`7r3`, `qji`): a real alien joins, or seed max. Must answer the measured
-   draw behaviour (vanilla DRAWS when neither side has players) and decide the surrender-vote
-   question. (With bots real since 71c, the wipe branch has teeth.)
-3. **Placement judgement (`5ss`)** — 3 mouths still land in 1 of 3 sectors at the `BandMin`
-   edge on summit: decide eligible sources, per-map `ActivePerWave`, band, fallback — judge it
-   during the chair sessions, reveal is on there. The wave-start deficit line now reports
-   partial draws out loud.
-4. Fix or route around the **harness ceiling** before committing i6c as written — i5b is now
-   chair-shaped, so `0k3` mainly blocks the automated 3-wave test.
-5. The forced alien join is a behavioural dependency of hosts running
-   `force_even_teams_on_join` (fact 16) — keep the force (it is what 7q7 means).
-6. Human-facing polish: HUD/banner (i9a), retro + tag v0.1-slice (i10a).
+1. **Chair gate — PLAYTEST 13-19 + this session's additions** (Arian runs it; findings become
+   beads): the wave loop, the loss triggers, the emptied roster, instant builds both directions,
+   AND the new ones — the economy is actually closed (flat between waves, kills pay the bounty by
+   lifeform), higher lifeforms appear and behave from wave 3, hive nests are present and unkillable,
+   no starting IP, and bots reach the base (the resolver fix). Step 14 is the walk verdict on
+   steer+emergence; a bot standing through TWO rescue windows means the fit itself is trapped.
+2. **Calibrate TTK from a playtest** — turn on `Debug.CombatTelemetry`, harvest real time-to-kill
+   (and count shots for fire rates). This is the prerequisite for tuning the curve and building
+   pacing against numbers, not estimates.
+3. **Sub-wave pacing** — the parked design, now the biggest gameplay-feel win: decouple
+   WHAT/WHERE/WHEN/HOW-MANY; a spawn schedule that distributes a wave's Threat-Index over time;
+   mouths as lanes / timed windows; a clock/pressure wave-end instead of all-dead. The full
+   brainstorm is in the frontier's Next and this era's session history.
+4. **i8a remainder** (`7x3`, `qji`): a real alien joins, or seed max. Must answer the measured draw
+   (vanilla DRAWS when neither side has players) and decide the surrender-vote question.
+5. **Placement judgement (`5ss`)** — the bump to 4 mouths may exceed what summit's band can place;
+   decide eligible sources / per-map `ActivePerWave` / band / fallback from the chair (reveal is on).
+6. Fix or route around the **harness ceiling** (`0k3`) before committing any long-window test.
+7. The rest of §3 (alien RTs + building-bounty economy — needs the killable-vs-invincible and
+   closed-economy decision), then human polish: HUD/banner (i9a), score persistence (i16), tag v0.1-slice.
 
 Before any of that: `./dev/lint.sh && ./dev/test.sh && ./dev/test.sh --handback` must be green on
 an untouched tree, and `./dev/guard-server.sh` must show no open client session before you stop or
@@ -376,11 +433,16 @@ start anything.
 
 ## 11. What Arian owes
 
-- **RD3 balance numbers** — the code now READS them all (size curve 3→15/w20, payout 5→40/w10,
-  ladder unlocks/ramps/weights, intermission 15/30, grace 3 s): tune from playtest telemetry, and
-  decide the still-disabled stat curves (HP/armor/damage/mouth-HP scaling, accuracy/aggro).
-- **Placement judgement** (`5ss`): whether the current spread reads well from the chair, and the
-  eligible-source decision. `Debug.RevealMouths` makes this judgeable in-game.
+- **RD3 balance numbers** — the code now READS them (size curve 4→20/w20, payout 5→40/w10, ladder
+  unlocks/ramps/weights, intermission 15/30, grace 3 s): tune from playtest telemetry. The
+  HP/armor/damage stat curves are **gone by rule 7** (training mode) — do not re-add them; bot
+  aim (accuracy/aggro) is the one remaining difficulty dial and is still unwired.
+- **A playtest with `Debug.CombatTelemetry` on** — the real TTK/fire-rate numbers the whole power
+  model and curve need before tuning is more than guessing.
+- **Placement judgement** (`5ss`): whether the spread (now 4 mouths) reads well from the chair, and
+  the eligible-source decision. `Debug.RevealMouths` makes this judgeable in-game.
+- **Two design decisions before their builds**: the sub-wave pacing model (schedule + wave-end), and
+  the §3 building-bounty economy vs the Q34 closed economy (what is killable vs invincible).
 - **Playtest gates at M6 and M8**, and G1c if the overlay path is ever needed again.
 
 ## 12. Where the durable memory lives (Atlas)
@@ -410,46 +472,42 @@ Vault: `/mnt/c/Users/aria/iCloudDrive/Documents/obsidian/massiveboi/massiveboi/A
 - `decisions/td-death-is-release` — Q30: killed bot clients released within a tick, never reused
 - `decisions/td-wave-model-v1` — Q31 ladder + Q32 instant builds + Q33 economy/pacing, with the
   power-vs-damage reasoning behind every unlock wave
+- `reference/td-ns2-hive-frame-prebuild` — Q18: prebuilding invincible hives at every TechPoint
+  (`TechPoint:SpawnCommandStructure`; class is `Hive` not `AlienHive`; invincibility via
+  `Hive:GetCanTakeDamageOverride`; `Kill` still tears them down)
+- `decisions/td-economy-closed-loop` — Q34/Q35: the closed team economy, the min-res trap, and the
+  `NS2Gamerules:OnEntityKilled` bounty (build 344 has no Lua kill→resource path)
+- `decisions/td-training-mode-no-stat-scaling` — **rule 7**: difficulty is count + vanilla species,
+  never mutated HP/armor/damage; carapace is the sanctioned armour path (Q37 reverted)
+- `Shared/lessons/ientitylist-yields-index-first` — `for Ent in ientitylist` binds a number; a
+  swallowing pcall turned a dead walk-to-base resolver into a green suite
+- `reference/td-ns2-bot-spawn-and-team-join` also now carries: the bounded re-deal of a bot whose
+  client never materialises, `ForceLifeForm` (higher lifeforms), the unhookable damage pipeline, and
+  the health-poll TTK seam.
 
 ---
 
-Last updated: 2026-09-30 (evening) — **the wave loop (`61a`) + the first two loss triggers
-(`cwo`)**: `BeginWave` culls the carry-over, places the mouth set (deficit announced, not
-swallowed), and deals the `Composition` curve — ships ENABLED at placeholder 3→15/w20; waves
-end by wipe or mouth-kill (Q29), pay the flat `WaveClear` curve, intermit, escalate;
-marines-wipe (3 s grace) and station-destroyed (must-have-stood latch) end the horde through
-the same ordered teardown an admin stop runs. Writing the loop's tests found four real bugs,
-all now pinned: an announce that passed its template to `Notify` (the chat contract is
-asserted at the hook — `Announce` formats at the choke point now); a scenario abort that
-skipped its cleanup defer and poisoned every later tick; the wave predicates acting on a
-registry another scenario had mounted (`BeginWave` now records the wave's bookkeeping
-identity and the tick refuses foreign books); and `Progress(1,1)` answering a mis-set
-reference with the curve's CAP — a typo must never hand wave 1 the wave-20 horde.
-`dev/test.sh --handback` also learned that its byte fence can land past the probe's own t+0
-line: whole-file, because rotation already fences to the boot. Then the chair answered **t28**:
-bots stood at the mouths — skulk brains have no roam action and do not read the order queue
-(only Exo/marine-type brains do), so the tick now writes `GetMotion():SetDesiredMoveTarget()`
-to the base every second for every live out-of-combat bot (`SteerHordeBots`; combat overwrites,
-the tick re-arms). Then the SECOND chair pass: bots still stood at mouths — and the reason was
-under us the whole time: a tunnel's ORIGIN is inside its own hollow shell (entrances at local
-(3, 0.5, ±11), `Tunnel.lua:49-50`), so ±1 m jitter embedded every spawn; the "count mismatch"
-was bots alive-but-invisible inside the rock. Emergence now = the engine's egg recipe
-(`GetRandomSpawnForCapsule` + the mouths' own `SnapToSurface`) at the mouth's ENTRANCE, resolved
-at placement time (orientation is not settled on the creation tick — the suite caught that
-too). Same pass shipped: Q30 death-is-release reaper, Q31 type ladder (gorge w3/lerk w5/
-fade w7/onos w10, largest-remainder + one-per-unlocked, DESIGN §4 carries the power-vs-damage
-reasoning), Q32 instant builds via borrowed autobuild (restored at teardown). The THIRD chair
-pass (same day) added: a stuck-watch in the steer (no move 1.5 m in 6 s out of combat = rescue
-re-placement, logged), a once-per-wave dealt/emerged/alive RECONCILE log, the reaper's
-IN-FLIGHT exception (a Gone bot still in the spawner's Placing queue is being born, not dead —
-the suite killed wave_slice's third bot before this), Q33 pacing (first intermission 15 s,
-later 30 s) and a deliberately mean economy (payout 5→40@w10 — useful upgrades should land
-wave 3-4), and `server-start.sh` now CLEARS the persisted HordeMode.json on every joinable
-dev boot (test boots persist what they load; three hand-edits were eaten before this was
-admitted — balance lives in DefaultConfig, not in a file). Then a FOURTH pass: "the game loop is
-entirely broken, start/restart/stop all refused" — one root cause (fact 20): a minimal config
-file resolved to a gutted config (no sections), which both shrank the horde to 1 alien/0 res and
-skipped the world reset, leaving the game Started with no ownership so the seeding gate bricked
-every command. `Config.Resolve` now merges the file over `DefaultConfig`, and ownership is
-claimed at `BeginCountdown` (the true takeover) not only in the conditional reset. Suite 75/0/1,
-handback 2/0; the WALK itself is PLAYTEST step 14's verdict.
+Last updated: 2026-10-04 — **the chair-pass hardening arc + the map frame + the training-mode rule.**
+Across four playtests the loop's rough edges were found and fixed, each invisible to a green suite
+and obvious from the seat: a bot whose virtual client never materialised was silently dropped (now
+re-dealt at its mouth, bounded); the economy shipped *broken* twice (extractor suppression alone
+triggered vanilla's `UpdateMinResTick` free trickle; the kill bounty leaned on a Shine
+`Gamerules:OnEntityKilled` hook that `NS2Gamerules` overrides and never fires — both now wrapped
+correctly via `Shine.ReplaceClassMethod` / the real class); and `ResolveHordeTarget` used
+`for Ent in ientitylist(...)` — binding a number, throwing, and being swallowed by its own `pcall`,
+so bots steered to a stale anchor and never reached the base (facts 21–23). The starting infantry
+portal is gone. **Higher lifeforms now actually spawn** (`ForceLifeForm` — the factory had been
+silently skulk-only; fact 24), and **Q18 hive nests are prebuilt invincible at every TechPoint**
+(fact 25; the spec required it, we'd never built it). **Q38 TTK telemetry** measures time-to-kill by
+polling health (the damage pipeline can't be hooked from Lua; fact 22). And **Q37 per-alien HP/armor
+scaling was wired then reverted the same day** — this is a marine *training* mode, so a skulk must be
+a vanilla 75-HP skulk or the marine learns the wrong time-to-kill (rule 7,
+`decisions/td-training-mode-no-stat-scaling`); difficulty is count + species only.
+
+State: **M0–M5 + M7 shipped, M8 partial** (`7x3` — real-alien-join and seed-max loss triggers remain).
+Suite 82/0/1, `--handback` 2/0 (a real round prebuilds 4 hives, tears them down, 0 leaked). Repo
+`main` pushed and clean at `3254809`; dev server live on 27025. **Next**: the chair gate + a TTK
+calibration playtest (turn the power estimates into measured numbers), then the parked **sub-wave
+pacing** design (distribute a wave over time; mouths as lanes/windows; a clock/pressure wave-end) —
+the biggest gameplay-feel win left — then i8a's remaining exits. The WALK itself is still PLAYTEST
+step 14's verdict.

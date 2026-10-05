@@ -42,6 +42,12 @@ Start with a fresh `/horde` and work down. Every line is something the suite can
 | 17 | **Finish wave 1 twice, two different ways.** (a) kill every alien; (b) next wave, kill every MOUTH instead | (a) announce: wave 1 cleared, **+5 team res**, **intermission 15 s** (the first gap is short by design, Q33), then WAVE 2 arrives — 4 aliens `(Skulk x4)`, **fresh positions, fresh seed**; later intermissions are 30 s; (b) mouth-kill ends the wave EARLY with the same chain even while bots still live | the wave loop end-to-end; payout curve + ladder pinned by `wave_math_is_pure`; first-vs-later wait by `stuck_bots_get_rescued` neighbours + `wave_loop_edges_with_fakes` |
 | 18 | **Let the swarm destroy the marine command station** (and/or die yourself, staying dead) | Chat: `HORDE OVER - the marine command station was destroyed. Survived N wave(s); back to seeding.` — teardown identical to a stop: same map, you keep your team, bots refill. If every marine stays dead ~3 s, the same happens with "every marine died" | the two loss latches — station must have STOOD first (`wave_math_is_pure` refuses the never-had false positive); grace window is D4's |
 | 19 | **Instant build (Q32), both directions.** Start a horde; place a structure and queue an upgrade (arms lab, L1 armor). Then `/horde stop` and build one more thing | During the horde: everything completes in ~1 s while **resources are still deducted**. After the stop: the NEXT build takes its normal vanilla time (the autobuild flag was given back, not left on) | `SetHordeBuildSpeed` snapshot/restore; the engine's own cheat path (`ConstructMixin.lua:133-183`, `ResearchMixin.lua:67-69`) — no custom timer code to rot |
+| 20 | `/horde`, watch **team** res between waves | Resources are **flat** between waves — no passive creep. The only rises are the wave-clear payout and the fixed start. An extractor you build gives the marine team nothing | the closed economy (Q34/Q35): extractor AND vanilla's `UpdateMinResTick` free trickle both suppressed via `ReplaceClassMethod`; a creep means one borrow didn't engage — grep `horde economy: closed` |
+| 21 | Kill an alien, watch your **personal** res (armory counter) | It rises by the victim's bounty (skulk/gorge 2, lerk 3, fade 4, onos 5). No personal gain from extractors | the `NS2Gamerules:OnEntityKilled` bounty; if it never moves, the wrapper isn't installed — grep `kill bounty armed` |
+| 22 | Get to wave 3+ | Gorges (then lerk/fade/onos at 5/7/10) actually **appear** — not all skulks — with **vanilla HP** (gorge 160, onos 700) | `ForceLifeForm`; if still all-skulk, grep `bot emerged ... (morphed)`; a gorge that dies instantly is the room-at-emergence case (fact 24) |
+| 23 | Look across the map for alien hives | An **invincible** hive sits at every tech point except the marine base; you cannot kill it; bots do **not** emerge from hives (only from the mouths) | Q18 frame; grep `horde map frame: N invincible hive(s) prebuilt`; unkillable = the `Hive:GetCanTakeDamageOverride` borrow |
+| 24 | At wave 1, look at the marine base | **No infantry portal** at the start (build one if you want it) | the starting-IP clear; grep `removed N starting infantry portal` |
+| 25 | (balance work) set `Debug.CombatTelemetry=true`, play, read the log | `[TELEMETRY] first-hit ... / death ... ttk=Ns` lines give **real time-to-kill** per alien — feed them back to tune the curve | health-poll (the damage pipeline can't be hooked, fact 22); `ttk=n/a` = died faster than the 1 s poll caught |
 
 ## 2. Capture findings
 
@@ -60,11 +66,15 @@ rounds were tracked.
 ## 3. Known non-bugs (do not chase these)
 
 - **Wave sizes, payout endpoints and the type ladder are placeholders, not tuning.** The
-  size curve ships ENABLED 3→15 by wave 20; payout 5→40 by wave 10 (Q33: deliberately mean —
-  the first useful upgrades should land around wave 3-4, and vanilla's own 60-start plus
-  extractor income are not ours); types unlock gorge w3 / lerk w5 / fade w7 / onos w10 with
-  ramp shares (Q31, DESIGN §4 has the power-vs-damage reasoning). Mouth HP scaling is still
+  size curve ships ENABLED 4→20 by wave 20 (Q36 first-cut bump from 3→15); payout 5→40 by wave 10
+  (Q33: deliberately mean — the first useful upgrades should land around wave 3-4, and vanilla's
+  60-start plus extractor income are not ours); types unlock gorge w3 / lerk w5 / fade w7 / onos
+  w10 with ramp shares (Q31, DESIGN §4 has the power-vs-damage reasoning). Mouth HP scaling is still
   off. Intermission: 15 s after wave 1, 30 s after (Q33).
+- **There is NO per-alien HP/armor/damage scaling, and that is deliberate.** This is a marine
+  aiming-training mode: a skulk is always a vanilla 75-HP skulk, or the marine learns the wrong
+  time-to-kill (rule 7 / HANDOFF §2, `decisions/td-training-mode-no-stat-scaling`). Difficulty is
+  count + which lifeforms ONLY. If you are tempted to buff a bot's stats — don't; use carapace.
 - **Wave loop v0 is in; i8a is only partly in.** Marines-wipe and station-destroyed end the horde
   now; a REAL alien joining, seed-max, and the `votesurrender` bypass still do not (i8a's
   remainder, bead `7x3`) — so still don't leave it running where aliens can join.
